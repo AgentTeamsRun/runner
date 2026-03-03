@@ -1,0 +1,25 @@
+{
+  "name": "@rlarua/agentteams-daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "agentteams-daemon": "dist/index.js"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "init": "node dist/index.js init"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
