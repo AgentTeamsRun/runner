@@ -1,6 +1,6 @@
 {
   "name": "@rlarua/agentrunner",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "AgentRunner - Background runner that polls and executes AI agent tasks",
   "type": "module",
   "main": "dist/index.js",
