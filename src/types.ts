@@ -28,8 +28,10 @@ export type DaemonTrigger = {
   agentConfigId: string;
   startedAt: string | null;
   errorMessage: string | null;
+  historyMarkdown: string | null;
   lastHeartbeatAt: string | null;
-  coActionId: string | null;
+  conversationId: string | null;
+  parentTriggerId: string | null;
   createdByMemberId: string;
   claimedByDaemonId: string | null;
   createdAt: string;

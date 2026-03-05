@@ -37,7 +37,7 @@ export class GeminiRunner implements Runner {
     }
 
     const cwd = opts.authPath;
-    const logPath = join(cwd, ".agentteams", "daemonLog", `daemon-${opts.triggerId}.log`);
+    const logPath = join(cwd, ".agentteams", "runner-log", `${opts.triggerId}.log`);
     await mkdir(dirname(logPath), { recursive: true });
 
     logger.info("Runner prompt", {

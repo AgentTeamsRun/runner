@@ -3,35 +3,38 @@ import { DaemonApiClient } from "../api-client.js";
 import { createRunnerFactory } from "../runners/index.js";
 import { TriggerLogReporter } from "../runners/log-reporter.js";
 import { logger } from "../logger.js";
-import { extractCoActionId } from "../utils/coaction-id.js";
+import { readFile } from "node:fs/promises";
+import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
 
 export const createTriggerHandler = (
   config: RuntimeConfig,
   client: DaemonApiClient
 ) => {
   const createRunner = createRunnerFactory(config.runnerCmd);
-  const coActionInstruction = (coActionId: string | null): string => {
-    if (coActionId) {
-      return [
-        "",
-        "----",
-        "CoAction update rule (required):",
-        `- Update the existing CoAction only: ${coActionId}`,
-        "- Do NOT create a new CoAction.",
-        `- Output this exact marker at the end: COACTION_ID: ${coActionId}`,
-        "----"
-      ].join("\n");
+  const maxHistoryLength = 200000;
+
+  const reportHistoryToDatabase = async (
+    triggerId: string,
+    historyPath: string | null
+  ): Promise<void> => {
+    if (!historyPath) {
+      return;
     }
 
-    return [
-      "",
-      "----",
-      "CoAction update rule (required):",
-      "- Reuse an existing CoAction if one is already available for this work context.",
-      "- Create a new CoAction only if no existing CoAction can be reused.",
-      "- Output this exact marker at the end with the final CoAction id: COACTION_ID: <uuid>",
-      "----"
-    ].join("\n");
+    try {
+      const content = await readFile(historyPath, "utf8");
+      const markdown = content.trim();
+      if (markdown.length === 0) {
+        return;
+      }
+      await client.updateTriggerHistory(triggerId, markdown.slice(0, maxHistoryLength));
+    } catch (error) {
+      logger.warn("Failed to load or update runner history", {
+        triggerId,
+        historyPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   };
 
   const toPromptString = (prompt: DaemonTrigger["prompt"]): string => {
@@ -42,32 +45,43 @@ export const createTriggerHandler = (
     return JSON.stringify(prompt);
   };
 
-  const buildRunnerPrompt = (trigger: DaemonTrigger): string => {
+  const buildRunnerPrompt = (trigger: DaemonTrigger, currentHistoryPath: string | null, parentHistoryPath: string | null): string => {
     const basePrompt = toPromptString(trigger.prompt);
-    return `${basePrompt}${coActionInstruction(trigger.coActionId)}`;
+    if (!trigger.parentTriggerId) {
+      return basePrompt;
+    }
+
+    const continuationLines = [
+      "",
+      "----",
+      "Continuation context (required):",
+      `- parentTriggerId: ${trigger.parentTriggerId}`,
+      `- Previous history path: ${parentHistoryPath ?? "(unavailable: authPath not configured)"}`,
+      `- Current history path: ${currentHistoryPath ?? "(unavailable: authPath not configured)"}`,
+      "- Read the previous history file first and continue without repeating completed work.",
+      "- Save history as a Markdown file (.md) at the current history path.",
+      "- Overwrite the markdown file with the latest full summary for this run.",
+      "- Required sections in the file:",
+      "  1) ## Summary",
+      "  2) ## Changes",
+      "  3) ## Verification",
+      "  4) ## Next Steps",
+      "  5) ## Questions for User",
+      "- In ## Summary, write 3-5 bullet points of what was done.",
+      "- In ## Changes, include changed files (absolute or workspace-relative paths) and why.",
+      "- In ## Verification, include executed commands and pass/fail results.",
+      "- In ## Next Steps, include up to 3 concrete follow-up actions.",
+      "- In ## Questions for User, include only blocking or decision-required questions (up to 3).",
+      "- Do not truncate or abbreviate the ## Summary content in history.",
+      "----"
+    ];
+
+    return `${basePrompt}\n${continuationLines.join("\n")}`;
   };
 
   return async (trigger: DaemonTrigger): Promise<void> => {
     let logReporter: TriggerLogReporter | null = null;
-    let detectedCoActionId: string | null = null;
-
-    const captureCoActionId = (chunk: string): void => {
-      if (detectedCoActionId) {
-        return;
-      }
-
-      const parsed = extractCoActionId(chunk);
-      if (!parsed) {
-        return;
-      }
-
-      detectedCoActionId = parsed;
-      logger.info("Co-action id detected from runner output", {
-        triggerId: trigger.id,
-        coActionId: parsed
-      });
-      logReporter?.append("INFO", `Detected COACTION_ID=${parsed}`);
-    };
+    let currentHistoryPath: string | null = null;
 
     try {
       logger.info("Trigger execution started", {
@@ -87,21 +101,23 @@ export const createTriggerHandler = (
       });
       logReporter.append("INFO", `Runtime fetched (agentConfigId=${runtime.agentConfigId}).`);
 
+      const historyPaths = resolveRunnerHistoryPaths(runtime.authPath, trigger.id, trigger.parentTriggerId);
+      currentHistoryPath = historyPaths.currentHistoryPath;
+      const runnerPrompt = buildRunnerPrompt(trigger, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath);
+
       const runner = createRunner(trigger.runnerType);
       const runResult = await runner.run({
         triggerId: trigger.id,
-        prompt: buildRunnerPrompt(trigger),
+        prompt: runnerPrompt,
         authPath: runtime.authPath,
         apiKey: runtime.apiKey,
         apiUrl: config.apiUrl,
         timeoutMs: config.timeoutMs,
         agentConfigId: runtime.agentConfigId,
         onStdoutChunk: (chunk) => {
-          captureCoActionId(chunk);
           logReporter?.append("INFO", chunk);
         },
         onStderrChunk: (chunk) => {
-          captureCoActionId(chunk);
           logReporter?.append("WARN", chunk);
         }
       });
@@ -110,6 +126,7 @@ export const createTriggerHandler = (
         exitCode: runResult.exitCode
       });
       logReporter.append("INFO", `Runner finished with exitCode=${runResult.exitCode}.`);
+      await reportHistoryToDatabase(trigger.id, currentHistoryPath);
       await logReporter.stop();
 
       const status = runResult.exitCode === 0 ? "DONE" : "FAILED";
@@ -119,8 +136,7 @@ export const createTriggerHandler = (
       await client.updateTriggerStatus(
         trigger.id,
         status,
-        errorMessage,
-        detectedCoActionId ?? undefined
+        errorMessage
       );
       logger.info("Trigger completed", {
         triggerId: trigger.id,
@@ -134,14 +150,14 @@ export const createTriggerHandler = (
 
       try {
         logReporter?.append("ERROR", error instanceof Error ? error.message : String(error));
+        await reportHistoryToDatabase(trigger.id, currentHistoryPath);
         if (logReporter) {
           await logReporter.stop();
         }
         await client.updateTriggerStatus(
           trigger.id,
           "FAILED",
-          error instanceof Error ? error.message : String(error),
-          detectedCoActionId ?? undefined
+          error instanceof Error ? error.message : String(error)
         );
       } catch (statusError) {
         logger.error("Failed to report trigger as FAILED", {
