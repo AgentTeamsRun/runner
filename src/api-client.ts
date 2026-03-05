@@ -102,8 +102,7 @@ export class DaemonApiClient {
   async updateTriggerStatus(
     triggerId: string,
     status: TriggerFinalStatus,
-    errorMessage?: string,
-    coActionId?: string
+    errorMessage?: string
   ): Promise<void> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/status`, {
       method: "PATCH",
@@ -113,8 +112,7 @@ export class DaemonApiClient {
       },
       body: JSON.stringify({
         status,
-        ...(errorMessage ? { errorMessage } : {}),
-        ...(coActionId ? { coActionId } : {})
+        ...(errorMessage ? { errorMessage } : {})
       })
     });
 

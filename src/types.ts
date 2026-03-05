@@ -29,7 +29,6 @@ export type DaemonTrigger = {
   startedAt: string | null;
   errorMessage: string | null;
   lastHeartbeatAt: string | null;
-  coActionId: string | null;
   createdByMemberId: string;
   claimedByDaemonId: string | null;
   createdAt: string;

@@ -3,36 +3,12 @@ import { DaemonApiClient } from "../api-client.js";
 import { createRunnerFactory } from "../runners/index.js";
 import { TriggerLogReporter } from "../runners/log-reporter.js";
 import { logger } from "../logger.js";
-import { extractCoActionId } from "../utils/coaction-id.js";
 
 export const createTriggerHandler = (
   config: RuntimeConfig,
   client: DaemonApiClient
 ) => {
   const createRunner = createRunnerFactory(config.runnerCmd);
-  const coActionInstruction = (coActionId: string | null): string => {
-    if (coActionId) {
-      return [
-        "",
-        "----",
-        "CoAction update rule (required):",
-        `- Update the existing CoAction only: ${coActionId}`,
-        "- Do NOT create a new CoAction.",
-        `- Output this exact marker at the end: COACTION_ID: ${coActionId}`,
-        "----"
-      ].join("\n");
-    }
-
-    return [
-      "",
-      "----",
-      "CoAction update rule (required):",
-      "- Reuse an existing CoAction if one is already available for this work context.",
-      "- Create a new CoAction only if no existing CoAction can be reused.",
-      "- Output this exact marker at the end with the final CoAction id: COACTION_ID: <uuid>",
-      "----"
-    ].join("\n");
-  };
 
   const toPromptString = (prompt: DaemonTrigger["prompt"]): string => {
     if (typeof prompt === "string") {
@@ -43,31 +19,11 @@ export const createTriggerHandler = (
   };
 
   const buildRunnerPrompt = (trigger: DaemonTrigger): string => {
-    const basePrompt = toPromptString(trigger.prompt);
-    return `${basePrompt}${coActionInstruction(trigger.coActionId)}`;
+    return toPromptString(trigger.prompt);
   };
 
   return async (trigger: DaemonTrigger): Promise<void> => {
     let logReporter: TriggerLogReporter | null = null;
-    let detectedCoActionId: string | null = null;
-
-    const captureCoActionId = (chunk: string): void => {
-      if (detectedCoActionId) {
-        return;
-      }
-
-      const parsed = extractCoActionId(chunk);
-      if (!parsed) {
-        return;
-      }
-
-      detectedCoActionId = parsed;
-      logger.info("Co-action id detected from runner output", {
-        triggerId: trigger.id,
-        coActionId: parsed
-      });
-      logReporter?.append("INFO", `Detected COACTION_ID=${parsed}`);
-    };
 
     try {
       logger.info("Trigger execution started", {
@@ -97,11 +53,9 @@ export const createTriggerHandler = (
         timeoutMs: config.timeoutMs,
         agentConfigId: runtime.agentConfigId,
         onStdoutChunk: (chunk) => {
-          captureCoActionId(chunk);
           logReporter?.append("INFO", chunk);
         },
         onStderrChunk: (chunk) => {
-          captureCoActionId(chunk);
           logReporter?.append("WARN", chunk);
         }
       });
@@ -119,8 +73,7 @@ export const createTriggerHandler = (
       await client.updateTriggerStatus(
         trigger.id,
         status,
-        errorMessage,
-        detectedCoActionId ?? undefined
+        errorMessage
       );
       logger.info("Trigger completed", {
         triggerId: trigger.id,
@@ -140,8 +93,7 @@ export const createTriggerHandler = (
         await client.updateTriggerStatus(
           trigger.id,
           "FAILED",
-          error instanceof Error ? error.message : String(error),
-          detectedCoActionId ?? undefined
+          error instanceof Error ? error.message : String(error)
         );
       } catch (statusError) {
         logger.error("Failed to report trigger as FAILED", {
