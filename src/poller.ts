@@ -1,12 +1,41 @@
 import { logger } from "./logger.js";
 import { DaemonApiClient } from "./api-client.js";
+import { runCleanup } from "./utils/runner-cleanup.js";
 import type { DaemonTrigger, RuntimeConfig } from "./types.js";
 
-type TriggerHandler = (trigger: DaemonTrigger) => Promise<void>;
+type TriggerHandlerFactory = (onAuthPathDiscovered: (authPath: string) => void) => (trigger: DaemonTrigger) => Promise<void>;
 
-export const startPolling = async (config: RuntimeConfig, onTrigger: TriggerHandler): Promise<void> => {
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+export const startPolling = async (config: RuntimeConfig, createHandler: TriggerHandlerFactory): Promise<void> => {
   const client = new DaemonApiClient(config.apiUrl, config.daemonToken);
   let isPolling = false;
+
+  const knownAuthPaths = new Set<string>();
+  let lastCleanupAt = 0;
+
+  const onAuthPathDiscovered = (authPath: string): void => {
+    knownAuthPaths.add(authPath);
+  };
+
+  const onTrigger = createHandler(onAuthPathDiscovered);
+
+  const maybeRunCleanup = () => {
+    const now = Date.now();
+    if (now - lastCleanupAt < CLEANUP_INTERVAL_MS) {
+      return;
+    }
+    lastCleanupAt = now;
+
+    for (const authPath of knownAuthPaths) {
+      void runCleanup(authPath).catch((error) => {
+        logger.warn("Scheduled cleanup failed", {
+          authPath,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }
+  };
 
   const pollOnce = async () => {
     if (isPolling) {
@@ -15,6 +44,8 @@ export const startPolling = async (config: RuntimeConfig, onTrigger: TriggerHand
 
     isPolling = true;
     try {
+      maybeRunCleanup();
+
       const pending = await client.fetchPendingTrigger();
       if (!pending) {
         return;

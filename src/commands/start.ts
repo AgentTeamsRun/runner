@@ -19,6 +19,8 @@ export const runStartCommand = async (): Promise<void> => {
 
   const config = await resolveRuntimeConfig();
   const client = new DaemonApiClient(config.apiUrl, config.daemonToken);
-  const triggerHandler = createTriggerHandler(config, client);
-  await startPolling(config, triggerHandler);
+
+  await startPolling(config, (onAuthPathDiscovered) =>
+    createTriggerHandler({ config, client, onAuthPathDiscovered })
+  );
 };

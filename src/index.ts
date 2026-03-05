@@ -5,6 +5,7 @@ import { runStartCommand } from "./commands/start.js";
 import { runStatusCommand } from "./commands/status.js";
 import { runStopCommand } from "./commands/stop.js";
 import { runUninstallCommand } from "./commands/uninstall.js";
+import { runCleanupCommand } from "./commands/cleanup.js";
 import { logger } from "./logger.js";
 
 const require = createRequire(import.meta.url);
@@ -19,6 +20,7 @@ Commands:
   status                      Show daemon and autostart status
   stop                        Stop running daemon
   uninstall                   Stop daemon, remove autostart, clean up
+  cleanup --path <path>       Purge expired runner log/history files
 
 Options:
   --no-autostart              Skip autostart registration (init only)
@@ -61,6 +63,11 @@ const main = async () => {
 
   if (command === "uninstall") {
     await runUninstallCommand();
+    return;
+  }
+
+  if (command === "cleanup") {
+    await runCleanupCommand(args);
     return;
   }
 

@@ -6,10 +6,14 @@ import { logger } from "../logger.js";
 import { readFile } from "node:fs/promises";
 import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
 
-export const createTriggerHandler = (
-  config: RuntimeConfig,
-  client: DaemonApiClient
-) => {
+type TriggerHandlerOptions = {
+  config: RuntimeConfig;
+  client: DaemonApiClient;
+  onAuthPathDiscovered?: (authPath: string) => void;
+};
+
+export const createTriggerHandler = (options: TriggerHandlerOptions) => {
+  const { config, client, onAuthPathDiscovered } = options;
   const createRunner = createRunnerFactory(config.runnerCmd);
   const maxHistoryLength = 200000;
 
@@ -64,21 +68,12 @@ export const createTriggerHandler = (
       `- History path: ${currentHistoryPath ?? "(unavailable: authPath not configured)"}`,
       "- Save history as a Markdown file (.md) at the history path.",
       "- Overwrite the markdown file with the latest full summary for this run.",
-      "- Required sections in the file:",
-      "  1) ### Summary",
-      "  2) ### Changes",
-      "  3) ### Verification",
-      "  4) ### Next Steps",
-      "  5) ### Suggestions for User",
-      "  6) ### Questions for User",
-      "- Do not add a top-level title (e.g., # Runner History). Start directly with ## Summary.",
-      "- In ### Summary, write 3-5 bullet points of what was done.",
-      "- In ### Changes, include changed files (absolute or workspace-relative paths) and why.",
-      "- In ### Verification, include executed commands and pass/fail results.",
-      "- In ### Next Steps, include up to 3 concrete follow-up actions.",
-      "- In ### Suggestions for User, include concrete proposals or recommendations made during this run (with enough detail to understand each option without the original conversation). Write 'None' if no suggestions were made.",
-      "- In ### Questions for User, include only blocking or decision-required questions (up to 3).",
-      "- Do not truncate or abbreviate the ## Summary content in history.",
+      "- Format rules:",
+      "  - Do not add a top-level title (e.g., # Runner History).",
+      "  - Use ### (h3) headings to organize sections.",
+      "  - Add whatever sections best describe the work (e.g., ### Changes, ### Verification, ### Next Steps).",
+      "  - Required section: ### Summary — 3-5 bullet points of what was done. This is used for handoff to the next session.",
+      "  - Required section: ### Questions for User — include only blocking or decision-required questions (up to 3). Write 'None' if there are no questions.",
       "----"
     ];
 
@@ -99,6 +94,10 @@ export const createTriggerHandler = (
       logReporter = new TriggerLogReporter(client, trigger.id);
       logReporter.start();
       logReporter.append("INFO", `Trigger started with runner ${trigger.runnerType}.`);
+
+      if (runtime.authPath && onAuthPathDiscovered) {
+        onAuthPathDiscovered(runtime.authPath);
+      }
 
       logger.info("Trigger runtime fetched", {
         triggerId: trigger.id,
