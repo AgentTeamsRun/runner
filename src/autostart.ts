@@ -4,8 +4,8 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { logger } from "./logger.js";
 
-const SERVICE_LABEL = "run.agentteams.daemon";
-const TASK_NAME = "AgentTeamsDaemon";
+const SERVICE_LABEL = "run.agentteams.runner";
+const TASK_NAME = "AgentRunner";
 
 // --- Path helpers ---
 
@@ -13,10 +13,10 @@ const getLaunchdPlistPath = (): string =>
   join(homedir(), "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
 
 const getSystemdServicePath = (): string =>
-  join(homedir(), ".config", "systemd", "user", "agentteams-daemon.service");
+  join(homedir(), ".config", "systemd", "user", "agentrunner.service");
 
 const getWindowsBatPath = (): string =>
-  join(homedir(), ".agentteams", "daemon-start.bat");
+  join(homedir(), ".agentteams", "agentrunner-start.bat");
 
 const resolveExecutablePath = (name: string): string => {
   const os = platform();
@@ -37,7 +37,7 @@ const resolveExecutablePath = (name: string): string => {
 
 const buildPlistContent = (config: AutostartConfig): string => {
   const nodePath = resolveExecutablePath("node");
-  const daemonPath = resolveExecutablePath("agentteams-daemon");
+  const daemonPath = resolveExecutablePath("agentrunner");
 
   const envEntries = [
     `    <key>AGENTTEAMS_DAEMON_TOKEN</key>\n    <string>${config.token}</string>`,
@@ -77,10 +77,10 @@ ${envEntries}
   <integer>10</integer>
 
   <key>StandardOutPath</key>
-  <string>/tmp/agentteams-daemon.log</string>
+  <string>/tmp/agentrunner.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/tmp/agentteams-daemon-error.log</string>
+  <string>/tmp/agentrunner-error.log</string>
 </dict>
 </plist>`;
 };
@@ -88,10 +88,10 @@ ${envEntries}
 // --- systemd (Linux) ---
 
 const buildSystemdContent = (config: AutostartConfig): string => {
-  const daemonPath = resolveExecutablePath("agentteams-daemon");
+  const daemonPath = resolveExecutablePath("agentrunner");
 
   return `[Unit]
-Description=AgentTeams Daemon
+Description=AgentRunner
 After=network-online.target
 Wants=network-online.target
 
@@ -104,7 +104,7 @@ Restart=on-failure
 RestartSec=10s
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=agentteams-daemon
+SyslogIdentifier=agentrunner
 
 [Install]
 WantedBy=default.target`;
@@ -113,7 +113,7 @@ WantedBy=default.target`;
 // --- bat (Windows) ---
 
 const buildWindowsBatContent = (config: AutostartConfig): string => {
-  const daemonPath = resolveExecutablePath("agentteams-daemon");
+  const daemonPath = resolveExecutablePath("agentrunner");
 
   return `@echo off
 set AGENTTEAMS_DAEMON_TOKEN=${config.token}
@@ -191,7 +191,7 @@ export const getAutostartStatus = (): { registered: boolean; platform: string } 
 
   if (os === "linux") {
     try {
-      const output = execSync("systemctl --user is-enabled agentteams-daemon 2>/dev/null", {
+      const output = execSync("systemctl --user is-enabled agentrunner 2>/dev/null", {
         encoding: "utf8",
       });
       return { registered: output.trim() === "enabled", platform: "systemd" };
@@ -263,8 +263,8 @@ const registerSystemd = async (config: AutostartConfig): Promise<AutostartResult
   await fs.writeFile(servicePath, content, "utf8");
 
   execSync("systemctl --user daemon-reload");
-  execSync("systemctl --user enable agentteams-daemon");
-  execSync("systemctl --user start agentteams-daemon");
+  execSync("systemctl --user enable agentrunner");
+  execSync("systemctl --user start agentrunner");
 
   logger.info("Registered systemd user service", { servicePath });
   return { registered: true, servicePath, platform: "systemd" };
@@ -274,13 +274,13 @@ const unregisterSystemd = async (): Promise<void> => {
   const servicePath = getSystemdServicePath();
 
   try {
-    execSync("systemctl --user stop agentteams-daemon 2>/dev/null");
+    execSync("systemctl --user stop agentrunner 2>/dev/null");
   } catch {
     // Not running — that's fine.
   }
 
   try {
-    execSync("systemctl --user disable agentteams-daemon 2>/dev/null");
+    execSync("systemctl --user disable agentrunner 2>/dev/null");
   } catch {
     // Not enabled — that's fine.
   }

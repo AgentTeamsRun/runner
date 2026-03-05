@@ -1,4 +1,4 @@
-# AgentTeams Daemon 사용 가이드
+# AgentRunner 사용 가이드
 
 이 문서는 `daemon/` 패키지의 실행 방법과 설정 방법을 설명합니다.
 
@@ -20,7 +20,7 @@ npm run build
 
 ## 2-1. 전역 설치
 
-전역 명령어(`agentteams-daemon`)로 사용하려면 아래 순서로 설치하세요.
+전역 명령어(`agentrunner`)로 사용하려면 아래 순서로 설치하세요.
 
 ```bash
 cd daemon
@@ -32,7 +32,7 @@ npm install -g .
 설치 확인:
 
 ```bash
-agentteams-daemon --help
+agentrunner --help
 ```
 
 개발 중에는 전역 설치 대신 링크 방식도 사용할 수 있습니다.
@@ -48,7 +48,7 @@ npm link
 토큰 저장과 OS 자동 시작 등록을 한 번에 수행합니다.
 
 ```bash
-agentteams-daemon init --token <DAEMON_TOKEN>
+agentrunner init --token <DAEMON_TOKEN>
 ```
 
 `init`은 다음을 수행합니다:
@@ -57,7 +57,7 @@ agentteams-daemon init --token <DAEMON_TOKEN>
 2. API 서버에서 토큰 유효성 검증
 3. OS에 맞는 자동 시작 서비스 등록 및 즉시 시작
    - **macOS**: `~/Library/LaunchAgents/run.agentteams.daemon.plist` (launchd)
-   - **Linux**: `~/.config/systemd/user/agentteams-daemon.service` (systemd)
+   - **Linux**: `~/.config/systemd/user/agentrunner.service` (systemd)
 
 ### 옵션
 
@@ -69,13 +69,13 @@ agentteams-daemon init --token <DAEMON_TOKEN>
 
 ```bash
 # 일반 사용자 (자동 시작 포함)
-agentteams-daemon init --token daemon_xxxxx
+agentrunner init --token daemon_xxxxx
 
 # 플랫폼 개발자 (커스텀 API URL)
-agentteams-daemon init --token daemon_xxxxx --api-url http://localhost:3001
+agentrunner init --token daemon_xxxxx --api-url http://localhost:3001
 
 # 자동 시작 없이 토큰만 저장
-agentteams-daemon init --token daemon_xxxxx --no-autostart
+agentrunner init --token daemon_xxxxx --no-autostart
 ```
 
 `--api-url` 생략 시 아래 우선순위로 결정됩니다:
@@ -87,13 +87,13 @@ agentteams-daemon init --token daemon_xxxxx --no-autostart
 ## 4. 실행 (`start`)
 
 ```bash
-agentteams-daemon start
+agentrunner start
 ```
 
 명령어를 생략해도 기본 동작은 `start`입니다.
 
 ```bash
-agentteams-daemon
+agentrunner
 ```
 
 > `init`에서 자동 시작을 등록했다면 `start`를 수동으로 실행할 필요 없습니다.
@@ -102,7 +102,7 @@ agentteams-daemon
 ## 5. 상태 확인 (`status`)
 
 ```bash
-agentteams-daemon status
+agentrunner status
 ```
 
 데몬 프로세스 실행 여부와 자동 시작 등록 상태를 확인합니다.
@@ -117,7 +117,7 @@ agentteams-daemon status
 ## 6. 중지 (`stop`)
 
 ```bash
-agentteams-daemon stop
+agentrunner stop
 ```
 
 실행 중인 데몬 프로세스에 SIGTERM을 보내 정상 종료합니다.
@@ -128,7 +128,7 @@ agentteams-daemon stop
 ## 7. 제거 (`uninstall`)
 
 ```bash
-agentteams-daemon uninstall
+agentrunner uninstall
 ```
 
 다음을 수행합니다:
@@ -191,30 +191,30 @@ agentteams-daemon uninstall
 ## 10. 로그
 
 - 데몬 자체 로그: 콘솔 출력 (자동 시작 시 OS 로그 시스템으로 전달)
-  - **macOS**: `/tmp/agentteams-daemon.log`, `/tmp/agentteams-daemon-error.log`
-  - **Linux**: `journalctl --user -u agentteams-daemon -f`
+  - **macOS**: `/tmp/agentrunner.log`, `/tmp/agentrunner-error.log`
+  - **Linux**: `journalctl --user -u agentrunner -f`
 - 러너(stdout/stderr) 로그: 작업 경로의 `.agentteams/daemonLog/daemon-<triggerId>.log`
 
 ## 11. 자주 발생하는 오류
 
-### `Missing token. Usage: agentteams-daemon init --token <token> ...`
+### `Missing token. Usage: agentrunner init --token <token> ...`
 
 - `init` 명령에서 `--token`을 넣지 않은 경우입니다.
 
-### `Daemon token is missing. Run 'agentteams-daemon init --token <token>' first.`
+### `Daemon token is missing. Run 'agentrunner init --token <token>' first.`
 
 - 실행 시 토큰을 찾을 수 없는 상태입니다.
 - `init`을 먼저 실행하거나 `AGENTTEAMS_DAEMON_TOKEN` 환경변수를 설정하세요.
 
-### `zsh: permission denied: agentteams-daemon`
+### `zsh: permission denied: agentrunner`
 
-- 전역으로 연결된 `agentteams-daemon` 실행 파일의 권한/경로 문제일 가능성이 큽니다.
+- 전역으로 연결된 `agentrunner` 실행 파일의 권한/경로 문제일 가능성이 큽니다.
 - 아래 순서로 확인/복구하세요.
 
 ```bash
-type -a agentteams-daemon
-which agentteams-daemon
-ls -l "$(which agentteams-daemon)"
+type -a agentrunner
+which agentrunner
+ls -l "$(which agentrunner)"
 ```
 
 ```bash

@@ -39,7 +39,7 @@ export const runInitCommand = async (argv: string[]): Promise<void> => {
   const options = parseInitArgs(argv);
 
   if (!options.token || options.token.trim().length === 0) {
-    throw new Error("Missing token. Usage: agentteams-daemon init --token <token> [--api-url <url>] [--no-autostart]");
+    throw new Error("Missing token. Usage: agentrunner init --token <token> [--api-url <url>] [--no-autostart]");
   }
 
   const apiUrl = await resolveApiUrlForInit(options.apiUrl);

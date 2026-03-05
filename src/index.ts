@@ -11,7 +11,7 @@ const require = createRequire(import.meta.url);
 const packageJson = require("../package.json") as { version?: string };
 const daemonVersion = packageJson.version ?? "0.0.0";
 
-const helpText = `Usage: agentteams-daemon [command] [options]
+const helpText = `Usage: agentrunner [command] [options]
 
 Commands:
   start                       Start daemon polling (default)

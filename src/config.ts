@@ -58,7 +58,7 @@ export const resolveRuntimeConfig = async (): Promise<RuntimeConfig> => {
   const apiUrl = process.env.AGENTTEAMS_API_URL ?? fileConfig?.apiUrl ?? DEFAULT_API_URL;
 
   if (!daemonToken || daemonToken.trim().length === 0) {
-    throw new Error("Daemon token is missing. Run 'agentteams-daemon init --token <token>' first.");
+    throw new Error("Daemon token is missing. Run 'agentrunner init --token <token>' first.");
   }
 
   return {
