@@ -46,7 +46,7 @@ export class CodexRunner implements Runner {
       promptPreview: toPromptPreview(opts.prompt)
     });
 
-    const child = spawn("codex", ["exec", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", opts.prompt], {
+    const child = spawn("codex", ["exec", "-a", "never", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", opts.prompt], {
       cwd,
       shell: false,
       detached: true,
