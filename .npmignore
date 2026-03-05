@@ -1,0 +1,27 @@
+# 테스트 파일
+test/
+*.test.ts
+*.test.js
+
+# 소스 파일 (빌드된 dist만 배포)
+src/
+tsconfig.json
+jest.config.js
+
+# 개발 파일
+.git/
+.gitignore
+node_modules/
+
+# CI/CD
+.github/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 개발 문서
+DEVELOPMENT.md
+API-CLI-WORKFLOW.md

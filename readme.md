@@ -1,231 +1,160 @@
-# AgentRunner 사용 가이드
+# @rlarua/agentrunner
 
-이 문서는 `daemon/` 패키지의 실행 방법과 설정 방법을 설명합니다.
+A background runner that polls and executes AI agent tasks from the AgentTeams platform.
 
-## 1. 사전 준비
+## Prerequisites
 
-- Node.js `24` 이상
-- AgentTeams API 서버 실행 중
-- 웹에서 발급한 데몬 토큰 (`x-daemon-token`)
+- Node.js `18` or later
+- AgentTeams API server running
+- A daemon token issued from the web UI (`x-daemon-token`)
 
-## 2. 설치 및 빌드
-
-`daemon/` 디렉터리에서 아래 명령을 실행하세요.
+## Installation
 
 ```bash
-cd daemon
-npm install
-npm run build
+npm install -g @rlarua/agentrunner
 ```
 
-## 2-1. 전역 설치
-
-전역 명령어(`agentrunner`)로 사용하려면 아래 순서로 설치하세요.
-
-```bash
-cd daemon
-npm install
-npm run build
-npm install -g .
-```
-
-설치 확인:
+Verify the installation:
 
 ```bash
 agentrunner --help
 ```
 
-개발 중에는 전역 설치 대신 링크 방식도 사용할 수 있습니다.
+## Quick Start
 
-```bash
-cd daemon
-npm run build
-npm link
-```
-
-## 3. 초기 설정 (`init`)
-
-토큰 저장과 OS 자동 시작 등록을 한 번에 수행합니다.
+### 1. Initialize
 
 ```bash
 agentrunner init --token <DAEMON_TOKEN>
 ```
 
-`init`은 다음을 수행합니다:
+The `init` command:
 
-1. 토큰을 `~/.agentteams/daemon.json`에 저장
-2. API 서버에서 토큰 유효성 검증
-3. OS에 맞는 자동 시작 서비스 등록 및 즉시 시작
+1. Saves the token to `~/.agentteams/daemon.json`
+2. Validates the token against the API server
+3. Registers an OS-level autostart service and starts the runner immediately
    - **macOS**: `~/Library/LaunchAgents/run.agentteams.daemon.plist` (launchd)
    - **Linux**: `~/.config/systemd/user/agentrunner.service` (systemd)
+   - **Windows**: `AgentRunner` (Task Scheduler)
 
-### 옵션
+### Options
 
-- `--token <token>` — **필수**. 웹에서 발급한 데몬 토큰
-- `--api-url <url>` — 선택. API 서버 URL (기본값: `https://api.agentteams.run`)
-- `--no-autostart` — 선택. 자동 시작 등록을 건너뜀 (수동 실행만 사용할 때)
+- `--token <token>` — **Required**. Daemon token issued from the web UI
+- `--no-autostart` — Optional. Skip autostart registration (manual start only)
 
-예시:
+Examples:
 
 ```bash
-# 일반 사용자 (자동 시작 포함)
+# Standard setup (with autostart)
 agentrunner init --token daemon_xxxxx
 
-# 플랫폼 개발자 (커스텀 API URL)
-agentrunner init --token daemon_xxxxx --api-url http://localhost:3001
-
-# 자동 시작 없이 토큰만 저장
+# Token-only setup (no autostart)
 agentrunner init --token daemon_xxxxx --no-autostart
 ```
 
-`--api-url` 생략 시 아래 우선순위로 결정됩니다:
-
-1. `AGENTTEAMS_API_URL` 환경변수
-2. 기존 설정 파일의 `apiUrl`
-3. 기본값 `https://api.agentteams.run`
-
-## 4. 실행 (`start`)
+### 2. Start (`start`)
 
 ```bash
 agentrunner start
 ```
 
-명령어를 생략해도 기본 동작은 `start`입니다.
+Running without a subcommand defaults to `start`:
 
 ```bash
 agentrunner
 ```
 
-> `init`에서 자동 시작을 등록했다면 `start`를 수동으로 실행할 필요 없습니다.
-> 로그인/부팅 시 OS가 자동으로 시작합니다.
+> If autostart was registered via `init`, you do not need to run `start` manually.
+> The OS will start the runner automatically on login/boot.
 
-## 5. 상태 확인 (`status`)
+### 3. Check Status (`status`)
 
 ```bash
 agentrunner status
 ```
 
-데몬 프로세스 실행 여부와 자동 시작 등록 상태를 확인합니다.
+Shows whether the runner process is active and whether autostart is registered.
 
-출력 예시:
+Example output:
 
 ```
 [...] INFO Daemon is running { pid: 12345 }
 [...] INFO Autostart is enabled { platform: 'launchd' }
 ```
 
-## 6. 중지 (`stop`)
+### 4. Stop (`stop`)
 
 ```bash
 agentrunner stop
 ```
 
-실행 중인 데몬 프로세스에 SIGTERM을 보내 정상 종료합니다.
+Sends SIGTERM to the running process for a graceful shutdown.
 
-> 자동 시작이 등록된 경우, OS가 데몬을 자동 재시작할 수 있습니다.
-> 완전히 중지하려면 `uninstall`을 사용하세요.
+> If autostart is registered, the OS may restart the runner automatically.
+> Use `uninstall` to stop completely.
 
-## 7. 제거 (`uninstall`)
+### 5. Uninstall (`uninstall`)
 
 ```bash
 agentrunner uninstall
 ```
 
-다음을 수행합니다:
+Performs the following:
 
-1. 실행 중인 데몬 프로세스 중지
-2. OS 자동 시작 서비스 해제 및 서비스 파일 삭제
-3. PID 파일 정리
+1. Stops the running process
+2. Removes the autostart service and deletes the service file
+3. Cleans up the PID file
 
-## 8. 설정 우선순위
+## Configuration
 
-실행 시 설정은 아래 우선순위로 적용됩니다.
+Settings are resolved in the following priority order at runtime.
 
-### 토큰
+### Token
 
-1. `AGENTTEAMS_DAEMON_TOKEN`
-2. `~/.agentteams/daemon.json`의 `daemonToken`
+1. `AGENTTEAMS_DAEMON_TOKEN` environment variable
+2. `daemonToken` in `~/.agentteams/daemon.json`
 
-### API URL
+### Environment Variables
 
-1. `AGENTTEAMS_API_URL`
-2. `~/.agentteams/daemon.json`의 `apiUrl`
-3. 기본값 `https://api.agentteams.run`
+| Variable | Default | Description |
+|---|---|---|
+| `POLLING_INTERVAL_MS` | `30000` (30s) | Polling interval for pending triggers |
+| `TIMEOUT_MS` | `1800000` (30min) | Runner process timeout |
+| `RUNNER_CMD` | `opencode` | Command used to execute agent tasks |
+| `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `DAEMON_VERBOSE_RUNNER_LOGS` | `true` | When `false`, reduces runner stdout/stderr to start/stop/error only |
+| `DAEMON_PROMPT_LOG_MODE` | `preview` | Prompt logging: `off`, `length`, `preview`, `full` |
 
-### 기타 옵션
+## How It Works
 
-- `POLLING_INTERVAL_MS`
-  - 기본값: `30000` (30초)
-- `TIMEOUT_MS`
-  - 기본값: `1800000` (30분)
-- `RUNNER_CMD`
-  - 기본값: `opencode`
-- `LOG_LEVEL`
-  - 기본값: `info`
-  - 값: `debug | info | warn | error`
-- `DAEMON_VERBOSE_RUNNER_LOGS`
-  - 기본값: `true`
-  - 값: `true | false`
-  - 설명: `false`면 runner stdout/stderr 상세 로그를 줄이고 시작/종료/에러 중심으로 출력
-- `DAEMON_PROMPT_LOG_MODE`
-  - 기본값: `preview`
-  - 값: `off | length | preview | full`
-  - 설명:
-    - `off`: 프롬프트 로그 미출력
-    - `length`: 프롬프트 길이만 출력
-    - `preview`: 프롬프트 미리보기(일부) 출력
-    - `full`: 프롬프트 전체 출력
+After `start`, the runner operates in the following loop:
 
-## 9. 동작 개요
+1. Polls for pending triggers periodically
+2. Claims a trigger
+3. Fetches runtime info (working directory, API key)
+4. Executes `RUNNER_CMD run "<prompt>"`
+5. Updates trigger status based on exit code or timeout
 
-`start` 실행 후 데몬은 다음 흐름으로 동작합니다.
+If a process is already running for the same `agentConfigId`, new triggers are `REJECTED`.
 
-1. 주기적으로 pending 트리거를 폴링합니다.
-2. 트리거를 claim합니다.
-3. 런타임 정보(작업 경로, API 키)를 조회합니다.
-4. `RUNNER_CMD run "<prompt>"` 형식으로 프로세스를 실행합니다.
-5. 종료 코드/타임아웃 결과에 따라 트리거 상태를 업데이트합니다.
+## Logs
 
-동일 `agentConfigId`에 실행 중인 프로세스가 있으면 새 트리거는 `REJECTED` 처리됩니다.
-
-## 10. 로그
-
-- 데몬 자체 로그: 콘솔 출력 (자동 시작 시 OS 로그 시스템으로 전달)
+- **Runner logs**: console output (forwarded to OS log system when autostarted)
   - **macOS**: `/tmp/agentrunner.log`, `/tmp/agentrunner-error.log`
   - **Linux**: `journalctl --user -u agentrunner -f`
-- 러너(stdout/stderr) 로그: 작업 경로의 `.agentteams/daemonLog/daemon-<triggerId>.log`
+  - **Windows**: Event Viewer → Windows Logs → Application (`AgentRunner`)
+- **Task logs**: `<workdir>/.agentteams/daemonLog/daemon-<triggerId>.log`
 
-## 11. 자주 발생하는 오류
+## Troubleshooting
 
 ### `Missing token. Usage: agentrunner init --token <token> ...`
 
-- `init` 명령에서 `--token`을 넣지 않은 경우입니다.
+The `--token` flag was not provided to `init`.
 
 ### `Daemon token is missing. Run 'agentrunner init --token <token>' first.`
 
-- 실행 시 토큰을 찾을 수 없는 상태입니다.
-- `init`을 먼저 실행하거나 `AGENTTEAMS_DAEMON_TOKEN` 환경변수를 설정하세요.
+No token found at runtime. Run `init` first or set the `AGENTTEAMS_DAEMON_TOKEN` environment variable.
 
-### `zsh: permission denied: agentrunner`
+## License
 
-- 전역으로 연결된 `agentrunner` 실행 파일의 권한/경로 문제일 가능성이 큽니다.
-- 아래 순서로 확인/복구하세요.
-
-```bash
-type -a agentrunner
-which agentrunner
-ls -l "$(which agentrunner)"
-```
-
-```bash
-cd daemon
-npm run build
-npm install -g .
-hash -r
-```
-
-- 그래도 동일하면 실행 파일 권한을 확인하세요.
-
-```bash
-chmod +x /Users/justin/Project/Me/AgentTeams/daemon/dist/index.js
-```
+Apache-2.0
