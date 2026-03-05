@@ -11,22 +11,9 @@ export const createTriggerHandler = (
   client: DaemonApiClient
 ) => {
   const createRunner = createRunnerFactory(config.runnerCmd);
-  const maxLogMessageLength = 2000;
-  const maxLogBatchSize = 50;
+  const maxHistoryLength = 200000;
 
-  const splitText = (text: string, size: number): string[] => {
-    if (text.length <= size) {
-      return [text];
-    }
-
-    const chunks: string[] = [];
-    for (let index = 0; index < text.length; index += size) {
-      chunks.push(text.slice(index, index + size));
-    }
-    return chunks;
-  };
-
-  const reportHistoryToApiLogs = async (
+  const reportHistoryToDatabase = async (
     triggerId: string,
     historyPath: string | null
   ): Promise<void> => {
@@ -36,23 +23,13 @@ export const createTriggerHandler = (
 
     try {
       const content = await readFile(historyPath, "utf8");
-      const header = `[Runner History] path=${historyPath}`;
-      const bodyChunks = splitText(content, maxLogMessageLength - 64);
-      const logs = [
-        { level: "INFO" as const, message: header },
-        ...bodyChunks.map((chunk, index) => ({
-          level: "INFO" as const,
-          message: `[Runner History ${index + 1}/${bodyChunks.length}]\n${chunk}`
-        }))
-      ];
-
-      for (let index = 0; index < logs.length; index += maxLogBatchSize) {
-        await client.appendTriggerLogs(triggerId, {
-          logs: logs.slice(index, index + maxLogBatchSize)
-        });
+      const markdown = content.trim();
+      if (markdown.length === 0) {
+        return;
       }
+      await client.updateTriggerHistory(triggerId, markdown.slice(0, maxHistoryLength));
     } catch (error) {
-      logger.warn("Failed to load or report runner history", {
+      logger.warn("Failed to load or update runner history", {
         triggerId,
         historyPath,
         error: error instanceof Error ? error.message : String(error)
@@ -149,7 +126,7 @@ export const createTriggerHandler = (
         exitCode: runResult.exitCode
       });
       logReporter.append("INFO", `Runner finished with exitCode=${runResult.exitCode}.`);
-      await reportHistoryToApiLogs(trigger.id, currentHistoryPath);
+      await reportHistoryToDatabase(trigger.id, currentHistoryPath);
       await logReporter.stop();
 
       const status = runResult.exitCode === 0 ? "DONE" : "FAILED";
@@ -173,7 +150,7 @@ export const createTriggerHandler = (
 
       try {
         logReporter?.append("ERROR", error instanceof Error ? error.message : String(error));
-        await reportHistoryToApiLogs(trigger.id, currentHistoryPath);
+        await reportHistoryToDatabase(trigger.id, currentHistoryPath);
         if (logReporter) {
           await logReporter.stop();
         }

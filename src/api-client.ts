@@ -121,6 +121,26 @@ export class DaemonApiClient {
     }
   }
 
+  async updateTriggerHistory(
+    triggerId: string,
+    historyMarkdown: string
+  ): Promise<void> {
+    const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/history`, {
+      method: "PATCH",
+      headers: {
+        ...this.daemonHeaders(),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        historyMarkdown
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to update trigger history (${response.status})`);
+    }
+  }
+
   async fetchTriggerRuntime(triggerId: string): Promise<TriggerRuntime> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/runtime`, {
       method: "GET",
