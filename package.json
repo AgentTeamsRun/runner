@@ -1,21 +1,33 @@
 {
   "name": "@rlarua/agentteams-daemon",
-  "version": "0.0.2",
-  "private": true,
+  "version": "0.0.3",
+  "description": "AgentTeams Daemon - AI 에이전트 작업을 폴링하고 실행하는 백그라운드 데몬",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "agentteams-daemon": "dist/index.js"
   },
+  "files": [
+    "dist/**/*",
+    "readme.md"
+  ],
   "scripts": {
     "build": "rm -rf dist && tsc",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "init": "node dist/index.js init"
+    "init": "node dist/index.js init",
+    "prepublishOnly": "npm run build"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=18"
   },
+  "keywords": [
+    "agentteams",
+    "daemon",
+    "ai-agent",
+    "automation"
+  ],
+  "license": "MIT",
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^24.3.0",

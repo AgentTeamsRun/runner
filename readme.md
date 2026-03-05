@@ -45,44 +45,46 @@ npm link
 
 ## 3. 초기 설정 (`init`)
 
-먼저 데몬 토큰을 로컬 설정 파일에 저장해야 합니다.
+토큰 저장과 OS 자동 시작 등록을 한 번에 수행합니다.
 
 ```bash
-cd daemon
-node dist/index.js init --token <DAEMON_TOKEN> --api-url <API_URL>
+agentteams-daemon init --token <DAEMON_TOKEN>
 ```
 
-전역 설치를 사용 중이면 아래처럼 실행할 수 있습니다.
+`init`은 다음을 수행합니다:
 
-```bash
-agentteams-daemon init --token <DAEMON_TOKEN> --api-url <API_URL>
-```
+1. 토큰을 `~/.agentteams/daemon.json`에 저장
+2. API 서버에서 토큰 유효성 검증
+3. OS에 맞는 자동 시작 서비스 등록 및 즉시 시작
+   - **macOS**: `~/Library/LaunchAgents/run.agentteams.daemon.plist` (launchd)
+   - **Linux**: `~/.config/systemd/user/agentteams-daemon.service` (systemd)
+
+### 옵션
+
+- `--token <token>` — **필수**. 웹에서 발급한 데몬 토큰
+- `--api-url <url>` — 선택. API 서버 URL (기본값: `https://api.agentteams.run`)
+- `--no-autostart` — 선택. 자동 시작 등록을 건너뜀 (수동 실행만 사용할 때)
 
 예시:
 
 ```bash
-node dist/index.js init --token daemon_xxxxx --api-url https://api.agentteams.run
+# 일반 사용자 (자동 시작 포함)
+agentteams-daemon init --token daemon_xxxxx
+
+# 플랫폼 개발자 (커스텀 API URL)
+agentteams-daemon init --token daemon_xxxxx --api-url http://localhost:3001
+
+# 자동 시작 없이 토큰만 저장
+agentteams-daemon init --token daemon_xxxxx --no-autostart
 ```
 
-- `--token`은 필수입니다.
-- `--api-url`은 선택입니다. 생략하면 아래 우선순위로 결정됩니다.
-  - `AGENTTEAMS_API_URL` 환경변수
-  - 기존 설정 파일의 `apiUrl`
-  - 기본값 `https://api.agentteams.run`
+`--api-url` 생략 시 아래 우선순위로 결정됩니다:
 
-초기화가 성공하면 설정 파일이 생성됩니다.
-
-- 경로: `~/.agentteams/daemon.json`
-- 저장 내용: `daemonToken`, `apiUrl`
+1. `AGENTTEAMS_API_URL` 환경변수
+2. 기존 설정 파일의 `apiUrl`
+3. 기본값 `https://api.agentteams.run`
 
 ## 4. 실행 (`start`)
-
-```bash
-cd daemon
-node dist/index.js start
-```
-
-전역 설치를 사용 중이면 아래처럼 실행할 수 있습니다.
 
 ```bash
 agentteams-daemon start
@@ -91,10 +93,51 @@ agentteams-daemon start
 명령어를 생략해도 기본 동작은 `start`입니다.
 
 ```bash
-node dist/index.js
+agentteams-daemon
 ```
 
-## 5. 설정 우선순위
+> `init`에서 자동 시작을 등록했다면 `start`를 수동으로 실행할 필요 없습니다.
+> 로그인/부팅 시 OS가 자동으로 시작합니다.
+
+## 5. 상태 확인 (`status`)
+
+```bash
+agentteams-daemon status
+```
+
+데몬 프로세스 실행 여부와 자동 시작 등록 상태를 확인합니다.
+
+출력 예시:
+
+```
+[...] INFO Daemon is running { pid: 12345 }
+[...] INFO Autostart is enabled { platform: 'launchd' }
+```
+
+## 6. 중지 (`stop`)
+
+```bash
+agentteams-daemon stop
+```
+
+실행 중인 데몬 프로세스에 SIGTERM을 보내 정상 종료합니다.
+
+> 자동 시작이 등록된 경우, OS가 데몬을 자동 재시작할 수 있습니다.
+> 완전히 중지하려면 `uninstall`을 사용하세요.
+
+## 7. 제거 (`uninstall`)
+
+```bash
+agentteams-daemon uninstall
+```
+
+다음을 수행합니다:
+
+1. 실행 중인 데몬 프로세스 중지
+2. OS 자동 시작 서비스 해제 및 서비스 파일 삭제
+3. PID 파일 정리
+
+## 8. 설정 우선순위
 
 실행 시 설정은 아래 우선순위로 적용됩니다.
 
@@ -133,21 +176,7 @@ node dist/index.js
     - `preview`: 프롬프트 미리보기(일부) 출력
     - `full`: 프롬프트 전체 출력
 
-예시:
-
-```bash
-AGENTTEAMS_DAEMON_TOKEN=daemon_xxxxx \
-AGENTTEAMS_API_URL=https://api.agentteams.run \
-POLLING_INTERVAL_MS=5000 \
-TIMEOUT_MS=600000 \
-RUNNER_CMD=opencode \
-LOG_LEVEL=info \
-DAEMON_VERBOSE_RUNNER_LOGS=false \
-DAEMON_PROMPT_LOG_MODE=length \
-node dist/index.js start
-```
-
-## 6. 동작 개요
+## 9. 동작 개요
 
 `start` 실행 후 데몬은 다음 흐름으로 동작합니다.
 
@@ -159,12 +188,14 @@ node dist/index.js start
 
 동일 `agentConfigId`에 실행 중인 프로세스가 있으면 새 트리거는 `REJECTED` 처리됩니다.
 
-## 7. 로그
+## 10. 로그
 
-- 데몬 자체 로그: 콘솔 출력
+- 데몬 자체 로그: 콘솔 출력 (자동 시작 시 OS 로그 시스템으로 전달)
+  - **macOS**: `/tmp/agentteams-daemon.log`, `/tmp/agentteams-daemon-error.log`
+  - **Linux**: `journalctl --user -u agentteams-daemon -f`
 - 러너(stdout/stderr) 로그: 작업 경로의 `.agentteams/daemonLog/daemon-<triggerId>.log`
 
-## 8. 자주 발생하는 오류
+## 11. 자주 발생하는 오류
 
 ### `Missing token. Usage: agentteams-daemon init --token <token> ...`
 

@@ -2,6 +2,9 @@
 import { createRequire } from "node:module";
 import { runInitCommand } from "./commands/init.js";
 import { runStartCommand } from "./commands/start.js";
+import { runStatusCommand } from "./commands/status.js";
+import { runStopCommand } from "./commands/stop.js";
+import { runUninstallCommand } from "./commands/uninstall.js";
 import { logger } from "./logger.js";
 
 const require = createRequire(import.meta.url);
@@ -12,9 +15,13 @@ const helpText = `Usage: agentteams-daemon [command] [options]
 
 Commands:
   start                       Start daemon polling (default)
-  init --token <token>        Initialize daemon config
+  init --token <token>        Initialize daemon config and register autostart
+  status                      Show daemon and autostart status
+  stop                        Stop running daemon
+  uninstall                   Stop daemon, remove autostart, clean up
 
 Options:
+  --no-autostart              Skip autostart registration (init only)
   -h, --help                  Show help
   -v, --version               Show version
 `;
@@ -39,6 +46,21 @@ const main = async () => {
 
   if (command === "init") {
     await runInitCommand(args);
+    return;
+  }
+
+  if (command === "status") {
+    await runStatusCommand();
+    return;
+  }
+
+  if (command === "stop") {
+    await runStopCommand();
+    return;
+  }
+
+  if (command === "uninstall") {
+    await runUninstallCommand();
     return;
   }
 

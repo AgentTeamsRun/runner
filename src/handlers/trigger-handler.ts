@@ -47,19 +47,21 @@ export const createTriggerHandler = (
 
   const buildRunnerPrompt = (trigger: DaemonTrigger, currentHistoryPath: string | null, parentHistoryPath: string | null): string => {
     const basePrompt = toPromptString(trigger.prompt);
-    if (!trigger.parentTriggerId) {
-      return basePrompt;
-    }
+    const isContinuation = Boolean(trigger.parentTriggerId);
 
-    const continuationLines = [
+    const historyLines = [
       "",
       "----",
-      "Continuation context (required):",
-      `- parentTriggerId: ${trigger.parentTriggerId}`,
-      `- Previous history path: ${parentHistoryPath ?? "(unavailable: authPath not configured)"}`,
-      `- Current history path: ${currentHistoryPath ?? "(unavailable: authPath not configured)"}`,
-      "- Read the previous history file first and continue without repeating completed work.",
-      "- Save history as a Markdown file (.md) at the current history path.",
+      isContinuation ? "Continuation context (required):" : "History context (required):",
+      ...(isContinuation
+        ? [
+            `- parentTriggerId: ${trigger.parentTriggerId}`,
+            `- Previous history path: ${parentHistoryPath ?? "(unavailable: authPath not configured)"}`,
+            "- Read the previous history file first and continue without repeating completed work.",
+          ]
+        : []),
+      `- History path: ${currentHistoryPath ?? "(unavailable: authPath not configured)"}`,
+      "- Save history as a Markdown file (.md) at the history path.",
       "- Overwrite the markdown file with the latest full summary for this run.",
       "- Required sections in the file:",
       "  1) ### Summary",
@@ -77,7 +79,7 @@ export const createTriggerHandler = (
       "----"
     ];
 
-    return `${basePrompt}\n${continuationLines.join("\n")}`;
+    return `${basePrompt}\n${historyLines.join("\n")}`;
   };
 
   return async (trigger: DaemonTrigger): Promise<void> => {
