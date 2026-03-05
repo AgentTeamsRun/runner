@@ -5,7 +5,7 @@ type RunnerHistoryPaths = {
   parentHistoryPath: string | null;
 };
 
-const historyDirectory = (authPath: string) => join(authPath, ".agentteams", "runner-history");
+const historyDirectory = (authPath: string) => join(authPath, ".agentteams", "runner", "history");
 
 const historyFilePath = (authPath: string, triggerId: string) => join(historyDirectory(authPath), `${triggerId}.md`);
 
