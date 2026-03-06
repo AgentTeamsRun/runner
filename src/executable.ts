@@ -104,6 +104,25 @@ export const resolveExecutablePath = (name: string, deps: ExecutableDeps = {}): 
   );
 };
 
+export const describeExecutableResolution = (
+  name: string,
+  deps: ExecutableDeps = {}
+): {
+  requestedCommand: string;
+  resolvedExecutablePath: string;
+  platform: string;
+  shell: boolean;
+} => {
+  const os = (deps.platform ?? getPlatform)();
+
+  return {
+    requestedCommand: name,
+    resolvedExecutablePath: resolveExecutablePath(name, deps),
+    platform: os,
+    shell: false
+  };
+};
+
 export const spawnExecutable = (
   name: string,
   args: string[],

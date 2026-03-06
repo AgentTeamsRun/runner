@@ -1,7 +1,8 @@
 import { createWriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { platform } from "node:os";
 import { dirname, join } from "node:path";
-import { spawnExecutable } from "../executable.js";
+import { describeExecutableResolution, spawnExecutable } from "../executable.js";
 import { logger } from "../logger.js";
 import type { Runner, RunnerOptions, RunResult } from "./types.js";
 
@@ -42,11 +43,18 @@ export class OpenCodeRunner implements Runner {
     const cwd = opts.authPath;
     const logPath = join(cwd, ".agentteams", "runner", "log", `${opts.triggerId}.log`);
     await mkdir(dirname(logPath), { recursive: true });
+    const executableInfo = describeExecutableResolution(this.runnerCmd);
 
     logger.info("Runner prompt", {
       triggerId: opts.triggerId,
       promptLength: opts.prompt.length,
-      promptPreview: toPromptPreview(opts.prompt)
+      promptPreview: toPromptPreview(opts.prompt),
+      requestedCommand: executableInfo.requestedCommand,
+      resolvedExecutablePath: executableInfo.resolvedExecutablePath,
+      platform: executableInfo.platform,
+      shell: executableInfo.shell,
+      detached: true,
+      windowsWrapper: platform() === "win32" ? "powershell.exe" : null
     });
 
     const child = spawnExecutable(this.runnerCmd, ["run", opts.prompt], {
