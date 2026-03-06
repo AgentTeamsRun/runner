@@ -1,7 +1,7 @@
 import { createWriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
+import { spawnExecutable } from "../executable.js";
 import { logger } from "../logger.js";
 import type { Runner, RunnerOptions, RunResult } from "./types.js";
 
@@ -46,9 +46,8 @@ export class GeminiRunner implements Runner {
       promptPreview: toPromptPreview(opts.prompt)
     });
 
-    const child = spawn("gemini", ["-p", opts.prompt], {
+    const child = spawnExecutable("gemini", ["-p", opts.prompt], {
       cwd,
-      shell: false,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
       env: {

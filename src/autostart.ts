@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
+import { resolveExecutablePath } from "./executable.js";
 import { logger } from "./logger.js";
 
 const SERVICE_LABEL = "run.agentteams.runner";
@@ -18,20 +19,8 @@ const getSystemdServicePath = (): string =>
 const getWindowsBatPath = (): string =>
   join(homedir(), ".agentteams", "agentrunner-start.bat");
 
-const resolveExecutablePath = (name: string): string => {
-  const os = platform();
-  const cmd = os === "win32" ? `where ${name}` : `which ${name}`;
-
-  try {
-    const output = execSync(cmd, { encoding: "utf8" }).trim();
-    // `where` on Windows can return multiple lines — take the first.
-    return output.split(/\r?\n/)[0];
-  } catch {
-    throw new Error(
-      `Cannot find '${name}' in PATH. Ensure it is installed and available globally.`
-    );
-  }
-};
+const getWindowsVbsPath = (): string =>
+  join(homedir(), ".agentteams", "agentrunner-start.vbs");
 
 // --- plist (macOS) ---
 
@@ -113,17 +102,22 @@ SyslogIdentifier=agentrunner
 WantedBy=default.target`;
 };
 
-// --- bat (Windows) ---
+const escapeForVbsString = (value: string): string => value.replaceAll("\"", "\"\"");
 
-const buildWindowsBatContent = (config: AutostartConfig): string => {
-  const daemonPath = resolveExecutablePath("agentrunner");
+// --- Windows hidden launcher ---
 
-  return `@echo off
-set PATH=${process.env.PATH ?? ""}
-set AGENTTEAMS_DAEMON_TOKEN=${config.token}
-set AGENTTEAMS_API_URL=${config.apiUrl}
-"${daemonPath}" start
-`;
+export const buildWindowsVbsContent = (
+  config: AutostartConfig,
+  daemonPath: string = resolveExecutablePath("agentrunner")
+): string => {
+  return [
+    "Set shell = CreateObject(\"WScript.Shell\")",
+    "Set env = shell.Environment(\"PROCESS\")",
+    `env("PATH") = "${escapeForVbsString(process.env.PATH ?? "")}"`,
+    `env("AGENTTEAMS_DAEMON_TOKEN") = "${escapeForVbsString(config.token)}"`,
+    `env("AGENTTEAMS_API_URL") = "${escapeForVbsString(config.apiUrl)}"`,
+    `shell.Run """${escapeForVbsString(daemonPath)}"" start", 0, False`
+  ].join("\r\n");
 };
 
 // --- Public API ---
@@ -302,6 +296,7 @@ const unregisterSystemd = async (): Promise<void> => {
 // --- Windows Task Scheduler ---
 
 const registerWindowsTask = async (config: AutostartConfig): Promise<AutostartResult> => {
+  const vbsPath = getWindowsVbsPath();
   const batPath = getWindowsBatPath();
 
   // Remove existing task if any.
@@ -311,13 +306,19 @@ const registerWindowsTask = async (config: AutostartConfig): Promise<AutostartRe
     // Not registered — that's fine.
   }
 
-  const content = buildWindowsBatContent(config);
+  const content = buildWindowsVbsContent(config);
   await fs.mkdir(join(homedir(), ".agentteams"), { recursive: true });
-  await fs.writeFile(batPath, content, "utf8");
+  await fs.writeFile(vbsPath, content, "utf8");
+
+  try {
+    await fs.unlink(batPath);
+  } catch {
+    // Legacy file may not exist.
+  }
 
   // Register task to run at user logon.
   execSync(
-    `schtasks /Create /TN "${TASK_NAME}" /TR "\\"${batPath}\\"" /SC ONLOGON /RL HIGHEST /F`
+    `schtasks /Create /TN "${TASK_NAME}" /TR "wscript.exe \\"${vbsPath}\\"" /SC ONLOGON /RL HIGHEST /F`
   );
 
   // Start the task immediately.
@@ -327,11 +328,12 @@ const registerWindowsTask = async (config: AutostartConfig): Promise<AutostartRe
     logger.warn("Task registered but immediate start failed. It will start at next logon.");
   }
 
-  logger.info("Registered Windows Task Scheduler task", { batPath });
-  return { registered: true, servicePath: batPath, platform: "task-scheduler" };
+  logger.info("Registered Windows Task Scheduler task", { vbsPath });
+  return { registered: true, servicePath: vbsPath, platform: "task-scheduler" };
 };
 
 const unregisterWindowsTask = async (): Promise<void> => {
+  const vbsPath = getWindowsVbsPath();
   const batPath = getWindowsBatPath();
 
   try {
@@ -342,8 +344,15 @@ const unregisterWindowsTask = async (): Promise<void> => {
   }
 
   try {
+    await fs.unlink(vbsPath);
+    logger.info("Removed daemon start script", { vbsPath });
+  } catch {
+    // File may not exist.
+  }
+
+  try {
     await fs.unlink(batPath);
-    logger.info("Removed daemon start script", { batPath });
+    logger.info("Removed legacy daemon start script", { batPath });
   } catch {
     // File may not exist.
   }

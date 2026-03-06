@@ -1,7 +1,7 @@
 import { createWriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
+import { spawnExecutable } from "../executable.js";
 import { logger } from "../logger.js";
 import type { Runner, RunnerOptions, RunResult } from "./types.js";
 
@@ -46,9 +46,8 @@ export class CodexRunner implements Runner {
       promptPreview: toPromptPreview(opts.prompt)
     });
 
-    const child = spawn("codex", ["exec", "-a", "never", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", opts.prompt], {
+    const child = spawnExecutable("codex", ["exec", "-a", "never", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", opts.prompt], {
       cwd,
-      shell: false,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
       env: {
