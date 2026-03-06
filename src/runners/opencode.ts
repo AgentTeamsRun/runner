@@ -77,6 +77,11 @@ export class OpenCodeRunner implements Runner {
       await mkdir(runnerTmpDir, { recursive: true });
       const scriptContent = [
         "$ErrorActionPreference = 'Stop'",
+        "$utf8NoBom = [System.Text.UTF8Encoding]::new($false)",
+        "[Console]::InputEncoding = $utf8NoBom",
+        "[Console]::OutputEncoding = $utf8NoBom",
+        "$OutputEncoding = $utf8NoBom",
+        "chcp 65001 > $null",
         `$promptText = @'`,
         `${escapeForPowerShellHereString(opts.prompt)}`,
         `'@`,
