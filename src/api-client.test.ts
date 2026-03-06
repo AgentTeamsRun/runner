@@ -14,9 +14,17 @@ test.afterEach(() => {
 
 test("validateDaemonToken sends daemon header and returns payload data", async () => {
   const calls: Array<{ url: string; options?: RequestInit }> = [];
+  const expectedOsType = process.platform === "darwin"
+    ? "MACOS"
+    : process.platform === "win32"
+      ? "WINDOWS"
+      : process.platform === "linux"
+        ? "LINUX"
+        : undefined;
+
   globalThis.fetch = (async (url, options) => {
     calls.push({ url: String(url), options });
-    return new Response(JSON.stringify({ data: { id: "d1", memberId: "m1", label: null, lastSeenAt: null, createdAt: "c", updatedAt: "u" } }), {
+    return new Response(JSON.stringify({ data: { id: "d1", memberId: "m1", label: null, osType: "MACOS", supportedEngines: ["CODEX"], lastSeenAt: null, createdAt: "c", updatedAt: "u" } }), {
       status: 200,
       headers: { "Content-Type": "application/json" }
     });
@@ -27,8 +35,17 @@ test("validateDaemonToken sends daemon header and returns payload data", async (
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.url, "https://api.example/api/daemons/me");
-  assert.deepEqual(calls[0]?.options?.headers, { "x-daemon-token": "daemon-token" });
+  assert.deepEqual(calls[0]?.options?.headers, expectedOsType
+    ? {
+      "x-daemon-token": "daemon-token",
+      "x-os-type": expectedOsType
+    }
+    : {
+      "x-daemon-token": "daemon-token"
+    });
   assert.equal(result.id, "d1");
+  assert.equal(result.osType, "MACOS");
+  assert.deepEqual(result.supportedEngines, ["CODEX"]);
 });
 
 test("claimTrigger returns conflict=false/ok=true on success and conflict=true on 409", async () => {

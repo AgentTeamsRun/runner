@@ -56,6 +56,7 @@ export const runInitCommand = async (argv: string[]): Promise<void> => {
   logger.info("Daemon init completed", {
     daemonId: daemon.id,
     memberId: daemon.memberId,
+    osType: daemon.osType,
     configPath
   });
 

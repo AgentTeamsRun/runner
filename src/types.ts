@@ -1,3 +1,5 @@
+export type OsType = "MACOS" | "LINUX" | "WINDOWS";
+
 export type RuntimeConfig = {
   daemonToken: string;
   apiUrl: string;
@@ -15,6 +17,8 @@ export type DaemonInfo = {
   id: string;
   memberId: string;
   label: string | null;
+  osType: OsType | null;
+  supportedEngines: string[];
   lastSeenAt: string | null;
   createdAt: string;
   updatedAt: string;

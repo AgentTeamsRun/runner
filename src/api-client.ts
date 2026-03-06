@@ -2,6 +2,7 @@ import type {
   ClaimResult,
   DaemonInfo,
   DaemonTrigger,
+  OsType,
   TriggerFinalStatus,
   TriggerLogInput,
   TriggerRuntime
@@ -17,16 +18,41 @@ const isNetworkError = (error: unknown): boolean => {
   return error instanceof Error;
 };
 
+const detectOsType = (): OsType | undefined => {
+  if (process.platform === "darwin") {
+    return "MACOS";
+  }
+
+  if (process.platform === "linux") {
+    return "LINUX";
+  }
+
+  if (process.platform === "win32") {
+    return "WINDOWS";
+  }
+
+  return undefined;
+};
+
 export class DaemonApiClient {
   constructor(
     private readonly apiUrl: string,
     private readonly daemonToken: string
   ) {}
 
-  private daemonHeaders(): Record<string, string> {
-    return {
+  private daemonHeaders(options?: { includeOsType?: boolean }): Record<string, string> {
+    const headers: Record<string, string> = {
       "x-daemon-token": this.daemonToken
     };
+
+    if (options?.includeOsType) {
+      const osType = detectOsType();
+      if (osType) {
+        headers["x-os-type"] = osType;
+      }
+    }
+
+    return headers;
   }
 
   private async requestWithRetry(path: string, options: RequestInit): Promise<Response> {
@@ -57,7 +83,7 @@ export class DaemonApiClient {
   async validateDaemonToken(): Promise<DaemonInfo> {
     const response = await this.requestWithRetry("/api/daemons/me", {
       method: "GET",
-      headers: this.daemonHeaders()
+      headers: this.daemonHeaders({ includeOsType: true })
     });
 
     if (!response.ok) {
