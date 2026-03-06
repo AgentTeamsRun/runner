@@ -1,6 +1,6 @@
 import { createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -16,8 +16,22 @@ const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
-const escapeForPowerShellHereString = (value: string): string =>
-  value.replaceAll("'@", "'@'");
+const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: string): string => {
+  const scriptContent = [
+    "$ErrorActionPreference = 'Stop'",
+    "$utf8NoBom = [System.Text.UTF8Encoding]::new($false)",
+    "[Console]::InputEncoding = $utf8NoBom",
+    "[Console]::OutputEncoding = $utf8NoBom",
+    "$OutputEncoding = $utf8NoBom",
+    "chcp 65001 > $null",
+    `$promptText = @'`,
+    `${prompt.replaceAll("'@", "'@")}`,
+    `'@`,
+    `& '${resolvedExecutablePath.replaceAll("'", "''")}' 'run' $promptText`
+  ].join("\r\n");
+
+  return Buffer.from(scriptContent, "utf16le").toString("base64");
+};
 
 const toPromptPreview = (prompt: string): string => {
   if (prompt.length <= PROMPT_PREVIEW_MAX) {
@@ -55,8 +69,9 @@ export class OpenCodeRunner implements Runner {
     const resolvedExecutablePath = isWindows
       ? resolveExecutablePathWithPreference(this.runnerCmd, [`${this.runnerCmd}.cmd`, this.runnerCmd])
       : resolveExecutablePathWithPreference(this.runnerCmd, [this.runnerCmd]);
-    const runnerTmpDir = join(cwd, ".agentteams", "runner", "tmp");
-    const windowsScriptPath = join(runnerTmpDir, `${opts.triggerId}.ps1`);
+    const windowsEncodedCommand = isWindows
+      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt)
+      : null;
     const executableInfo = describeExecutableResolution(this.runnerCmd, {
       platform: () => (isWindows ? "win32" : platform())
     });
@@ -70,25 +85,8 @@ export class OpenCodeRunner implements Runner {
       platform: executableInfo.platform,
       shell: executableInfo.shell,
       detached: isWindows ? false : true,
-      windowsWrapper: isWindows ? "powershell.exe -File" : null
+      windowsWrapper: isWindows ? "powershell.exe -EncodedCommand" : null
     });
-
-    if (isWindows) {
-      await mkdir(runnerTmpDir, { recursive: true });
-      const scriptContent = [
-        "$ErrorActionPreference = 'Stop'",
-        "$utf8NoBom = [System.Text.UTF8Encoding]::new($false)",
-        "[Console]::InputEncoding = $utf8NoBom",
-        "[Console]::OutputEncoding = $utf8NoBom",
-        "$OutputEncoding = $utf8NoBom",
-        "chcp 65001 > $null",
-        `$promptText = @'`,
-        `${escapeForPowerShellHereString(opts.prompt)}`,
-        `'@`,
-        `& '${resolvedExecutablePath.replaceAll("'", "''")}' 'run' $promptText`
-      ].join("\r\n");
-      await writeFile(windowsScriptPath, scriptContent, "utf8");
-    }
 
     const child = isWindows
       ? spawn("powershell.exe", [
@@ -96,8 +94,8 @@ export class OpenCodeRunner implements Runner {
           "-NonInteractive",
           "-ExecutionPolicy",
           "Bypass",
-          "-File",
-          windowsScriptPath
+          "-EncodedCommand",
+          windowsEncodedCommand ?? ""
         ], {
           cwd,
           detached: false,
@@ -184,9 +182,6 @@ export class OpenCodeRunner implements Runner {
 
         finished = true;
         logStream.end();
-        if (isWindows) {
-          void unlink(windowsScriptPath).catch(() => undefined);
-        }
       };
 
       const timeoutId = setTimeout(() => {
