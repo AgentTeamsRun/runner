@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { resolveExecutablePath } from "./executable.js";
@@ -21,6 +21,19 @@ const getWindowsBatPath = (): string =>
 
 const getWindowsVbsPath = (): string =>
   join(homedir(), ".agentteams", "agentrunner-start.vbs");
+
+const getWindowsStartupVbsPath = (): string =>
+  join(
+    homedir(),
+    "AppData",
+    "Roaming",
+    "Microsoft",
+    "Windows",
+    "Start Menu",
+    "Programs",
+    "Startup",
+    "agentrunner-start.vbs"
+  );
 
 // --- plist (macOS) ---
 
@@ -199,14 +212,10 @@ export const getAutostartStatus = (): { registered: boolean; platform: string } 
   }
 
   if (os === "win32") {
-    try {
-      const output = execSync(`schtasks /Query /TN "${TASK_NAME}" 2>nul`, {
-        encoding: "utf8",
-      });
-      return { registered: output.includes(TASK_NAME), platform: "task-scheduler" };
-    } catch {
-      return { registered: false, platform: "task-scheduler" };
-    }
+    return {
+      registered: existsSync(getWindowsStartupVbsPath()),
+      platform: "startup-folder",
+    };
   }
 
   return { registered: false, platform: os };
@@ -296,64 +305,59 @@ const unregisterSystemd = async (): Promise<void> => {
 // --- Windows Task Scheduler ---
 
 const registerWindowsTask = async (config: AutostartConfig): Promise<AutostartResult> => {
-  const vbsPath = getWindowsVbsPath();
-  const batPath = getWindowsBatPath();
+  const startupVbsPath = getWindowsStartupVbsPath();
+  const legacyVbsPath = getWindowsVbsPath();
+  const legacyBatPath = getWindowsBatPath();
 
-  // Remove existing task if any.
+  // Remove legacy Task Scheduler entry if any.
   try {
-    execSync(`schtasks /Delete /TN "${TASK_NAME}" /F 2>nul`);
+    execSync(`schtasks /Delete /TN "${TASK_NAME}" /F 2>nul`, { windowsHide: true });
   } catch {
     // Not registered — that's fine.
   }
 
   const content = buildWindowsVbsContent(config);
-  await fs.mkdir(join(homedir(), ".agentteams"), { recursive: true });
-  await fs.writeFile(vbsPath, content, "utf8");
+  await fs.writeFile(startupVbsPath, content, "utf8");
 
-  try {
-    await fs.unlink(batPath);
-  } catch {
-    // Legacy file may not exist.
+  // Clean up legacy files.
+  for (const legacyPath of [legacyVbsPath, legacyBatPath]) {
+    try {
+      await fs.unlink(legacyPath);
+    } catch {
+      // Legacy file may not exist.
+    }
   }
 
-  // Register task to run at user logon.
-  execSync(
-    `schtasks /Create /TN "${TASK_NAME}" /TR "wscript.exe \\"${vbsPath}\\"" /SC ONLOGON /RL HIGHEST /F`
-  );
-
-  // Start the task immediately.
+  // Start the runner immediately (hidden).
   try {
-    execSync(`schtasks /Run /TN "${TASK_NAME}"`);
+    execSync(`wscript.exe "${startupVbsPath}"`, { windowsHide: true });
   } catch {
-    logger.warn("Task registered but immediate start failed. It will start at next logon.");
+    logger.warn("Autostart registered but immediate start failed. It will start at next logon.");
   }
 
-  logger.info("Registered Windows Task Scheduler task", { vbsPath });
-  return { registered: true, servicePath: vbsPath, platform: "task-scheduler" };
+  logger.info("Registered Windows Startup folder autostart", { startupVbsPath });
+  return { registered: true, servicePath: startupVbsPath, platform: "startup-folder" };
 };
 
 const unregisterWindowsTask = async (): Promise<void> => {
-  const vbsPath = getWindowsVbsPath();
-  const batPath = getWindowsBatPath();
+  const startupVbsPath = getWindowsStartupVbsPath();
+  const legacyVbsPath = getWindowsVbsPath();
+  const legacyBatPath = getWindowsBatPath();
 
+  // Remove legacy Task Scheduler entry if any.
   try {
-    execSync(`schtasks /Delete /TN "${TASK_NAME}" /F 2>nul`);
-    logger.info("Removed Windows scheduled task");
+    execSync(`schtasks /Delete /TN "${TASK_NAME}" /F 2>nul`, { windowsHide: true });
   } catch {
     // Not registered — that's fine.
   }
 
-  try {
-    await fs.unlink(vbsPath);
-    logger.info("Removed daemon start script", { vbsPath });
-  } catch {
-    // File may not exist.
-  }
-
-  try {
-    await fs.unlink(batPath);
-    logger.info("Removed legacy daemon start script", { batPath });
-  } catch {
-    // File may not exist.
+  // Remove Startup folder VBS and legacy files.
+  for (const filePath of [startupVbsPath, legacyVbsPath, legacyBatPath]) {
+    try {
+      await fs.unlink(filePath);
+      logger.info("Removed autostart file", { filePath });
+    } catch {
+      // File may not exist.
+    }
   }
 };
