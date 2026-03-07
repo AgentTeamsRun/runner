@@ -186,6 +186,27 @@ export const unregisterAutostart = async (): Promise<void> => {
   logger.warn(`Autostart is not supported on '${os}'. Nothing to unregister.`);
 };
 
+export const restartAutostartService = async (): Promise<void> => {
+  const os = platform();
+
+  if (os === "darwin") {
+    await restartLaunchd();
+    return;
+  }
+
+  if (os === "linux") {
+    restartSystemd();
+    return;
+  }
+
+  if (os === "win32") {
+    await restartWindowsStartup();
+    return;
+  }
+
+  throw new Error(`Autostart restart is not supported on '${os}'.`);
+};
+
 export const getAutostartStatus = (): { registered: boolean; platform: string } => {
   const os = platform();
 
@@ -260,6 +281,22 @@ const unregisterLaunchd = async (): Promise<void> => {
   }
 };
 
+const restartLaunchd = async (): Promise<void> => {
+  const plistPath = getLaunchdPlistPath();
+
+  if (!existsSync(plistPath)) {
+    throw new Error("launchd plist is not registered.");
+  }
+
+  try {
+    execSync(`launchctl unload "${plistPath}" 2>/dev/null`);
+  } catch {
+    // The agent may already be stopped — continue with load.
+  }
+
+  execSync(`launchctl load "${plistPath}"`);
+};
+
 // --- Linux systemd ---
 
 const registerSystemd = async (config: AutostartConfig): Promise<AutostartResult> => {
@@ -300,6 +337,10 @@ const unregisterSystemd = async (): Promise<void> => {
   } catch {
     // File may not exist.
   }
+};
+
+const restartSystemd = (): void => {
+  execSync("systemctl --user restart agentrunner");
 };
 
 // --- Windows Task Scheduler ---
@@ -360,4 +401,14 @@ const unregisterWindowsTask = async (): Promise<void> => {
       // File may not exist.
     }
   }
+};
+
+const restartWindowsStartup = async (): Promise<void> => {
+  const startupVbsPath = getWindowsStartupVbsPath();
+
+  if (!existsSync(startupVbsPath)) {
+    throw new Error("Windows startup script is not registered.");
+  }
+
+  execSync(`wscript.exe "${startupVbsPath}"`, { windowsHide: true });
 };

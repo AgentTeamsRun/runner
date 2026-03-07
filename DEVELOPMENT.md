@@ -73,6 +73,12 @@ agentrunner init --token <TOKEN> --api-url http://localhost:3001 --no-autostart
 # 직접 실행
 agentrunner start
 
+# 실행 중인 러너 재시작
+agentrunner restart
+
+# 최신 npm 배포본 설치 후 재시작
+agentrunner update
+
 # 또는 빌드 없이 개발 모드
 npm run dev
 ```
@@ -122,6 +128,8 @@ daemon/
 │   │   ├── start.ts       # 폴링 시작 (기본 커맨드)
 │   │   ├── status.ts      # PID + 자동 시작 상태 확인
 │   │   ├── stop.ts        # SIGTERM 전송
+│   │   ├── restart.ts     # 현재 러너 재시작
+│   │   ├── update.ts      # 최신 npm 패키지 설치 후 재시작
 │   │   └── uninstall.ts   # 중지 + 서비스 해제 + 정리
 │   ├── handlers/          # 트리거 처리 핸들러
 │   │   └── trigger-handler.ts
@@ -149,7 +157,7 @@ daemon/
 |---|---|---|
 | macOS | launchd | `~/Library/LaunchAgents/run.agentteams.runner.plist` |
 | Linux | systemd (user) | `~/.config/systemd/user/agentrunner.service` |
-| Windows | Task Scheduler | `AgentRunner` 태스크 + `~/.agentteams/agentrunner-start.bat` |
+| Windows | Startup folder | `~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/agentrunner-start.vbs` |
 
 ### 서비스 디버깅
 
@@ -163,8 +171,8 @@ cat /tmp/agentrunner-error.log
 systemctl --user status agentrunner
 journalctl --user -u agentrunner -f
 
-# Windows: 태스크 확인
-schtasks /Query /TN "AgentRunner"
+# Windows: Startup script 확인
+dir "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\agentrunner-start.vbs"
 ```
 
 ## 동작 흐름
@@ -175,6 +183,16 @@ schtasks /Query /TN "AgentRunner"
 4. `RUNNER_CMD run "<prompt>"` 프로세스 실행
 5. 종료 코드/타임아웃에 따라 트리거 상태 업데이트
 6. 동일 `agentConfigId`에 프로세스 실행 중이면 → `REJECTED`
+
+## 업데이트/재시작 UX
+
+- `agentrunner restart`
+  - 자동 시작 등록이 있으면 해당 OS 등록 경로로 재시작
+  - 자동 시작 등록이 없으면 detached 백그라운드 프로세스로 다시 시작
+- `agentrunner update`
+  - `npm install -g @rlarua/agentrunner@latest`
+  - 설치 성공 후 `restart` 흐름 수행
+  - Windows는 서비스 재기동이 아니라 Startup script를 다시 실행하는 UX
 
 ## 로그
 
@@ -199,6 +217,8 @@ npm run build  # tsc가 타입 체크 수행
 node dist/index.js --help
 node dist/index.js status
 node dist/index.js init --token test_token --api-url http://localhost:3001 --no-autostart
+node dist/index.js restart
+node dist/index.js update
 
 # 개발 모드 (watch)
 npm run dev

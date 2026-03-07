@@ -6,6 +6,8 @@ import { runStatusCommand } from "./commands/status.js";
 import { runStopCommand } from "./commands/stop.js";
 import { runUninstallCommand } from "./commands/uninstall.js";
 import { runCleanupCommand } from "./commands/cleanup.js";
+import { runRestartCommand } from "./commands/restart.js";
+import { runUpdateCommand } from "./commands/update.js";
 import { logger } from "./logger.js";
 
 const require = createRequire(import.meta.url);
@@ -19,6 +21,8 @@ Commands:
   init --token <token>        Initialize daemon config and register autostart
   status                      Show daemon and autostart status
   stop                        Stop running daemon
+  restart                     Restart daemon using autostart or background spawn
+  update                      Install latest AgentRunner package and restart
   uninstall                   Stop daemon, remove autostart, clean up
   cleanup --path <path>       Purge expired runner log/history files
 
@@ -58,6 +62,16 @@ const main = async () => {
 
   if (command === "stop") {
     await runStopCommand();
+    return;
+  }
+
+  if (command === "restart") {
+    await runRestartCommand();
+    return;
+  }
+
+  if (command === "update") {
+    await runUpdateCommand();
     return;
   }
 

@@ -33,9 +33,9 @@ The `init` command:
 1. Saves the token to `~/.agentteams/daemon.json`
 2. Validates the token against the API server
 3. Registers an OS-level autostart service and starts the runner immediately
-   - **macOS**: `~/Library/LaunchAgents/run.agentteams.daemon.plist` (launchd)
+   - **macOS**: `~/Library/LaunchAgents/run.agentteams.runner.plist` (launchd)
    - **Linux**: `~/.config/systemd/user/agentrunner.service` (systemd)
-   - **Windows**: `AgentRunner` (Task Scheduler)
+   - **Windows**: Startup folder `agentrunner-start.vbs`
 
 ### Options
 
@@ -93,7 +93,26 @@ Sends SIGTERM to the running process for a graceful shutdown.
 > If autostart is registered, the OS may restart the runner automatically.
 > Use `uninstall` to stop completely.
 
-### 5. Uninstall (`uninstall`)
+### 5. Restart (`restart`)
+
+```bash
+agentrunner restart
+```
+
+Restarts the runner using the current environment:
+
+- If autostart is registered, AgentRunner restarts through the registered OS service.
+- If autostart is not registered, AgentRunner starts a new detached background process.
+
+### 6. Update (`update`)
+
+```bash
+agentrunner update
+```
+
+Updates the globally installed `@rlarua/agentrunner` package to the latest npm version and then restarts the runner.
+
+### 7. Uninstall (`uninstall`)
 
 ```bash
 agentrunner uninstall
@@ -142,7 +161,7 @@ If a process is already running for the same `agentConfigId`, new triggers are `
 - **Runner logs**: console output (forwarded to OS log system when autostarted)
   - **macOS**: `/tmp/agentrunner.log`, `/tmp/agentrunner-error.log`
   - **Linux**: `journalctl --user -u agentrunner -f`
-  - **Windows**: Event Viewer → Windows Logs → Application (`AgentRunner`)
+  - **Windows**: check the Startup folder script and the spawned background process
 - **Task logs**: `<workdir>/.agentteams/daemonLog/daemon-<triggerId>.log`
 
 ## Troubleshooting

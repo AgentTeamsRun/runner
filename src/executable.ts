@@ -13,6 +13,9 @@ type ExecutableDeps = {
 };
 
 type SpawnExecutableOptions = SpawnOptions & ExecutableDeps;
+type RunExecutableSyncOptions = ExecutableDeps & {
+  cwd?: string;
+};
 
 const getFirstOutputLine = (output: string): string | null => {
   const firstLine = output
@@ -169,4 +172,40 @@ export const spawnExecutable = (
     ...options,
     shell: false
   });
+};
+
+export const runExecutableSync = (
+  name: string,
+  args: string[],
+  options: RunExecutableSyncOptions = {}
+): string => {
+  const os = (options.platform ?? getPlatform)();
+  const run = options.execFileSync ?? execFileSync;
+  const executablePath = resolveExecutablePath(name, options);
+
+  if (os === "win32") {
+    return String(run(
+      "powershell.exe",
+      [
+        "-NoLogo",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        buildPowerShellCommand(executablePath, args)
+      ],
+      {
+        cwd: options.cwd,
+        env: options.env,
+        encoding: "utf8",
+        windowsHide: true
+      }
+    ));
+  }
+
+  return String(run(executablePath, args, {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: "utf8"
+  }));
 };
