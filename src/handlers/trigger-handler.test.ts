@@ -27,7 +27,8 @@ const runtime: TriggerRuntime = {
   triggerId: "trigger-1",
   agentConfigId: "agent-1",
   authPath: "/auth/path",
-  apiKey: "api-key"
+  apiKey: "api-key",
+  parentHistoryMarkdown: null
 };
 
 test.afterEach(() => {
@@ -110,6 +111,64 @@ test("createTriggerHandler runs the runner, reports history, and marks success",
   assert.deepEqual(clientCalls.at(-1)?.args, ["trigger-1", "DONE", undefined]);
 });
 
+test("createTriggerHandler restores parent history from server-side coaction content", async () => {
+  const runnerInputs: Array<{ prompt: string; authPath: string | null }> = [];
+  const writtenFiles: Array<{ path: string; content: string }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => ({
+      ...runtime,
+      parentHistoryMarkdown: "### Summary\n- restored from coaction\n"
+    }),
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async () => undefined
+  };
+
+  const handler = createTriggerHandler({
+    config: {
+      daemonToken: "daemon-token",
+      apiUrl: "https://api.example",
+      pollingIntervalMs: 5000,
+      timeoutMs: 1500,
+      runnerCmd: "opencode"
+    },
+    client: client as never
+  }, {
+    createRunnerFactory: () => () => ({
+      run: async (input) => {
+        runnerInputs.push({ prompt: input.prompt, authPath: input.authPath });
+        return { exitCode: 0 } satisfies RunResult;
+      }
+    }),
+    createLogReporter: () => ({
+      start: () => undefined,
+      append: () => undefined,
+      stop: async () => undefined
+    }),
+    readHistoryFile: async (path) => {
+      if (String(path).endsWith("parent-1.md")) {
+        throw new Error("ENOENT");
+      }
+      return "### Summary\n- current\n";
+    },
+    writeHistoryFile: async (path, content) => {
+      writtenFiles.push({ path, content });
+    },
+    resolveRunnerHistoryPaths: () => ({
+      currentHistoryPath: "/auth/path/.agentteams/runner/history/trigger-1.md",
+      parentHistoryPath: "/auth/path/.agentteams/runner/history/parent-1.md"
+    })
+  });
+
+  await handler(trigger);
+
+  assert.equal(runnerInputs.length, 1);
+  assert.deepEqual(writtenFiles, [{
+    path: "/auth/path/.agentteams/runner/history/parent-1.md",
+    content: "### Summary\n- restored from coaction"
+  }]);
+});
+
 test("createTriggerHandler reports runner failures and falls back to last output", async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
 
@@ -155,6 +214,7 @@ test("createTriggerHandler reports runner failures and falls back to last output
 
 test("createTriggerHandler stores stdout as fallback history when the runner omits the history file", async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const writtenFiles: Array<{ path: string; content: string }> = [];
 
   const client = {
     fetchTriggerRuntime: async () => runtime,
@@ -187,6 +247,9 @@ test("createTriggerHandler stores stdout as fallback history when the runner omi
       append: () => undefined,
       stop: async () => undefined
     }),
+    writeHistoryFile: async (path, content) => {
+      writtenFiles.push({ path, content });
+    },
     readHistoryFile: async () => {
       throw new Error("ENOENT");
     },
@@ -202,6 +265,8 @@ test("createTriggerHandler stores stdout as fallback history when the runner omi
     "updateTriggerHistory",
     "updateTriggerStatus"
   ]);
+  assert.equal(writtenFiles.length, 1);
+  assert.equal(writtenFiles[0]?.path, "/auth/path/.agentteams/runner/history/trigger-1.md");
   assert.match(String(clientCalls[0]?.args[1]), /agentrunner version 0\.0\.11/);
   assert.deepEqual(clientCalls.at(-1)?.args, ["trigger-1", "DONE", undefined]);
 });

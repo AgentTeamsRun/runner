@@ -54,6 +54,7 @@ export type TriggerRuntime = {
   agentConfigId: string;
   authPath: string | null;
   apiKey: string;
+  parentHistoryMarkdown: string | null;
 };
 
 export type TriggerLogLevel = "INFO" | "WARN" | "ERROR";

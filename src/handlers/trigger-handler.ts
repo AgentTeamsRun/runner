@@ -3,7 +3,8 @@ import { DaemonApiClient } from "../api-client.js";
 import { createRunnerFactory } from "../runners/index.js";
 import { TriggerLogReporter } from "../runners/log-reporter.js";
 import { logger } from "../logger.js";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
 
 type TriggerHandlerOptions = {
@@ -14,11 +15,13 @@ type TriggerHandlerOptions = {
 
 type ReporterLike = Pick<TriggerLogReporter, "start" | "append" | "stop">;
 type ReadHistoryFile = (path: string, encoding: BufferEncoding) => Promise<string>;
+type WriteHistoryFile = (path: string, content: string) => Promise<void>;
 
 type TriggerHandlerDependencies = {
   createRunnerFactory?: typeof createRunnerFactory;
   createLogReporter?: (client: DaemonApiClient, triggerId: string) => ReporterLike;
   readHistoryFile?: ReadHistoryFile;
+  writeHistoryFile?: WriteHistoryFile;
   resolveRunnerHistoryPaths?: typeof resolveRunnerHistoryPaths;
 };
 
@@ -29,6 +32,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     new TriggerLogReporter(apiClient, triggerId)
   ));
   const readHistoryFile: ReadHistoryFile = dependencies.readHistoryFile ?? ((path, encoding) => readFile(path, encoding));
+  const writeHistoryFile: WriteHistoryFile = dependencies.writeHistoryFile ?? (async (path, content) => {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, content, "utf8");
+  });
   const resolveHistoryPaths = dependencies.resolveRunnerHistoryPaths ?? resolveRunnerHistoryPaths;
   const maxHistoryLength = 200000;
 
@@ -68,6 +75,28 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       "### Output",
       output
     ].join("\n");
+  };
+
+  const restoreParentHistoryFromServer = async (
+    parentHistoryPath: string | null,
+    parentHistoryMarkdown: string | null
+  ): Promise<void> => {
+    const normalizedMarkdown = parentHistoryMarkdown?.trim() ?? "";
+
+    if (!parentHistoryPath || normalizedMarkdown.length === 0) {
+      return;
+    }
+
+    try {
+      const existingContent = await readHistoryFile(parentHistoryPath, "utf8");
+      if (existingContent.trim().length > 0) {
+        return;
+      }
+    } catch {
+      // If the file cannot be read, restore it from server-side CoAction content.
+    }
+
+    await writeHistoryFile(parentHistoryPath, normalizedMarkdown.slice(0, maxHistoryLength));
   };
 
   const toPromptString = (prompt: DaemonTrigger["prompt"]): string => {
@@ -137,6 +166,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       const historyPaths = resolveHistoryPaths(runtime.authPath, trigger.id, trigger.parentTriggerId);
       currentHistoryPath = historyPaths.currentHistoryPath;
+      await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
       const runnerPrompt = buildRunnerPrompt(trigger, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath);
 
       const runner = createRunner(trigger.runnerType);
@@ -162,7 +192,11 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       logReporter.append("INFO", `Runner finished with exitCode=${runResult.exitCode}.`);
       const historyReported = await reportHistoryToDatabase(trigger.id, currentHistoryPath);
       if (!historyReported && runResult.exitCode === 0 && runResult.outputText) {
-        await client.updateTriggerHistory(trigger.id, buildFallbackHistory(runResult.outputText));
+        const fallbackHistory = buildFallbackHistory(runResult.outputText);
+        if (currentHistoryPath) {
+          await writeHistoryFile(currentHistoryPath, fallbackHistory);
+        }
+        await client.updateTriggerHistory(trigger.id, fallbackHistory);
         logReporter.append("WARN", "Runner did not write a history file. Captured stdout was stored as fallback history.");
       }
       await logReporter.stop();
