@@ -148,8 +148,9 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       const runtime = await client.fetchTriggerRuntime(trigger.id);
       logReporter = createLogReporter(client, trigger.id);
-      logReporter.start();
-      logReporter.append("INFO", `Trigger started with runner ${trigger.runnerType}.`);
+      const activeLogReporter = logReporter;
+      activeLogReporter.start();
+      activeLogReporter.append("INFO", `Trigger started with runner ${trigger.runnerType}.`);
 
       if (runtime.authPath && onAuthPathDiscovered) {
         onAuthPathDiscovered(runtime.authPath);
@@ -160,7 +161,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         agentConfigId: runtime.agentConfigId,
         hasAuthPath: Boolean(runtime.authPath)
       });
-      logReporter.append("INFO", `Runtime fetched (agentConfigId=${runtime.agentConfigId}).`);
+      activeLogReporter.append("INFO", `Runtime fetched (agentConfigId=${runtime.agentConfigId}).`);
 
       const historyPaths = resolveHistoryPaths(runtime.authPath, trigger.id, trigger.parentTriggerId);
       currentHistoryPath = historyPaths.currentHistoryPath;
@@ -181,7 +182,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           const requested = await client.isTriggerCancelRequested(trigger.id);
           if (requested) {
             cancelRequested = true;
-            logReporter.append("WARN", "Cancellation requested by user. Stopping runner.");
+            activeLogReporter.append("WARN", "Cancellation requested by user. Stopping runner.");
             cancelController.abort();
           }
         } catch (error) {
@@ -208,10 +209,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         model: trigger.model,
         signal: cancelController.signal,
         onStdoutChunk: (chunk) => {
-          logReporter?.append("INFO", chunk);
+          activeLogReporter.append("INFO", chunk);
         },
         onStderrChunk: (chunk) => {
-          logReporter?.append("WARN", chunk);
+          activeLogReporter.append("WARN", chunk);
         }
       });
       clearIntervalFn(cancelInterval);
