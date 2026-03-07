@@ -48,9 +48,9 @@ test("runCleanup deletes only files older than each directory TTL", async () => 
     await writeFile(oldHistory, "old");
     await writeFile(freshHistory, "fresh");
 
-    await touchAge(oldLog, 8 * 24 * 60 * 60 * 1000);
-    await touchAge(freshLog, 1 * 24 * 60 * 60 * 1000);
-    await touchAge(oldHistory, 31 * 24 * 60 * 60 * 1000);
+    await touchAge(oldLog, 2 * 24 * 60 * 60 * 1000);
+    await touchAge(freshLog, 12 * 60 * 60 * 1000);
+    await touchAge(oldHistory, 4 * 24 * 60 * 60 * 1000);
     await touchAge(freshHistory, 2 * 24 * 60 * 60 * 1000);
 
     await runCleanup(authPath);
@@ -85,8 +85,8 @@ test("runCleanup logs a warning and continues when an expired file cannot be del
 
     await writeFile(lockedFile, "locked");
     await writeFile(historyFile, "history");
-    await touchAge(lockedFile, 8 * 24 * 60 * 60 * 1000);
-    await touchAge(historyFile, 31 * 24 * 60 * 60 * 1000);
+    await touchAge(lockedFile, 2 * 24 * 60 * 60 * 1000);
+    await touchAge(historyFile, 4 * 24 * 60 * 60 * 1000);
 
     await import("node:fs/promises").then(({ chmod }) => chmod(logDir, 0o500));
 
