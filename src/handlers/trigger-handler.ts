@@ -44,6 +44,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const setIntervalFn = dependencies.setIntervalFn ?? global.setInterval;
   const clearIntervalFn = dependencies.clearIntervalFn ?? global.clearInterval;
   const cancelPollIntervalMs = dependencies.cancelPollIntervalMs ?? 2000;
+  const stripUtf8Bom = (content: string): string => content.replace(/^\uFEFF/, "");
 
   const reportHistoryToDatabase = async (
     triggerId: string,
@@ -55,7 +56,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
     try {
       const content = await readHistoryFile(historyPath, "utf8");
-      const markdown = content.trim();
+      const markdown = stripUtf8Bom(content).trim();
       if (markdown.length === 0) {
         return false;
       }
@@ -87,7 +88,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     parentHistoryPath: string | null,
     parentHistoryMarkdown: string | null
   ): Promise<void> => {
-    const normalizedMarkdown = parentHistoryMarkdown?.trim() ?? "";
+    const normalizedMarkdown = stripUtf8Bom(parentHistoryMarkdown ?? "").trim();
 
     if (!parentHistoryPath || normalizedMarkdown.length === 0) {
       return;

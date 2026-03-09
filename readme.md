@@ -143,9 +143,12 @@ Settings are resolved in the following priority order at runtime.
 | `POLLING_INTERVAL_MS` | `30000` (30s) | Polling interval for pending triggers |
 | `TIMEOUT_MS` | `1800000` (30min) | Runner process timeout |
 | `RUNNER_CMD` | `opencode` | Command used to execute agent tasks |
+| `CODEX_SANDBOX_LEVEL` | `workspace-write` | Codex runner sandbox level. Allowed values: `workspace-write`, `off` |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `DAEMON_VERBOSE_RUNNER_LOGS` | `true` | When `false`, reduces runner stdout/stderr to start/stop/error only |
 | `DAEMON_PROMPT_LOG_MODE` | `preview` | Prompt logging: `off`, `length`, `preview`, `full` |
+
+If you set `CODEX_SANDBOX_LEVEL=off`, AgentRunner launches Codex with `--dangerously-bypass-approvals-and-sandbox`. Use this only when you explicitly want full git write access and accept the reduced safety boundary.
 
 ## How It Works
 

@@ -117,6 +117,50 @@ test("createTriggerHandler runs the runner, reports history, and marks success",
   assert.deepEqual(clientCalls.at(-1)?.args, ["trigger-1", "DONE", undefined]);
 });
 
+test("createTriggerHandler strips a UTF-8 BOM before reporting history to the database", async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: "updateTriggerHistory", args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: "updateTriggerStatus", args });
+    }
+  };
+
+  const handler = createTriggerHandler({
+    config: {
+      daemonToken: "daemon-token",
+      apiUrl: "https://api.example",
+      pollingIntervalMs: 5000,
+      timeoutMs: 1500,
+      runnerCmd: "opencode"
+    },
+    client: client as never
+  }, {
+    createRunnerFactory: () => () => ({
+      run: async () => ({ exitCode: 0 } satisfies RunResult)
+    }),
+    createLogReporter: () => ({
+      start: () => undefined,
+      append: () => undefined,
+      stop: async () => undefined
+    }),
+    readHistoryFile: async () => "\uFEFF### Summary\n- done\n",
+    resolveRunnerHistoryPaths: () => ({
+      currentHistoryPath: "/auth/path/.agentteams/runner/history/trigger-1.md",
+      parentHistoryPath: "/auth/path/.agentteams/runner/history/parent-1.md"
+    })
+  });
+
+  await handler(trigger);
+
+  assert.deepEqual(clientCalls.at(0)?.args, ["trigger-1", "### Summary\n- done"]);
+});
+
 test("createTriggerHandler restores parent history from server-side coaction content", async () => {
   const runnerInputs: Array<{ prompt: string; authPath: string | null }> = [];
   const writtenFiles: Array<{ path: string; content: string }> = [];
@@ -170,6 +214,55 @@ test("createTriggerHandler restores parent history from server-side coaction con
   await handler(trigger);
 
   assert.equal(runnerInputs.length, 1);
+  assert.deepEqual(writtenFiles, [{
+    path: "/auth/path/.agentteams/runner/history/parent-1.md",
+    content: "### Summary\n- restored from coaction"
+  }]);
+});
+
+test("createTriggerHandler strips a UTF-8 BOM before restoring parent history from the server", async () => {
+  const writtenFiles: Array<{ path: string; content: string }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => ({
+      ...runtime,
+      parentHistoryMarkdown: "\uFEFF### Summary\n- restored from coaction\n"
+    }),
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async () => undefined
+  };
+
+  const handler = createTriggerHandler({
+    config: {
+      daemonToken: "daemon-token",
+      apiUrl: "https://api.example",
+      pollingIntervalMs: 5000,
+      timeoutMs: 1500,
+      runnerCmd: "opencode"
+    },
+    client: client as never
+  }, {
+    createRunnerFactory: () => () => ({
+      run: async () => ({ exitCode: 0 } satisfies RunResult)
+    }),
+    createLogReporter: () => ({
+      start: () => undefined,
+      append: () => undefined,
+      stop: async () => undefined
+    }),
+    readHistoryFile: async () => "### Summary\n- current\n",
+    writeHistoryFile: async (path, content) => {
+      writtenFiles.push({ path, content });
+    },
+    resolveRunnerHistoryPaths: () => ({
+      currentHistoryPath: "/auth/path/.agentteams/runner/history/trigger-1.md",
+      parentHistoryPath: "/auth/path/.agentteams/runner/history/parent-1.md"
+    })
+  });
+
+  await handler(trigger);
+
   assert.deepEqual(writtenFiles, [{
     path: "/auth/path/.agentteams/runner/history/parent-1.md",
     content: "### Summary\n- restored from coaction"

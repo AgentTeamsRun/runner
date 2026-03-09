@@ -15,9 +15,42 @@ const FORCE_KILL_AFTER_MS = 10_000;
 const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
+const DEFAULT_CODEX_SANDBOX_LEVEL = "workspace-write";
 
-const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: string, model?: string | null): string => {
-  const modelSegment = model ? `'--model' '${model.replaceAll("'", "''")}' ` : "";
+export const resolveCodexSandboxLevel = (rawValue: string | undefined = process.env.CODEX_SANDBOX_LEVEL): "workspace-write" | "off" => {
+  if (rawValue?.trim() === "off") {
+    return "off";
+  }
+
+  return DEFAULT_CODEX_SANDBOX_LEVEL;
+};
+
+export const buildCodexExecArgs = (
+  prompt: string,
+  model?: string | null,
+  sandboxLevel: "workspace-write" | "off" = resolveCodexSandboxLevel()
+): string[] => {
+  const baseArgs =
+    sandboxLevel === "off"
+      ? ["-a", "never", "exec", "--dangerously-bypass-approvals-and-sandbox"]
+      : ["-a", "never", "exec", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
+
+  return model ? [...baseArgs, "--model", model, prompt] : [...baseArgs, prompt];
+};
+
+const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+
+const toPowerShellEncodedCommand = (
+  resolvedExecutablePath: string,
+  prompt: string,
+  model?: string | null,
+  sandboxLevel: "workspace-write" | "off" = resolveCodexSandboxLevel()
+): string => {
+  const sandboxSegment =
+    sandboxLevel === "off"
+      ? "'--dangerously-bypass-approvals-and-sandbox'"
+      : "'-s' 'workspace-write' '-c' 'sandbox_workspace_write.network_access=true'";
+  const modelSegment = model ? ` '--model' ${toPowerShellLiteral(model)}` : "";
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
     "$utf8NoBom = [System.Text.UTF8Encoding]::new($false)",
@@ -28,7 +61,7 @@ const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: stri
     `$promptText = @'`,
     `${prompt.replaceAll("'@", "'@")}`,
     `'@`,
-    `$promptText | & '${resolvedExecutablePath.replaceAll("'", "''")}' '-a' 'never' 'exec' '-s' 'workspace-write' '-c' 'sandbox_workspace_write.network_access=true' ${modelSegment}`
+    `$promptText | & ${toPowerShellLiteral(resolvedExecutablePath)} '-a' 'never' 'exec' ${sandboxSegment}${modelSegment}`
   ].join("\r\n");
 
   return Buffer.from(scriptContent, "utf16le").toString("base64");
@@ -103,16 +136,23 @@ export class CodexRunner implements Runner {
     const logPath = join(cwd, ".agentteams", "runner", "log", `${opts.triggerId}.log`);
     await mkdir(dirname(logPath), { recursive: true });
     const isWindows = platform() === "win32";
+    const sandboxLevel = resolveCodexSandboxLevel();
     const resolvedExecutablePath = isWindows
       ? resolveExecutablePathWithPreference("codex", ["codex.cmd", "codex"])
       : resolveExecutablePathWithPreference("codex", ["codex"]);
     const windowsEncodedCommand = isWindows
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model)
+      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, sandboxLevel)
       : null;
-    const modelArgs = opts.model ? ["--model", opts.model] : [];
+    const codexArgs = buildCodexExecArgs(opts.prompt, opts.model, sandboxLevel);
     const executableInfo = describeExecutableResolution("codex", {
       platform: () => (isWindows ? "win32" : platform())
     });
+
+    if (sandboxLevel === "off") {
+      logger.warn("Codex sandbox is disabled via CODEX_SANDBOX_LEVEL=off; runner git writes and arbitrary commands are fully enabled", {
+        triggerId: opts.triggerId
+      });
+    }
 
     logger.info("Runner prompt", {
       triggerId: opts.triggerId,
@@ -123,7 +163,8 @@ export class CodexRunner implements Runner {
       platform: executableInfo.platform,
       shell: executableInfo.shell,
       detached: isWindows ? false : true,
-      windowsWrapper: isWindows ? "powershell.exe -EncodedCommand" : null
+      windowsWrapper: isWindows ? "powershell.exe -EncodedCommand" : null,
+      sandboxLevel
     });
 
     const child = isWindows
@@ -147,7 +188,7 @@ export class CodexRunner implements Runner {
             AGENTTEAMS_AGENT_NAME: opts.agentConfigId
           }
         })
-      : spawnExecutable("codex", ["-a", "never", "exec", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", ...modelArgs, opts.prompt], {
+      : spawnExecutable("codex", codexArgs, {
           cwd,
           detached: true,
           stdio: ["ignore", "pipe", "pipe"],
