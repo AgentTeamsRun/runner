@@ -46,6 +46,7 @@ const buildPlistContent = (config: AutostartConfig): string => {
     `    <key>PATH</key>\n    <string>${currentPath}</string>`,
     `    <key>AGENTTEAMS_DAEMON_TOKEN</key>\n    <string>${config.token}</string>`,
     `    <key>AGENTTEAMS_API_URL</key>\n    <string>${config.apiUrl}</string>`,
+    `    <key>CODEX_SANDBOX_LEVEL</key>\n    <string>off</string>`,
   ].join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -105,6 +106,7 @@ ExecStart=${daemonPath} start
 Environment="PATH=${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}"
 Environment="AGENTTEAMS_DAEMON_TOKEN=${config.token}"
 Environment="AGENTTEAMS_API_URL=${config.apiUrl}"
+Environment="CODEX_SANDBOX_LEVEL=off"
 Restart=on-failure
 RestartSec=10s
 StandardOutput=journal
@@ -129,6 +131,7 @@ export const buildWindowsVbsContent = (
     `env("PATH") = "${escapeForVbsString(process.env.PATH ?? "")}"`,
     `env("AGENTTEAMS_DAEMON_TOKEN") = "${escapeForVbsString(config.token)}"`,
     `env("AGENTTEAMS_API_URL") = "${escapeForVbsString(config.apiUrl)}"`,
+    `env("CODEX_SANDBOX_LEVEL") = "off"`,
     `shell.Run """${escapeForVbsString(daemonPath)}"" start", 0, False`
   ].join("\r\n");
 };
@@ -144,6 +147,15 @@ export type AutostartResult = {
   registered: boolean;
   servicePath: string;
   platform: string;
+};
+
+const getAutostartConfigFromEnv = (): AutostartConfig | null => {
+  const token = process.env.AGENTTEAMS_DAEMON_TOKEN;
+  const apiUrl = process.env.AGENTTEAMS_API_URL;
+  if (!token || !apiUrl) {
+    return null;
+  }
+  return { token, apiUrl };
 };
 
 export const registerAutostart = async (config: AutostartConfig): Promise<AutostartResult> => {
@@ -188,19 +200,20 @@ export const unregisterAutostart = async (): Promise<void> => {
 
 export const restartAutostartService = async (): Promise<void> => {
   const os = platform();
+  const config = getAutostartConfigFromEnv();
 
   if (os === "darwin") {
-    await restartLaunchd();
+    await restartLaunchd(config);
     return;
   }
 
   if (os === "linux") {
-    restartSystemd();
+    await restartSystemd(config);
     return;
   }
 
   if (os === "win32") {
-    await restartWindowsStartup();
+    await restartWindowsStartup(config);
     return;
   }
 
@@ -281,7 +294,7 @@ const unregisterLaunchd = async (): Promise<void> => {
   }
 };
 
-const restartLaunchd = async (): Promise<void> => {
+const restartLaunchd = async (config: AutostartConfig | null): Promise<void> => {
   const plistPath = getLaunchdPlistPath();
 
   if (!existsSync(plistPath)) {
@@ -292,6 +305,12 @@ const restartLaunchd = async (): Promise<void> => {
     execSync(`launchctl unload "${plistPath}" 2>/dev/null`);
   } catch {
     // The agent may already be stopped — continue with load.
+  }
+
+  if (config) {
+    const content = buildPlistContent(config);
+    await fs.writeFile(plistPath, content, "utf8");
+    logger.info("Regenerated launchd plist before restart", { plistPath });
   }
 
   execSync(`launchctl load "${plistPath}"`);
@@ -339,7 +358,15 @@ const unregisterSystemd = async (): Promise<void> => {
   }
 };
 
-const restartSystemd = (): void => {
+const restartSystemd = async (config: AutostartConfig | null): Promise<void> => {
+  if (config) {
+    const servicePath = getSystemdServicePath();
+    const content = buildSystemdContent(config);
+    await fs.writeFile(servicePath, content, "utf8");
+    execSync("systemctl --user daemon-reload");
+    logger.info("Regenerated systemd service before restart", { servicePath });
+  }
+
   execSync("systemctl --user restart agentrunner");
 };
 
@@ -403,11 +430,17 @@ const unregisterWindowsTask = async (): Promise<void> => {
   }
 };
 
-const restartWindowsStartup = async (): Promise<void> => {
+const restartWindowsStartup = async (config: AutostartConfig | null): Promise<void> => {
   const startupVbsPath = getWindowsStartupVbsPath();
 
   if (!existsSync(startupVbsPath)) {
     throw new Error("Windows startup script is not registered.");
+  }
+
+  if (config) {
+    const content = buildWindowsVbsContent(config);
+    await fs.writeFile(startupVbsPath, content, "utf8");
+    logger.info("Regenerated Windows startup script before restart", { startupVbsPath });
   }
 
   execSync(`wscript.exe "${startupVbsPath}"`, { windowsHide: true });
