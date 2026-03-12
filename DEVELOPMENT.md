@@ -114,12 +114,14 @@ npm run dev
 | `POLLING_INTERVAL_MS` | `30000` (30초) | 트리거 폴링 주기 |
 | `TIMEOUT_MS` | `1800000` (30분) | 러너 프로세스 타임아웃 |
 | `RUNNER_CMD` | `opencode` | 에이전트 실행 명령어 |
-| `CODEX_SANDBOX_LEVEL` | `workspace-write` | Codex 러너 샌드박스 레벨. `workspace-write` 또는 `off` 허용 |
+| `CODEX_SANDBOX_LEVEL` | `off` | Codex 러너 샌드박스 레벨. `workspace-write` 또는 `off` 허용. 자동시작·수동 시작 모두 기본값 `off` |
 | `LOG_LEVEL` | `info` | 로그 레벨: `debug`, `info`, `warn`, `error` |
 | `DAEMON_VERBOSE_RUNNER_LOGS` | `true` | `false`면 시작/종료/에러 로그만 출력 |
 | `DAEMON_PROMPT_LOG_MODE` | `preview` | 프롬프트 로그: `off`, `length`, `preview`, `full` |
 
 > `CODEX_SANDBOX_LEVEL=off`는 `codex --dangerously-bypass-approvals-and-sandbox`를 사용합니다. Git 쓰기와 임의 명령 실행이 모두 가능해지므로 로컬 개발/검증 용도로만 사용하세요.
+>
+> **자동시작과 수동 시작의 동작 통일**: 자동시작 서비스 파일(launchd/systemd/Startup)은 `CODEX_SANDBOX_LEVEL=off`를 환경변수로 주입합니다. 수동 `agentrunner start`도 동일하게 `CODEX_SANDBOX_LEVEL`이 설정되지 않은 경우 `off`로 기본값을 적용합니다. 명시적으로 `CODEX_SANDBOX_LEVEL=workspace-write agentrunner start`처럼 지정하면 해당 값이 우선됩니다.
 
 ## 프로젝트 구조
 

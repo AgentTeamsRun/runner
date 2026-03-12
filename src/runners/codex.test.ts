@@ -36,3 +36,23 @@ test("buildCodexExecArgs disables sandbox when requested", () => {
     "hello"
   ]);
 });
+
+test("resolveCodexSandboxLevel reads from process.env when no argument given", () => {
+  const original = process.env.CODEX_SANDBOX_LEVEL;
+  try {
+    process.env.CODEX_SANDBOX_LEVEL = "off";
+    assert.equal(resolveCodexSandboxLevel(), "off");
+
+    process.env.CODEX_SANDBOX_LEVEL = "workspace-write";
+    assert.equal(resolveCodexSandboxLevel(), "workspace-write");
+
+    delete process.env.CODEX_SANDBOX_LEVEL;
+    assert.equal(resolveCodexSandboxLevel(), "workspace-write");
+  } finally {
+    if (original !== undefined) {
+      process.env.CODEX_SANDBOX_LEVEL = original;
+    } else {
+      delete process.env.CODEX_SANDBOX_LEVEL;
+    }
+  }
+});

@@ -37,7 +37,7 @@ const getWindowsStartupVbsPath = (): string =>
 
 // --- plist (macOS) ---
 
-const buildPlistContent = (config: AutostartConfig): string => {
+export const buildPlistContent = (config: AutostartConfig): string => {
   const nodePath = resolveExecutablePath("node");
   const daemonPath = resolveExecutablePath("agentrunner");
 
@@ -92,7 +92,7 @@ ${envEntries}
 
 // --- systemd (Linux) ---
 
-const buildSystemdContent = (config: AutostartConfig): string => {
+export const buildSystemdContent = (config: AutostartConfig): string => {
   const daemonPath = resolveExecutablePath("agentrunner");
 
   return `[Unit]
