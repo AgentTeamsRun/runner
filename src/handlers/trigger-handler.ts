@@ -112,6 +112,14 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     const basePrompt = toPromptString(trigger.prompt);
     const isContinuation = Boolean(trigger.parentTriggerId);
 
+    const conventionPrefix = [
+      "**[IMPORTANT — Convention Reference (MUST READ)]**",
+      "You MUST read `.agentteams/convention.md` before starting any work.",
+      "This file defines mandatory project rules, coding conventions, and workflow guidelines.",
+      "Skipping this step will result in non-compliant output.",
+      "",
+    ].join("\n");
+
     const planModePrefix = trigger.planMode
       ? [
           "**[PLAN MODE - NO CODE MODIFICATIONS]**",
@@ -147,7 +155,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       "----"
     ];
 
-    return `${planModePrefix}${basePrompt}\n${historyLines.join("\n")}`;
+    return `${conventionPrefix}${planModePrefix}${basePrompt}\n${historyLines.join("\n")}`;
   };
 
   return async (trigger: DaemonTrigger): Promise<void> => {
