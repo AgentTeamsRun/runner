@@ -72,11 +72,14 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     }
   };
 
-  const buildFallbackHistory = (outputText: string): string => {
+  const buildFallbackHistory = (outputText: string, errorMessage?: string): string => {
     const output = outputText.trim().slice(0, maxHistoryLength);
+    const summaryLine = errorMessage
+      ? `- Runner terminated with error: ${errorMessage}`
+      : "- Runner completed successfully but did not write the requested history file.";
     return [
       "### Summary",
-      "- Runner completed successfully but did not write the requested history file.",
+      summaryLine,
       "- Stored captured stdout as fallback history for this run.",
       "",
       "### Output",
@@ -217,6 +220,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         apiKey: runtime.apiKey,
         apiUrl: config.apiUrl,
         timeoutMs: config.timeoutMs,
+        idleTimeoutMs: config.idleTimeoutMs,
         agentConfigId: runtime.agentConfigId,
         model: trigger.model,
         signal: cancelController.signal,
@@ -235,8 +239,8 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       });
       logReporter.append("INFO", `Runner finished with exitCode=${runResult.exitCode}.`);
       const historyReported = await reportHistoryToDatabase(trigger.id, currentHistoryPath);
-      if (!historyReported && runResult.exitCode === 0 && runResult.outputText) {
-        const fallbackHistory = buildFallbackHistory(runResult.outputText);
+      if (!historyReported && runResult.outputText) {
+        const fallbackHistory = buildFallbackHistory(runResult.outputText, runResult.exitCode === 0 ? undefined : runResult.errorMessage);
         if (currentHistoryPath) {
           await writeHistoryFile(currentHistoryPath, fallbackHistory);
         }

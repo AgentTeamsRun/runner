@@ -160,6 +160,9 @@ export class ClaudeCodeRunner implements Runner {
         });
 
     const logStream = createWriteStream(logPath, { flags: "a" });
+    logStream.on("error", (err) => {
+      logger.warn("Runner log stream error", { triggerId: opts.triggerId, error: err.message });
+    });
     child.stdout?.pipe(logStream);
     child.stderr?.pipe(logStream);
     let lastOutput = "";
@@ -174,12 +177,14 @@ export class ClaudeCodeRunner implements Runner {
       outputText += chunk.slice(0, OUTPUT_CAPTURE_MAX - outputText.length);
     };
 
+    const idleTimer = { reset: (): void => {} };
     child.stdout?.on("data", (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
       appendOutputText(rawOutput);
       const output = toOutputPreview(rawOutput);
       if (output.length > 0) {
         lastOutput = output;
+        idleTimer.reset();
         opts.onStdoutChunk?.(output);
         logger.info("Runner stdout", {
           triggerId: opts.triggerId,
@@ -193,6 +198,7 @@ export class ClaudeCodeRunner implements Runner {
       if (output.length > 0) {
         lastOutput = output;
         lastErrorOutput = output;
+        idleTimer.reset();
         opts.onStderrChunk?.(output);
         logger.warn("Runner stderr", {
           triggerId: opts.triggerId,
@@ -212,7 +218,32 @@ export class ClaudeCodeRunner implements Runner {
     return await new Promise<RunResult>((resolve) => {
       let finished = false;
       let timedOut = false;
+      let idleTimedOut = false;
       let cancelled = false;
+
+      let idleTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+      const startIdleTimeout = () => {
+        if (idleTimeoutId) {
+          clearTimeout(idleTimeoutId);
+        }
+
+        idleTimeoutId = setTimeout(() => {
+          idleTimedOut = true;
+          timedOut = true;
+          logger.warn("Runner idle timeout reached; no output for configured idle period", {
+            triggerId: opts.triggerId,
+            idleTimeoutMs: opts.idleTimeoutMs
+          });
+          terminateRunnerChild(child, isWindows, opts.triggerId, "timeout");
+        }, opts.idleTimeoutMs);
+      };
+
+      idleTimer.reset = () => {
+        startIdleTimeout();
+      };
+
+      startIdleTimeout();
 
       const cleanup = () => {
         if (finished) {
@@ -220,6 +251,11 @@ export class ClaudeCodeRunner implements Runner {
         }
 
         finished = true;
+        if (idleTimeoutId) {
+          clearTimeout(idleTimeoutId);
+        }
+
+        idleTimer.reset = () => {};
         logStream.end();
         if (opts.signal) {
           opts.signal.removeEventListener("abort", handleAbort);
@@ -270,7 +306,9 @@ export class ClaudeCodeRunner implements Runner {
             exitCode: 1,
             lastOutput,
             outputText: outputText.trim() || undefined,
-            errorMessage: `Runner timed out after ${opts.timeoutMs}ms`
+            errorMessage: idleTimedOut
+              ? `Runner idle timed out after ${opts.idleTimeoutMs}ms of no output`
+              : `Runner timed out after ${opts.timeoutMs}ms`
           });
           return;
         }

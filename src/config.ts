@@ -5,6 +5,7 @@ import type { DaemonConfigFile, RuntimeConfig } from "./types.js";
 
 const DEFAULT_POLLING_INTERVAL_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 1_800_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_RUNNER_CMD = "opencode";
 const DEFAULT_API_URL = "https://api.agentteams.run";
 
@@ -66,6 +67,7 @@ export const resolveRuntimeConfig = async (): Promise<RuntimeConfig> => {
     apiUrl,
     pollingIntervalMs: parsePositiveInteger(process.env.POLLING_INTERVAL_MS, DEFAULT_POLLING_INTERVAL_MS),
     timeoutMs: parsePositiveInteger(process.env.TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
+    idleTimeoutMs: parsePositiveInteger(process.env.IDLE_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS),
     runnerCmd: process.env.RUNNER_CMD?.trim() || DEFAULT_RUNNER_CMD
   };
 };

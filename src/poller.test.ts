@@ -9,6 +9,7 @@ const config: RuntimeConfig = {
   apiUrl: "https://api.example",
   pollingIntervalMs: 5000,
   timeoutMs: 1000,
+  idleTimeoutMs: 500,
   runnerCmd: "opencode"
 };
 

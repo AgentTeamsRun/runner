@@ -5,6 +5,7 @@ export type RuntimeConfig = {
   apiUrl: string;
   pollingIntervalMs: number;
   timeoutMs: number;
+  idleTimeoutMs: number;
   runnerCmd: string;
 };
 

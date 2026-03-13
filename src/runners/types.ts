@@ -9,6 +9,7 @@ export interface RunnerOptions {
   apiKey: string;
   apiUrl: string;
   timeoutMs: number;
+  idleTimeoutMs: number;
   agentConfigId: string;
   model?: string | null;
   signal?: AbortSignal;

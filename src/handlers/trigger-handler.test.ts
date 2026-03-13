@@ -75,6 +75,7 @@ test("createTriggerHandler runs the runner, reports history, and marks success",
       apiUrl: "https://api.example",
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
+      idleTimeoutMs: 500,
       runnerCmd: "opencode"
     },
     client: client as never,
@@ -138,6 +139,7 @@ test("createTriggerHandler strips a UTF-8 BOM before reporting history to the da
       apiUrl: "https://api.example",
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
+      idleTimeoutMs: 500,
       runnerCmd: "opencode"
     },
     client: client as never
@@ -182,6 +184,7 @@ test("createTriggerHandler restores parent history from server-side coaction con
       apiUrl: "https://api.example",
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
+      idleTimeoutMs: 500,
       runnerCmd: "opencode"
     },
     client: client as never
@@ -240,6 +243,7 @@ test("createTriggerHandler strips a UTF-8 BOM before restoring parent history fr
       apiUrl: "https://api.example",
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
+      idleTimeoutMs: 500,
       runnerCmd: "opencode"
     },
     client: client as never
@@ -289,6 +293,7 @@ test("createTriggerHandler overwrites existing parent history with server cumula
       apiUrl: "https://api.example",
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
+      idleTimeoutMs: 500,
       runnerCmd: "opencode"
     },
     client: client as never
@@ -339,6 +344,7 @@ test("createTriggerHandler reports runner failures and falls back to last output
       apiUrl: "https://api.example",
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
+      idleTimeoutMs: 500,
       runnerCmd: "opencode"
     },
     client: client as never
@@ -384,6 +390,7 @@ test("createTriggerHandler stores stdout as fallback history when the runner omi
       apiUrl: "https://api.example",
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
+      idleTimeoutMs: 500,
       runnerCmd: "opencode"
     },
     client: client as never
@@ -446,6 +453,7 @@ test("createTriggerHandler cancels the runner when the server reports a cancel r
       apiUrl: "https://api.example",
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
+      idleTimeoutMs: 500,
       runnerCmd: "opencode"
     },
     client: client as never
@@ -510,6 +518,7 @@ test("createTriggerHandler marks the trigger as failed when runtime loading thro
       apiUrl: "https://api.example",
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
+      idleTimeoutMs: 500,
       runnerCmd: "opencode"
     },
     client: client as never
