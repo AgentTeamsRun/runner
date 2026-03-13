@@ -193,7 +193,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         try {
           if (isGitRepo(runtime.authPath)) {
             const worktreePath = createWorktree(runtime.authPath, {
-              triggerId: trigger.id,
+              worktreeId: runtime.worktreeId ?? trigger.id,
               baseBranch: runtime.baseBranch
             });
             effectiveAuthPath = worktreePath;

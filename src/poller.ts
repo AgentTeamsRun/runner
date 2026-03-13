@@ -1,7 +1,7 @@
 import { logger } from "./logger.js";
 import { DaemonApiClient } from "./api-client.js";
 import { runCleanup } from "./utils/runner-cleanup.js";
-import { removeWorktree } from "./utils/git-worktree.js";
+import { removeWorktree, resolveWorktreePath } from "./utils/git-worktree.js";
 import path from "node:path";
 import type { DaemonTrigger, RuntimeConfig } from "./types.js";
 
@@ -92,10 +92,11 @@ export const startPolling = async (
       for (const trigger of triggers) {
         try {
           let removed = false;
+          const effectiveWorktreeId = trigger.worktreeId ?? trigger.id;
           for (const authPath of knownAuthPaths) {
-            const worktreePath = path.join(authPath, ".agentteams", "worktrees", `trigger-${trigger.id}`);
+            const worktreePath = resolveWorktreePath(authPath, effectiveWorktreeId);
             try {
-              removeWorktreeFn(authPath, worktreePath, trigger.id);
+              removeWorktreeFn(authPath, worktreePath, effectiveWorktreeId);
               removed = true;
               logger.info("Worktree removed for trigger", { triggerId: trigger.id, worktreePath });
               break;

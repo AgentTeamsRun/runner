@@ -14,16 +14,26 @@ export function isGitRepo(dirPath: string): boolean {
   }
 }
 
+export function resolveWorktreePath(authPath: string, worktreeId: string): string {
+  const repoName = path.basename(authPath);
+  return path.join(path.dirname(authPath), `.${repoName}-worktrees`, `wt-${worktreeId}`);
+}
+
 export function createWorktree(authPath: string, options: {
-  triggerId: string;
+  worktreeId: string;
   baseBranch?: string | null;
 }): string {
-  const { triggerId, baseBranch } = options;
-  const worktreePath = path.join(authPath, ".agentteams", "worktrees", `trigger-${triggerId}`);
-  const branchName = `trigger/${triggerId}`;
+  const { worktreeId, baseBranch } = options;
+  const worktreePath = resolveWorktreePath(authPath, worktreeId);
+  const branchName = `worktree/${worktreeId}`;
 
   if (!isGitRepo(authPath)) {
     throw new Error(`Not a git repository: ${authPath}`);
+  }
+
+  // Reuse existing worktree (continue trigger case)
+  if (existsSync(worktreePath) && isGitRepo(worktreePath)) {
+    return worktreePath;
   }
 
   const parentDir = path.dirname(worktreePath);
@@ -39,15 +49,15 @@ export function createWorktree(authPath: string, options: {
     execFileSync("git", args, { cwd: authPath, stdio: "pipe" });
   } catch (error) {
     throw new Error(
-      `Failed to create git worktree for trigger ${triggerId}: ${error instanceof Error ? error.message : String(error)}`
+      `Failed to create git worktree for worktreeId ${worktreeId}: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 
   return worktreePath;
 }
 
-export function removeWorktree(authPath: string, worktreePath: string, triggerId: string): void {
-  const branchName = `trigger/${triggerId}`;
+export function removeWorktree(authPath: string, worktreePath: string, worktreeId: string): void {
+  const branchName = `worktree/${worktreeId}`;
 
   try {
     execFileSync("git", ["worktree", "remove", worktreePath, "--force"], {

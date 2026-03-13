@@ -43,6 +43,7 @@ export type DaemonTrigger = {
   claimedByDaemonId: string | null;
   useWorktree: boolean;
   baseBranch: string | null;
+  worktreeId: string | null;
   worktreeStatus: string | null;
   createdAt: string;
   updatedAt: string;
@@ -63,6 +64,7 @@ export type TriggerRuntime = {
   parentHistoryMarkdown: string | null;
   useWorktree: boolean;
   baseBranch: string | null;
+  worktreeId: string | null;
 };
 
 export type TriggerLogLevel = "INFO" | "WARN" | "ERROR";
