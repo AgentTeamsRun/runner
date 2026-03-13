@@ -9,6 +9,29 @@ const DEFAULT_FLUSH_INTERVAL_MS = 2000;
 const ANSI_ESCAPE_PATTERN = /\u001B\[[0-9;?]*[ -/]*[@-~]/g;
 const CONTROL_CHAR_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
+export const mergeLogs = (logs: TriggerLogInput[]): TriggerLogInput[] => {
+  if (logs.length === 0) {
+    return [];
+  }
+
+  const merged: TriggerLogInput[] = [];
+  let current = { level: logs[0].level, message: logs[0].message };
+
+  for (let i = 1; i < logs.length; i++) {
+    const log = logs[i];
+    const combined = current.message + "\n" + log.message;
+    if (log.level === current.level && combined.length <= MAX_MESSAGE_LENGTH) {
+      current.message = combined;
+    } else {
+      merged.push(current);
+      current = { level: log.level, message: log.message };
+    }
+  }
+
+  merged.push(current);
+  return merged;
+};
+
 const normalizeMessage = (message: string): string => {
   const withoutAnsi = message.replace(ANSI_ESCAPE_PATTERN, "");
   const normalizedNewline = withoutAnsi.replace(/\r\n?/g, "\n");
@@ -83,7 +106,7 @@ export class TriggerLogReporter {
 
       if (opts.drain) {
         while (this.queue.length > 0) {
-          const batch = this.queue.splice(0, MAX_BATCH_SIZE);
+          const batch = mergeLogs(this.queue.splice(0, MAX_BATCH_SIZE));
           await this.send({ logs: batch, heartbeat: opts.heartbeat });
           opts.heartbeat = false;
         }
@@ -95,7 +118,7 @@ export class TriggerLogReporter {
         return;
       }
 
-      const batch = this.queue.splice(0, MAX_BATCH_SIZE);
+      const batch = mergeLogs(this.queue.splice(0, MAX_BATCH_SIZE));
       if (batch.length === 0 && !opts.heartbeat) {
         return;
       }
