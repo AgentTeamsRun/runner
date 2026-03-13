@@ -167,6 +167,20 @@ export class DaemonApiClient {
     }
   }
 
+  async fetchOrphanedCancelRequested(): Promise<string[]> {
+    const response = await this.requestWithRetry("/api/daemon-triggers/orphaned-cancel-requested", {
+      method: "GET",
+      headers: this.daemonHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch orphaned cancel-requested triggers (${response.status})`);
+    }
+
+    const payload = await response.json() as { data: string[] };
+    return payload.data;
+  }
+
   async isTriggerCancelRequested(triggerId: string): Promise<boolean> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/cancel-status/${triggerId}`, {
       method: "GET",

@@ -8,7 +8,7 @@ type TriggerHandlerFactory = (onAuthPathDiscovered: (authPath: string) => void) 
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 type PollingDependencies = {
-  createClient?: (config: RuntimeConfig) => Pick<DaemonApiClient, "fetchPendingTrigger" | "claimTrigger">;
+  createClient?: (config: RuntimeConfig) => Pick<DaemonApiClient, "fetchPendingTrigger" | "claimTrigger" | "fetchOrphanedCancelRequested" | "updateTriggerStatus">;
   runCleanup?: (authPath: string) => Promise<void>;
   setInterval?: typeof global.setInterval;
   clearInterval?: typeof global.clearInterval;
@@ -61,6 +61,27 @@ export const startPolling = async (
     }
   };
 
+  const autoCancelOrphanedTriggers = async () => {
+    try {
+      const triggerIds = await client.fetchOrphanedCancelRequested();
+      for (const triggerId of triggerIds) {
+        try {
+          await client.updateTriggerStatus(triggerId, "CANCELLED", "Automatically cancelled: runner is no longer active");
+          logger.info("Auto-cancelled orphaned trigger", { triggerId });
+        } catch (error) {
+          logger.warn("Failed to auto-cancel orphaned trigger", {
+            triggerId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+    } catch (error) {
+      logger.warn("Failed to fetch orphaned cancel-requested triggers", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
   const pollOnce = async () => {
     if (isPolling) {
       return;
@@ -69,6 +90,7 @@ export const startPolling = async (
     isPolling = true;
     try {
       maybeRunCleanup();
+      await autoCancelOrphanedTriggers();
 
       const pending = await client.fetchPendingTrigger();
       if (!pending) {

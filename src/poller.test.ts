@@ -52,7 +52,9 @@ test("startPolling handles a claimed trigger, registers auth paths, and runs sch
   const pending = [trigger, null];
   const client = {
     fetchPendingTrigger: async () => pending.shift() ?? null,
-    claimTrigger: async () => ({ ok: true, conflict: false })
+    claimTrigger: async () => ({ ok: true, conflict: false }),
+    fetchOrphanedCancelRequested: async () => [] as string[],
+    updateTriggerStatus: async () => undefined
   };
 
   const createHandler = (onAuthPathDiscovered: (authPath: string) => void) => {
@@ -117,7 +119,9 @@ test("startPolling logs conflicts and suppresses overlapping polling cycles", as
     fetchPendingTrigger: async () => await new Promise<DaemonTrigger | null>((resolve) => {
       releaseFetch = () => resolve(trigger);
     }),
-    claimTrigger: async () => ({ ok: false, conflict: true })
+    claimTrigger: async () => ({ ok: false, conflict: true }),
+    fetchOrphanedCancelRequested: async () => [] as string[],
+    updateTriggerStatus: async () => undefined
   };
 
   const intervalCallbacks: Array<() => void> = [];
@@ -170,7 +174,9 @@ test("startPolling clears the interval and exits on shutdown signals", async () 
   const pollingPromise = startPolling(config, () => async () => undefined, {
     createClient: () => ({
       fetchPendingTrigger: async () => null,
-      claimTrigger: async () => ({ ok: true, conflict: false })
+      claimTrigger: async () => ({ ok: true, conflict: false }),
+      fetchOrphanedCancelRequested: async () => [] as string[],
+      updateTriggerStatus: async () => undefined
     }),
     runCleanup: async () => undefined,
     setInterval: (() => intervalHandle) as typeof setInterval,
