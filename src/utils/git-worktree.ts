@@ -95,4 +95,17 @@ export function removeWorktree(authPath: string, worktreePath: string, worktreeI
   } catch {
     // Branch may not exist or already deleted; ignore
   }
+
+  try {
+    execFileSync("git", ["ls-remote", "--exit-code", "origin", `refs/heads/${branchName}`], {
+      cwd: authPath,
+      stdio: "pipe"
+    });
+    execFileSync("git", ["push", "origin", "--delete", branchName], {
+      cwd: authPath,
+      stdio: "pipe"
+    });
+  } catch {
+    // Remote branch may not exist or deletion may fail; ignore
+  }
 }
