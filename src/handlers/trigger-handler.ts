@@ -126,6 +126,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           "**[PLAN MODE - NO CODE MODIFICATIONS]**",
           "You are in Plan Mode. You MUST NOT modify, create, or delete any code files.",
           "Do NOT implement any code changes.",
+          "Do NOT use `agentteams plan quick`. Quick plans are not allowed in Plan Mode.",
           "",
         ].join("\n")
       : "";
