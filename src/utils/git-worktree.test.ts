@@ -80,10 +80,15 @@ test("createWorktree creates worktree from specified baseBranch", () => {
   const repo = makeTempGitRepo();
   const worktreeId = "test-wt-branch";
   try {
+    const initialBranch = execFileSync("git", ["-C", repo, "branch", "--show-current"], {
+      stdio: "pipe",
+      encoding: "utf8"
+    }).trim();
+
     // Create a branch to use as base
     execFileSync("git", ["-C", repo, "checkout", "-b", "feature-branch"], { stdio: "pipe" });
     execFileSync("git", ["-C", repo, "commit", "--allow-empty", "-m", "feature commit"], { stdio: "pipe" });
-    execFileSync("git", ["-C", repo, "checkout", "master"], { stdio: "pipe" }).toString().trim();
+    execFileSync("git", ["-C", repo, "checkout", initialBranch], { stdio: "pipe" });
 
     const worktreePath = createWorktree(repo, {
       worktreeId,
