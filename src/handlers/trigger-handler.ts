@@ -125,8 +125,6 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       ? [
           "**[PLAN MODE - NO CODE MODIFICATIONS]**",
           "You are in Plan Mode. You MUST NOT modify, create, or delete any code files.",
-          "Your task is to analyze the request and produce a written plan only.",
-          "Create the plan and register it using the AgentTeams CLI (`agentteams plan create`).",
           "Do NOT implement any code changes.",
           "",
         ].join("\n")
