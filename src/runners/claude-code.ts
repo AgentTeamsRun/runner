@@ -16,9 +16,9 @@ const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
-export const buildClaudeCodeArgs = (prompt: string, model?: string | null): string[] => {
+export const buildClaudeCodeArgs = (model?: string | null): string[] => {
   const modelArgs = model ? ["--model", model] : [];
-  return ["-p", "--output-format", "stream-json", "--verbose", ...modelArgs, prompt];
+  return ["-p", "--output-format", "stream-json", "--verbose", ...modelArgs];
 };
 
 export const extractResultTextFromStreamJson = (outputText: string): string => {
@@ -49,7 +49,7 @@ export const extractResultTextFromStreamJson = (outputText: string): string => {
 };
 
 const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: string, model?: string | null): string => {
-  const argSegment = buildClaudeCodeArgs(prompt, model)
+  const argSegment = buildClaudeCodeArgs(model)
     .map((arg) => ` '${arg.replaceAll("'", "''")}'`)
     .join("");
   const scriptContent = [
@@ -143,7 +143,7 @@ export class ClaudeCodeRunner implements Runner {
     const windowsEncodedCommand = isWindows
       ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model)
       : null;
-    const claudeArgs = buildClaudeCodeArgs(opts.prompt, opts.model);
+    const claudeArgs = buildClaudeCodeArgs(opts.model);
     const executableInfo = describeExecutableResolution("claude", {
       platform: () => (isWindows ? "win32" : platform())
     });
@@ -183,7 +183,7 @@ export class ClaudeCodeRunner implements Runner {
             AGENTTEAMS_AGENT_NAME: opts.agentConfigId
           }
         })
-      : spawnExecutable("claude", claudeArgs, {
+      : spawnExecutable("claude", [...claudeArgs, opts.prompt], {
           cwd,
           detached: true,
           stdio: ["ignore", "pipe", "pipe"],

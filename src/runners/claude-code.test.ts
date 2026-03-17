@@ -3,24 +3,22 @@ import test from "node:test";
 import { buildClaudeCodeArgs, extractResultTextFromStreamJson } from "./claude-code.js";
 
 test("buildClaudeCodeArgs enables stream-json mode with verbose output", () => {
-  assert.deepEqual(buildClaudeCodeArgs("hello", "claude-sonnet"), [
+  assert.deepEqual(buildClaudeCodeArgs("claude-sonnet"), [
     "-p",
     "--output-format",
     "stream-json",
     "--verbose",
     "--model",
-    "claude-sonnet",
-    "hello"
+    "claude-sonnet"
   ]);
 });
 
 test("buildClaudeCodeArgs omits the model flag when no model is provided", () => {
-  assert.deepEqual(buildClaudeCodeArgs("hello", null), [
+  assert.deepEqual(buildClaudeCodeArgs(null), [
     "-p",
     "--output-format",
     "stream-json",
-    "--verbose",
-    "hello"
+    "--verbose"
   ]);
 });
 
