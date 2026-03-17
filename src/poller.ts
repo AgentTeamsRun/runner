@@ -1,6 +1,7 @@
 import { logger } from "./logger.js";
 import { DaemonApiClient } from "./api-client.js";
 import { runCleanup } from "./utils/runner-cleanup.js";
+import { runConventionSync } from "./utils/convention-sync.js";
 import { removeWorktree, resolveWorktreePath } from "./utils/git-worktree.js";
 import path from "node:path";
 import type { DaemonTrigger, RuntimeConfig } from "./types.js";
@@ -8,10 +9,12 @@ import type { DaemonTrigger, RuntimeConfig } from "./types.js";
 type TriggerHandlerFactory = (onAuthPathDiscovered: (authPath: string) => void) => (trigger: DaemonTrigger) => Promise<void>;
 
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const CONVENTION_SYNC_INTERVAL_MS = 60 * 60 * 1000;
 
 type PollingDependencies = {
   createClient?: (config: RuntimeConfig) => Pick<DaemonApiClient, "fetchPendingTrigger" | "claimTrigger" | "fetchOrphanedCancelRequested" | "updateTriggerStatus" | "fetchPendingWorktreeRemovals" | "reportWorktreeStatus">;
   runCleanup?: (authPath: string) => Promise<void>;
+  runConventionSync?: (authPath: string) => Promise<void>;
   removeWorktree?: typeof removeWorktree;
   setInterval?: typeof global.setInterval;
   clearInterval?: typeof global.clearInterval;
@@ -28,6 +31,7 @@ export const startPolling = async (
 ): Promise<void> => {
   const client = dependencies.createClient?.(config) ?? new DaemonApiClient(config.apiUrl, config.daemonToken);
   const cleanupRunner = dependencies.runCleanup ?? runCleanup;
+  const conventionSync = dependencies.runConventionSync ?? runConventionSync;
   const removeWorktreeFn = dependencies.removeWorktree ?? removeWorktree;
   const now = dependencies.now ?? Date.now;
   const registerInterval = dependencies.setInterval ?? global.setInterval;
@@ -41,6 +45,7 @@ export const startPolling = async (
 
   const knownAuthPaths = new Set<string>();
   let lastCleanupAt = 0;
+  const lastConventionSyncAt = new Map<string, number>();
 
   const onAuthPathDiscovered = (authPath: string): void => {
     knownAuthPaths.add(authPath);
@@ -60,6 +65,23 @@ export const startPolling = async (
         logger.warn("Scheduled cleanup failed", {
           authPath,
           error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }
+  };
+
+  const maybeRunConventionSync = () => {
+    const currentTime = now();
+    for (const authPath of knownAuthPaths) {
+      const lastSync = lastConventionSyncAt.get(authPath) ?? 0;
+      if (currentTime - lastSync < CONVENTION_SYNC_INTERVAL_MS) {
+        continue;
+      }
+      lastConventionSyncAt.set(authPath, currentTime);
+      void conventionSync(authPath).catch((error) => {
+        logger.warn("Scheduled convention sync failed", {
+          authPath,
+          error: error instanceof Error ? error.message : String(error),
         });
       });
     }
@@ -130,6 +152,7 @@ export const startPolling = async (
     isPolling = true;
     try {
       maybeRunCleanup();
+      maybeRunConventionSync();
       await autoCancelOrphanedTriggers();
       await processWorktreeRemovals();
 
