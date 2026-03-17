@@ -8,6 +8,8 @@ export interface RunnerOptions {
   authPath: string | null;
   apiKey: string;
   apiUrl: string;
+  teamId: string;
+  projectId: string;
   timeoutMs: number;
   idleTimeoutMs: number;
   agentConfigId: string;

@@ -61,6 +61,8 @@ export type TriggerRuntime = {
   agentConfigId: string;
   authPath: string | null;
   apiKey: string;
+  teamId: string;
+  projectId: string;
   parentHistoryMarkdown: string | null;
   useWorktree: boolean;
   baseBranch: string | null;

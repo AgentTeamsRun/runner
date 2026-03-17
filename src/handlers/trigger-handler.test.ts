@@ -34,6 +34,8 @@ const runtime: TriggerRuntime = {
   agentConfigId: "agent-1",
   authPath: "/auth/path",
   apiKey: "api-key",
+  teamId: "team-1",
+  projectId: "project-1",
   parentHistoryMarkdown: null,
   useWorktree: false,
   baseBranch: null,

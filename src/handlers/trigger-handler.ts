@@ -264,6 +264,8 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         authPath: effectiveAuthPath,
         apiKey: runtime.apiKey,
         apiUrl: config.apiUrl,
+        teamId: runtime.teamId,
+        projectId: runtime.projectId,
         timeoutMs: config.timeoutMs,
         idleTimeoutMs: config.idleTimeoutMs,
         agentConfigId: runtime.agentConfigId,

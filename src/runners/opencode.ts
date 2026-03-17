@@ -146,6 +146,8 @@ export class OpenCodeRunner implements Runner {
             ...process.env,
             AGENTTEAMS_API_KEY: opts.apiKey,
             AGENTTEAMS_API_URL: opts.apiUrl,
+            AGENTTEAMS_TEAM_ID: opts.teamId,
+            AGENTTEAMS_PROJECT_ID: opts.projectId,
             AGENTTEAMS_AGENT_NAME: opts.agentConfigId
           }
         })
@@ -157,6 +159,8 @@ export class OpenCodeRunner implements Runner {
             ...process.env,
             AGENTTEAMS_API_KEY: opts.apiKey,
             AGENTTEAMS_API_URL: opts.apiUrl,
+            AGENTTEAMS_TEAM_ID: opts.teamId,
+            AGENTTEAMS_PROJECT_ID: opts.projectId,
             AGENTTEAMS_AGENT_NAME: opts.agentConfigId
           }
         });
