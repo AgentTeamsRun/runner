@@ -9,6 +9,7 @@ import {
   spawnExecutable
 } from "../executable.js";
 import { logger } from "../logger.js";
+import { createStreamJsonLineParser } from "./stream-json-parser.js";
 import type { Runner, RunnerOptions, RunResult } from "./types.js";
 
 const FORCE_KILL_AFTER_MS = 10_000;
@@ -216,9 +217,15 @@ export class ClaudeCodeRunner implements Runner {
     };
 
     const idleTimer = { reset: (): void => {} };
+    const streamParser = createStreamJsonLineParser((entries) => {
+      for (const entry of entries) {
+        opts.onStdoutChunk?.(entry.message);
+      }
+    });
     child.stdout?.on("data", (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
       appendOutputText(rawOutput);
+      streamParser.push(rawOutput);
       const output = toOutputPreview(rawOutput);
       if (output.length > 0) {
         lastOutput = output;
@@ -330,6 +337,7 @@ export class ClaudeCodeRunner implements Runner {
 
       child.on("close", (code) => {
         clearTimeout(timeoutId);
+        streamParser.flush();
         cleanup();
         logger.info("Runner process closed", {
           triggerId: opts.triggerId,

@@ -9,6 +9,8 @@ import {
   spawnExecutable
 } from "../executable.js";
 import { logger } from "../logger.js";
+import { extractResultTextFromStreamJson } from "./claude-code.js";
+import { createStreamJsonLineParser } from "./stream-json-parser.js";
 import type { Runner, RunnerOptions, RunResult } from "./types.js";
 
 const FORCE_KILL_AFTER_MS = 10_000;
@@ -17,12 +19,12 @@ const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
 export const buildAmpExecArgs = (prompt: string, model?: string | null): string[] => {
-  const modelArgs = model ? ["--model", model] : [];
-  return ["--print", prompt, ...modelArgs];
+  const modeArgs = model ? ["--mode", model] : [];
+  return ["--execute", prompt, "--dangerously-allow-all", "--stream-json-thinking", ...modeArgs];
 };
 
 const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: string, model?: string | null): string => {
-  const modelSegment = model ? ` '--model' '${model.replaceAll("'", "''")}'` : "";
+  const modelSegment = model ? ` '--mode' '${model.replaceAll("'", "''")}'` : "";
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
     "$utf8NoBom = [System.Text.UTF8Encoding]::new($false)",
@@ -33,7 +35,7 @@ const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: stri
     `$promptText = @'`,
     `${prompt.replaceAll("'@", "'@")}`,
     `'@`,
-    `& '${resolvedExecutablePath.replaceAll("'", "''")}' '--print' $promptText${modelSegment}`
+    `& '${resolvedExecutablePath.replaceAll("'", "''")}' '--execute' $promptText '--dangerously-allow-all' '--stream-json-thinking'${modelSegment}`
   ].join("\r\n");
 
   return Buffer.from(scriptContent, "utf16le").toString("base64");
@@ -187,14 +189,19 @@ export class AmpCodeRunner implements Runner {
     };
 
     const idleTimer = { reset: (): void => {} };
+    const streamParser = createStreamJsonLineParser((entries) => {
+      for (const entry of entries) {
+        opts.onStdoutChunk?.(entry.message);
+      }
+    });
     child.stdout?.on("data", (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
       appendOutputText(rawOutput);
+      streamParser.push(rawOutput);
       const output = toOutputPreview(rawOutput);
       if (output.length > 0) {
         lastOutput = output;
         idleTimer.reset();
-        opts.onStdoutChunk?.(output);
         logger.info("Runner stdout", {
           triggerId: opts.triggerId,
           pid: child.pid,
@@ -302,6 +309,7 @@ export class AmpCodeRunner implements Runner {
 
       child.on("close", (code) => {
         clearTimeout(timeoutId);
+        streamParser.flush();
         cleanup();
         logger.info("Runner process closed", {
           triggerId: opts.triggerId,
@@ -311,10 +319,14 @@ export class AmpCodeRunner implements Runner {
         });
 
         if (timedOut) {
+          const trimmedOutputText = outputText.trim();
+          const resolvedOutputText = idleTimedOut && trimmedOutputText.length > 0
+            ? extractResultTextFromStreamJson(outputText)
+            : (trimmedOutputText || undefined);
           resolve({
             exitCode: 1,
             lastOutput,
-            outputText: outputText.trim() || undefined,
+            outputText: resolvedOutputText,
             errorMessage: idleTimedOut
               ? `Runner idle timed out after ${Math.round(opts.idleTimeoutMs / 60_000)}m of no output`
               : `Runner timed out after ${Math.round(opts.timeoutMs / 60_000)}m`
