@@ -16,6 +16,48 @@
 - `.env*` 파일: 원본 레포에서 워크트리로 **복사** (symlink 아님, Prisma 호환성)
 - `settings.local.json`: 생성하지 않음 (`--dangerously-skip-permissions`로 불필요)
 
+## 로그 확인 방법
+
+### 데몬 로그 (launchd)
+
+```bash
+# stdout
+cat /tmp/agentrunner.log
+
+# stderr
+cat /tmp/agentrunner-error.log
+
+# 실시간 추적
+tail -f /tmp/agentrunner.log
+```
+
+데몬은 `console.log/warn/error`로 출력하며 launchd가 위 경로로 리다이렉트합니다.
+로그 포맷: `[2026-03-18T14:00:00.000Z] INFO|WARN|ERROR <message> {meta}`
+
+### 러너 실행 로그 (트리거별)
+
+각 트리거 실행 시 러너의 raw stdout/stderr가 파일로 기록됩니다:
+
+```
+{authPath}/.agentteams/runner/log/{triggerId}.log
+```
+
+### 러너 히스토리 (트리거별)
+
+러너가 작성한 마크다운 히스토리 파일:
+
+```
+{authPath}/.agentteams/runner/history/{triggerId}.md
+```
+
+러너가 히스토리를 작성하지 못한 경우 `trigger-handler`가 stdout에서 fallback history를 생성하여 서버에 보고합니다.
+
+### API 로그 리포터
+
+실시간으로 파싱된 로그가 API로 전송됩니다:
+- `POST /api/daemon-triggers/{triggerId}/logs` — 배치 전송 (50개씩, 2초 간격)
+- 웹 UI에서 트리거 상세 화면으로 확인 가능
+
 ## 히스토리 및 변경 이력
 
 ### 2026-03-18: Claude Code 권한 이슈 수정
