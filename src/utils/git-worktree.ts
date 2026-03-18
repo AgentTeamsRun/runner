@@ -55,6 +55,17 @@ export function healWorktreeConfig(authPath: string, worktreePath: string): void
       cleanedDirs.push(correctPath);
     }
     existing.permissions = { ...permissions, additionalDirectories: cleanedDirs };
+
+    // Allow write access to the original repo (for history files, plan downloads, etc.)
+    const sandbox = existing.sandbox ?? {};
+    const fs = sandbox.filesystem ?? {};
+    const allowWrite: string[] = fs.allowWrite ?? [];
+    const cleanedWrite = allowWrite.filter((p: string) => p === correctPath || !p.endsWith(authPath));
+    if (!cleanedWrite.includes(correctPath)) {
+      cleanedWrite.push(correctPath);
+    }
+    existing.sandbox = { ...sandbox, filesystem: { ...fs, allowWrite: cleanedWrite } };
+
     // Clean up legacy top-level additionalDirectories if present
     delete existing.additionalDirectories;
     writeFileSync(claudeSettingsPath, JSON.stringify(existing, null, 2) + "\n", "utf-8");

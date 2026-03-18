@@ -312,6 +312,9 @@ test("createWorktree writes correct Claude sandbox additionalDirectories path", 
     assert.equal(badEntries.length, 0, `additionalDirectories should not contain //-prefixed paths, got: ${JSON.stringify(badEntries)}`);
     // Must NOT have top-level additionalDirectories
     assert.equal(settings.additionalDirectories, undefined, "top-level additionalDirectories should not exist");
+    // Must also have sandbox allowWrite for the original repo
+    const allowWrite: string[] = settings.sandbox.filesystem.allowWrite;
+    assert.ok(allowWrite.includes(repo), `allowWrite should contain "${repo}", got: ${JSON.stringify(allowWrite)}`);
   } finally {
     cleanupDir(repo);
     const repoName = basename(repo);
