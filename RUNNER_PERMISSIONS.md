@@ -16,6 +16,39 @@
 - `.env*` 파일: 원본 레포에서 워크트리로 **복사** (symlink 아님, Prisma 호환성)
 - `settings.local.json`: 생성하지 않음 (`--dangerously-skip-permissions`로 불필요)
 
+## 에이전트별 로그 수집 방식
+
+| Runner | stdout 포맷 | 파싱 | 로그 수집 방식 |
+|---|---|---|---|
+| **Claude Code** | stream-json (`--output-format stream-json`) | `createStreamJsonLineParser` → 구조화된 로그 | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
+| **AMP** | stream-json (`--stream-json-thinking`) | `createStreamJsonLineParser` → 구조화된 로그 | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
+| **Codex** | plain text | 없음 (raw output 그대로) | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록 |
+| **Gemini** | plain text | 없음 (raw output 그대로) | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록 |
+| **OpenCode** | plain text | 없음 (raw output 그대로) | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록 |
+
+### stream-json 파서 (`stream-json-parser.ts`)
+
+Claude Code와 AMP의 stdout은 JSON lines 형식이며, 파서가 다음 타입을 처리:
+- `system` — 세션 초기화 정보
+- `assistant` — thinking, text, tool_use, tool_result
+- `result` — 최종 완료 상태 (duration, turn count)
+
+파서는 길이 제한을 적용: thinking 300자, text 500자, tool input 200자.
+
+### 로그 흐름 (공통)
+
+```
+runner stdout ──┬── logStream (raw) ──→ .agentteams/runner/log/{triggerId}.log
+                │
+                ├── streamParser (Claude Code/AMP만) ──→ onStdoutChunk (파싱된 메시지)
+                │   또는 raw output (Codex/Gemini/OpenCode) ──→ onStdoutChunk
+                │
+                └── outputText (메모리, 최대 200KB) ──→ fallback history 용
+                    └── extractResultTextFromStreamJson (stream-json인 경우 result 추출)
+
+onStdoutChunk ──→ TriggerLogReporter ──→ API 배치 전송
+```
+
 ## 로그 확인 방법
 
 ### 데몬 로그 (launchd)
