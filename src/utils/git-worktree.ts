@@ -46,14 +46,17 @@ export function healWorktreeConfig(authPath: string, worktreePath: string): void
       ? JSON.parse(readFileSync(claudeSettingsPath, "utf8"))
       : {};
     const correctPath = normalizeClaudeSandboxPath(authPath);
-    const additionalDirectories: string[] = existing.additionalDirectories ?? [];
+    const permissions = existing.permissions ?? {};
+    const additionalDirectories: string[] = permissions.additionalDirectories ?? [];
 
     // Remove malformed entries (e.g. ///Users/... from previous bug)
     const cleanedDirs = additionalDirectories.filter((p: string) => p === correctPath || !p.endsWith(authPath));
     if (!cleanedDirs.includes(correctPath)) {
       cleanedDirs.push(correctPath);
     }
-    existing.additionalDirectories = cleanedDirs;
+    existing.permissions = { ...permissions, additionalDirectories: cleanedDirs };
+    // Clean up legacy top-level additionalDirectories if present
+    delete existing.additionalDirectories;
     writeFileSync(claudeSettingsPath, JSON.stringify(existing, null, 2) + "\n", "utf-8");
   } catch {
     // Non-critical: sandbox config failure won't block runner

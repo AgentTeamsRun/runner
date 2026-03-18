@@ -303,13 +303,15 @@ test("createWorktree writes correct Claude sandbox additionalDirectories path", 
 
     assert.equal(existsSync(settingsPath), true);
     const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-    const additionalDirectories: string[] = settings.additionalDirectories;
+    const additionalDirectories: string[] = settings.permissions.additionalDirectories;
 
     // Must contain the exact authPath without extra slashes
     assert.ok(additionalDirectories.includes(repo), `additionalDirectories should contain "${repo}", got: ${JSON.stringify(additionalDirectories)}`);
     // Must NOT contain the old triple-slash format
     const badEntries = additionalDirectories.filter((p: string) => p.startsWith("//"));
     assert.equal(badEntries.length, 0, `additionalDirectories should not contain //-prefixed paths, got: ${JSON.stringify(badEntries)}`);
+    // Must NOT have top-level additionalDirectories
+    assert.equal(settings.additionalDirectories, undefined, "top-level additionalDirectories should not exist");
   } finally {
     cleanupDir(repo);
     const repoName = basename(repo);
@@ -324,7 +326,7 @@ test("healWorktreeConfig fixes malformed additionalDirectories paths on reuse", 
     const worktreePath = createWorktree(repo, { worktreeId });
     const settingsPath = join(worktreePath, ".claude", "settings.local.json");
 
-    // Simulate the old bug: write a malformed entry
+    // Simulate the old bug: write a malformed entry at top-level
     const malformed = { additionalDirectories: [`///${repo}`] };
     writeFileSync(settingsPath, JSON.stringify(malformed, null, 2) + "\n", "utf-8");
 
@@ -333,12 +335,14 @@ test("healWorktreeConfig fixes malformed additionalDirectories paths on reuse", 
     assert.equal(reusedPath, worktreePath);
 
     const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-    const additionalDirectories: string[] = settings.additionalDirectories;
+    const additionalDirectories: string[] = settings.permissions.additionalDirectories;
 
     // Malformed entry should be replaced with correct path
     assert.ok(additionalDirectories.includes(repo), `additionalDirectories should contain "${repo}", got: ${JSON.stringify(additionalDirectories)}`);
     const badEntries = additionalDirectories.filter((p: string) => p.startsWith("//"));
     assert.equal(badEntries.length, 0, `malformed paths should be cleaned, got: ${JSON.stringify(badEntries)}`);
+    // Legacy top-level key should be cleaned up
+    assert.equal(settings.additionalDirectories, undefined, "legacy top-level additionalDirectories should be removed");
   } finally {
     cleanupDir(repo);
     const repoName = basename(repo);
