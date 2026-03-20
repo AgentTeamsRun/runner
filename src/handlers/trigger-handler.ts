@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
 import { isGitRepo, createWorktree } from "../utils/git-worktree.js";
 import { extractResultTextFromStreamJson } from "../runners/claude-code.js";
+import { runOriginIssueSafeguard } from "../utils/origin-issue-safeguard.js";
 
 function sanitizeErrorMessage(msg: string): string {
   return msg.replaceAll(homedir(), '~');
@@ -312,6 +313,11 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         logReporter.append("WARN", "Runner did not write a history file. Captured stdout was stored as fallback history.");
       }
       await logReporter.stop();
+
+      // 3차 방어: origin issue 자동 연결 안전장치 (fire-and-forget)
+      void runOriginIssueSafeguard(trigger.prompt, currentHistoryPath, effectiveAuthPath).catch(() => {
+        // Safeguard failure should never block trigger completion
+      });
 
       const status = runResult.cancelled
         ? "CANCELLED"
