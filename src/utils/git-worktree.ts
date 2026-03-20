@@ -15,6 +15,9 @@ export function isGitRepo(dirPath: string): boolean {
 }
 
 export function resolveWorktreePath(authPath: string, worktreeId: string): string {
+  if (/[\/\\]|\.\./.test(worktreeId)) {
+    throw new Error('Invalid worktreeId: path traversal characters detected');
+  }
   const repoName = path.basename(authPath);
   return path.join(path.dirname(authPath), `.${repoName}-worktrees`, `wt-${worktreeId}`);
 }

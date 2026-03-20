@@ -5,9 +5,14 @@ import { TriggerLogReporter } from "../runners/log-reporter.js";
 import { logger } from "../logger.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { homedir } from "node:os";
 import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
 import { isGitRepo, createWorktree } from "../utils/git-worktree.js";
 import { extractResultTextFromStreamJson } from "../runners/claude-code.js";
+
+function sanitizeErrorMessage(msg: string): string {
+  return msg.replaceAll(homedir(), '~');
+}
 
 type TriggerHandlerOptions = {
   config: RuntimeConfig;
@@ -171,6 +176,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     let cancelInterval: NodeJS.Timeout | null = null;
 
     try {
+      if (trigger.parentTriggerId && /[\/\\]|\.\./.test(trigger.parentTriggerId)) {
+        throw new Error('Invalid parentTriggerId: path traversal characters detected');
+      }
+
       logger.info("Trigger execution started", {
         triggerId: trigger.id,
         runnerType: trigger.runnerType
@@ -315,7 +324,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       await client.updateTriggerStatus(
         trigger.id,
         status,
-        errorMessage
+        errorMessage ? sanitizeErrorMessage(errorMessage) : undefined
       );
       logger.info("Trigger completed", {
         triggerId: trigger.id,
@@ -337,10 +346,11 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         if (logReporter) {
           await logReporter.stop();
         }
+        const rawErrorMsg = error instanceof Error ? error.message : String(error);
         await client.updateTriggerStatus(
           trigger.id,
           "FAILED",
-          error instanceof Error ? error.message : String(error)
+          sanitizeErrorMessage(rawErrorMsg)
         );
       } catch (statusError) {
         logger.error("Failed to report trigger as FAILED", {

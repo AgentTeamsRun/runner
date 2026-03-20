@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { chmodSync, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DaemonConfigFile, RuntimeConfig } from "./types.js";
@@ -50,6 +50,7 @@ export const writeDaemonConfigFile = async (config: DaemonConfigFile): Promise<s
   const path = getDaemonConfigPath();
   await fs.mkdir(dirname(path), { recursive: true });
   await fs.writeFile(path, JSON.stringify(config, null, 2), "utf8");
+  chmodSync(path, 0o600);
   return path;
 };
 

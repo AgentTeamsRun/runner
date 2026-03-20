@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
@@ -73,7 +73,7 @@ const terminateRunnerChild = (
 
   try {
     if (isWindows) {
-      execSync(`taskkill /F /T /PID ${child.pid}`, { stdio: "ignore" });
+      execFileSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore" });
     } else {
       process.kill(-child.pid, "SIGTERM");
     }

@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, promises as fs } from "node:fs";
+import { chmodSync, existsSync, promises as fs } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { resolveExecutablePath } from "./executable.js";
@@ -270,6 +270,7 @@ const registerLaunchd = async (config: AutostartConfig): Promise<AutostartResult
   const content = buildPlistContent(config);
   await fs.mkdir(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
   await fs.writeFile(plistPath, content, "utf8");
+  chmodSync(plistPath, 0o600);
 
   execSync(`launchctl load "${plistPath}"`);
 
@@ -310,6 +311,7 @@ const restartLaunchd = async (config: AutostartConfig | null): Promise<void> => 
   if (config) {
     const content = buildPlistContent(config);
     await fs.writeFile(plistPath, content, "utf8");
+    chmodSync(plistPath, 0o600);
     logger.info("Regenerated launchd plist before restart", { plistPath });
   }
 
@@ -324,6 +326,7 @@ const registerSystemd = async (config: AutostartConfig): Promise<AutostartResult
   const content = buildSystemdContent(config);
   await fs.mkdir(join(homedir(), ".config", "systemd", "user"), { recursive: true });
   await fs.writeFile(servicePath, content, "utf8");
+  chmodSync(servicePath, 0o600);
 
   execSync("systemctl --user daemon-reload");
   execSync("systemctl --user enable agentrunner");
@@ -363,6 +366,7 @@ const restartSystemd = async (config: AutostartConfig | null): Promise<void> => 
     const servicePath = getSystemdServicePath();
     const content = buildSystemdContent(config);
     await fs.writeFile(servicePath, content, "utf8");
+    chmodSync(servicePath, 0o600);
     execSync("systemctl --user daemon-reload");
     logger.info("Regenerated systemd service before restart", { servicePath });
   }
@@ -386,6 +390,7 @@ const registerWindowsTask = async (config: AutostartConfig): Promise<AutostartRe
 
   const content = buildWindowsVbsContent(config);
   await fs.writeFile(startupVbsPath, content, "utf8");
+  chmodSync(startupVbsPath, 0o600);
 
   // Clean up legacy files.
   for (const legacyPath of [legacyVbsPath, legacyBatPath]) {
@@ -440,6 +445,7 @@ const restartWindowsStartup = async (config: AutostartConfig | null): Promise<vo
   if (config) {
     const content = buildWindowsVbsContent(config);
     await fs.writeFile(startupVbsPath, content, "utf8");
+    chmodSync(startupVbsPath, 0o600);
     logger.info("Regenerated Windows startup script before restart", { startupVbsPath });
   }
 
