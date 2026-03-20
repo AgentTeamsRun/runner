@@ -113,12 +113,16 @@ export function createWorktree(authPath: string, options: {
 export function removeWorktree(authPath: string, worktreePath: string, worktreeId: string): void {
   const branchName = `worktree/${worktreeId}`;
 
+  if (!existsSync(worktreePath)) {
+    throw new Error(`Worktree path does not exist: ${worktreePath}`);
+  }
+
   try {
     execFileSync("git", ["worktree", "remove", worktreePath, "--force"], {
       cwd: authPath,
       stdio: "pipe"
     });
-  } catch (error) {
+  } catch {
     // If worktree removal via git fails, try to clean up manually
     if (existsSync(worktreePath)) {
       rmSync(worktreePath, { recursive: true, force: true });
@@ -128,6 +132,10 @@ export function removeWorktree(authPath: string, worktreePath: string, worktreeI
     } catch {
       // Ignore prune errors
     }
+  }
+
+  if (existsSync(worktreePath)) {
+    throw new Error(`Worktree directory still exists after removal: ${worktreePath}`);
   }
 
   try {

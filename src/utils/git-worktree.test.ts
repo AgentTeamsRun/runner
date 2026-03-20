@@ -279,13 +279,18 @@ test("createWorktree skips .env files that already exist in worktree (git-tracke
   }
 });
 
-test("removeWorktree handles already-removed worktree gracefully", () => {
+test("removeWorktree throws for non-existent worktree path", () => {
   const repo = makeTempGitRepo();
   const worktreeId = "test-wt-already-gone";
   try {
     const worktreePath = resolveWorktreePath(repo, worktreeId);
-    // Should not throw even if worktree never existed
-    removeWorktree(repo, worktreePath, worktreeId);
+    assert.throws(
+      () => removeWorktree(repo, worktreePath, worktreeId),
+      (err: Error) => {
+        assert.ok(err.message.includes("does not exist"));
+        return true;
+      }
+    );
   } finally {
     cleanupDir(repo);
   }
