@@ -14,6 +14,7 @@ const trigger: DaemonTrigger = {
   agentConfigId: "agent-1",
   startedAt: null,
   errorMessage: null,
+  worktreeError: null,
   lastHeartbeatAt: null,
   conversationId: null,
   parentTriggerId: "parent-1",

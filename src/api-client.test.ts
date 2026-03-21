@@ -79,6 +79,23 @@ test("updateTriggerStatus sends JSON payload including optional error message", 
   assert.equal((calls[0]?.headers as Record<string, string>)["Content-Type"], "application/json");
 });
 
+test("reportWorktreeStatus sends JSON payload including optional worktree error", async () => {
+  const calls: Array<RequestInit | undefined> = [];
+  globalThis.fetch = (async (_url, options) => {
+    calls.push(options);
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+
+  const client = new DaemonApiClient("https://api.example", "daemon-token");
+  await client.reportWorktreeStatus("t1", "FAILED", "worktree missing");
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(String(calls[0]?.body)), {
+    worktreeStatus: "FAILED",
+    worktreeError: "worktree missing"
+  });
+});
+
 test("appendTriggerLogs throws when the API responds with an error", async () => {
   globalThis.fetch = (async () => new Response(null, { status: 500 })) as typeof fetch;
 

@@ -34,6 +34,7 @@ export type DaemonTrigger = {
   agentConfigId: string;
   startedAt: string | null;
   errorMessage: string | null;
+  worktreeError: string | null;
   lastHeartbeatAt: string | null;
   conversationId: string | null;
   parentTriggerId: string | null;

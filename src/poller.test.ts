@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as fsModule from "node:fs";
 import path from "node:path";
 import test, { mock } from "node:test";
 import { logger } from "./logger.js";
@@ -23,6 +24,7 @@ const trigger: DaemonTrigger = {
   agentConfigId: "agent-1",
   startedAt: null,
   errorMessage: null,
+  worktreeError: null,
   lastHeartbeatAt: null,
   conversationId: null,
   parentTriggerId: null,
@@ -195,8 +197,8 @@ test("startPolling clears the interval and exits on shutdown signals", async () 
       claimTrigger: async () => ({ ok: true, conflict: false }),
       fetchOrphanedCancelRequested: async () => [] as string[],
       updateTriggerStatus: async () => undefined,
-    fetchPendingWorktreeRemovals: async () => [],
-    reportWorktreeStatus: async () => undefined
+      fetchPendingWorktreeRemovals: async () => [],
+      reportWorktreeStatus: async () => undefined
     }),
     runCleanup: async () => undefined,
     setInterval: (() => intervalHandle) as typeof setInterval,
@@ -240,7 +242,7 @@ test("startPolling clears the interval and exits on shutdown signals", async () 
 
 test("startPolling restores persisted auth paths for worktree removals after restart", async () => {
   const removedWorktrees: Array<{ authPath: string; worktreePath: string; worktreeId: string }> = [];
-  const reportedStatuses: Array<{ triggerId: string; status: string }> = [];
+  const reportedStatuses: Array<{ triggerId: string; status: string; worktreeError?: string }> = [];
   const worktreeRemovalTrigger: DaemonTrigger = {
     ...trigger,
     id: "trigger-remove",
@@ -257,8 +259,8 @@ test("startPolling restores persisted auth paths for worktree removals after res
       fetchOrphanedCancelRequested: async () => [] as string[],
       updateTriggerStatus: async () => undefined,
       fetchPendingWorktreeRemovals: async () => [worktreeRemovalTrigger],
-      reportWorktreeStatus: async (triggerId: string, status: string) => {
-        reportedStatuses.push({ triggerId, status });
+      reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
+        reportedStatuses.push({ triggerId, status, worktreeError });
       }
     }),
     runCleanup: async () => undefined,
@@ -286,9 +288,118 @@ test("startPolling restores persisted auth paths for worktree removals after res
     worktreePath: path.join("/persisted/auth", ".path-worktrees", "wt-worktree-1"),
     worktreeId: "worktree-1"
   }]);
+  assert.deepEqual(reportedStatuses, [{ triggerId: "trigger-remove", status: "REMOVED", worktreeError: undefined }]);
+
+  const resolveKeepAlive = keepAliveResolve ?? (() => {
+    throw new Error("keepAlive resolver was not registered");
+  });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
+test("startPolling reports FAILED when no persisted auth path matches the worktree", async () => {
+  const reportedStatuses: Array<{ triggerId: string; status: string; worktreeError?: string }> = [];
+  const worktreeRemovalTrigger: DaemonTrigger = {
+    ...trigger,
+    id: "trigger-remove-missing",
+    useWorktree: true,
+    worktreeId: "worktree-missing",
+    worktreeStatus: "REMOVE_REQUESTED"
+  };
+
+  let keepAliveResolve: (() => void) | null = null;
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => ({
+      fetchPendingTrigger: async () => null,
+      claimTrigger: async () => ({ ok: true, conflict: false }),
+      fetchOrphanedCancelRequested: async () => [] as string[],
+      updateTriggerStatus: async () => undefined,
+      fetchPendingWorktreeRemovals: async () => [worktreeRemovalTrigger],
+      reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
+        reportedStatuses.push({ triggerId, status, worktreeError });
+      }
+    }),
+    runCleanup: async () => undefined,
+    removeWorktree: () => {
+      throw new Error("removeWorktree should not be called");
+    },
+    setInterval: (() => ({ ref() {}, unref() {} } as unknown as NodeJS.Timeout)) as typeof setInterval,
+    clearInterval: (() => undefined) as typeof clearInterval,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    processExit: (() => {
+      throw new Error("should not exit");
+    }) as (code: number) => never,
+    now: () => 0,
+    loadAuthPaths: () => ["/persisted/auth/path"],
+    saveAuthPath: () => "/tmp/auth-paths.json",
+    keepAlive: () => new Promise<void>((resolve) => {
+      keepAliveResolve = resolve;
+    })
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
   assert.deepEqual(reportedStatuses, [{
-    triggerId: "trigger-remove",
-    status: "REMOVED"
+    triggerId: "trigger-remove-missing",
+    status: "FAILED",
+    worktreeError: "Failed to remove RunnerBox: worktree path was not found for worktree-missing"
+  }]);
+
+  const resolveKeepAlive = keepAliveResolve ?? (() => {
+    throw new Error("keepAlive resolver was not registered");
+  });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
+test("startPolling reports FAILED when worktree removal throws after matching a path", async () => {
+  const reportedStatuses: Array<{ triggerId: string; status: string; worktreeError?: string }> = [];
+  const worktreeRemovalTrigger: DaemonTrigger = {
+    ...trigger,
+    id: "trigger-remove-failed",
+    useWorktree: true,
+    worktreeId: "worktree-failed",
+    worktreeStatus: "REMOVE_REQUESTED"
+  };
+  const matchingWorktreePath = path.join("/persisted/auth", ".path-worktrees", "wt-worktree-failed");
+  mock.method(fsModule, "existsSync", (candidatePath: fsModule.PathLike) => String(candidatePath) === matchingWorktreePath);
+
+  let keepAliveResolve: (() => void) | null = null;
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => ({
+      fetchPendingTrigger: async () => null,
+      claimTrigger: async () => ({ ok: true, conflict: false }),
+      fetchOrphanedCancelRequested: async () => [] as string[],
+      updateTriggerStatus: async () => undefined,
+      fetchPendingWorktreeRemovals: async () => [worktreeRemovalTrigger],
+      reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
+        reportedStatuses.push({ triggerId, status, worktreeError });
+      }
+    }),
+    runCleanup: async () => undefined,
+    removeWorktree: () => {
+      throw new Error("permission denied");
+    },
+    setInterval: (() => ({ ref() {}, unref() {} } as unknown as NodeJS.Timeout)) as typeof setInterval,
+    clearInterval: (() => undefined) as typeof clearInterval,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    processExit: (() => {
+      throw new Error("should not exit");
+    }) as (code: number) => never,
+    now: () => 0,
+    loadAuthPaths: () => ["/persisted/auth/path"],
+    saveAuthPath: () => "/tmp/auth-paths.json",
+    keepAlive: () => new Promise<void>((resolve) => {
+      keepAliveResolve = resolve;
+    })
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(reportedStatuses, [{
+    triggerId: "trigger-remove-failed",
+    status: "FAILED",
+    worktreeError: "permission denied"
   }]);
 
   const resolveKeepAlive = keepAliveResolve ?? (() => {

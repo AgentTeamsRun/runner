@@ -4,6 +4,7 @@ import { runCleanup } from "./utils/runner-cleanup.js";
 import { runConventionSync } from "./utils/convention-sync.js";
 import { loadAuthPaths, saveAuthPath } from "./utils/auth-path-store.js";
 import { removeWorktree, resolveWorktreePath } from "./utils/git-worktree.js";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { DaemonTrigger, RuntimeConfig } from "./types.js";
 
@@ -130,23 +131,43 @@ export const startPolling = async (
       const triggers = await client.fetchPendingWorktreeRemovals();
       for (const trigger of triggers) {
         try {
-          let removed = false;
+          let removeSucceeded = false;
           const effectiveWorktreeId = trigger.worktreeId ?? trigger.id;
+          let matchedAuthPath = false;
           for (const authPath of knownAuthPaths) {
             const worktreePath = resolveWorktreePath(authPath, effectiveWorktreeId);
+            if (!existsSync(worktreePath)) {
+              continue;
+            }
+
+            matchedAuthPath = true;
             try {
               removeWorktreeFn(authPath, worktreePath, effectiveWorktreeId);
-              removed = true;
+              removeSucceeded = true;
               logger.info("Worktree removed for trigger", { triggerId: trigger.id, worktreePath });
               break;
-            } catch {
-              // This authPath may not be the right one, try next
+            } catch (error) {
+              const worktreeError = error instanceof Error ? error.message : String(error);
+              logger.warn("Failed to remove worktree for trigger", {
+                triggerId: trigger.id,
+                authPath,
+                worktreePath,
+                error: worktreeError
+              });
+              await client.reportWorktreeStatus(trigger.id, "FAILED", worktreeError);
+              break;
             }
           }
-          if (removed) {
+
+          if (removeSucceeded) {
             await client.reportWorktreeStatus(trigger.id, "REMOVED");
-          } else {
-            logger.warn("Could not find authPath for worktree removal", { triggerId: trigger.id });
+          } else if (!matchedAuthPath) {
+            const worktreeError = `Failed to remove RunnerBox: worktree path was not found for ${effectiveWorktreeId}`;
+            logger.warn("Could not find authPath for worktree removal", {
+              triggerId: trigger.id,
+              worktreeId: effectiveWorktreeId
+            });
+            await client.reportWorktreeStatus(trigger.id, "FAILED", worktreeError);
           }
         } catch (error) {
           logger.warn("Failed to remove worktree for trigger", {

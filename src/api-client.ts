@@ -209,14 +209,17 @@ export class DaemonApiClient {
     return payload.data;
   }
 
-  async reportWorktreeStatus(triggerId: string, status: string): Promise<void> {
+  async reportWorktreeStatus(triggerId: string, status: string, worktreeError?: string): Promise<void> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/worktree/status`, {
       method: "PATCH",
       headers: {
         ...this.daemonHeaders(),
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ worktreeStatus: status })
+      body: JSON.stringify({
+        worktreeStatus: status,
+        ...(worktreeError ? { worktreeError } : {})
+      })
     });
 
     if (!response.ok) {
