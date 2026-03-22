@@ -116,7 +116,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     return JSON.stringify(prompt);
   };
 
-  const buildRunnerPrompt = (trigger: DaemonTrigger, currentHistoryPath: string | null, parentHistoryPath: string | null): string => {
+  const buildRunnerPrompt = (trigger: DaemonTrigger, currentHistoryPath: string | null, parentHistoryPath: string | null, baseBranch?: string | null): string => {
     const basePrompt = toPromptString(trigger.prompt);
     const isContinuation = Boolean(trigger.parentTriggerId);
 
@@ -131,6 +131,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       "The runner creates worktrees on branches like `worktree/{id}`.",
       "When you need to push or create a PR, always create a new branch with a descriptive name (e.g., `feat/add-login-api`, `fix/null-pointer-dashboard`).",
       "The `worktree/…` branch is a system-managed throwaway — pushing or opening a PR from it pollutes the branch list.",
+      "",
+      "**[Worktree Checkout Rule]**",
+      "Do NOT checkout other branches in the worktree. Stay on the current branch at all times.",
+      `To sync with the latest changes, use: git fetch origin && git merge origin/${baseBranch ?? "main"}`,
       "",
     ].join("\n");
 
@@ -243,7 +247,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       const historyPaths = resolveHistoryPaths(effectiveAuthPath, trigger.id, trigger.parentTriggerId);
       currentHistoryPath = historyPaths.currentHistoryPath;
       await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
-      const runnerPrompt = buildRunnerPrompt(trigger, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath);
+      const runnerPrompt = buildRunnerPrompt(trigger, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath, runtime.baseBranch);
 
       const runner = createRunner(trigger.runnerType);
       const cancelController = new AbortController();
