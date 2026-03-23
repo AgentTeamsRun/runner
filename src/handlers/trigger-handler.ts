@@ -174,7 +174,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       "  - Do not add a top-level title (e.g., # Runner History).",
       "  - Use ### (h3) headings to organize sections.",
       "  - Add whatever sections best describe the work (e.g., ### Changes, ### Verification, ### Next Steps).",
-      "  - Required section: ### Summary — 3-5 bullet points of what was done. This is used for handoff to the next session.",
+      "  - Required section: ### Summary — 3-5 bullet points of what was done. This is used for handoff to the next session. If any CLI command output includes a `webUrl` field during this run, include it as a clickable markdown link in the relevant summary bullet.",
       "  - Required section: ### Questions for User — include only blocking or decision-required questions (up to 3). Write 'None' if there are no questions.",
       "----"
     ];
