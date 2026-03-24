@@ -30,11 +30,11 @@ test("runUpdateCommand installs latest package and restarts daemon", async () =>
   assert.deepEqual(commandCalls, [
     {
       name: "npm",
-      args: ["view", "@rlarua/agentrunner", "version"]
+      args: ["view", "@agentteams/runner", "version"]
     },
     {
       name: "npm",
-      args: ["install", "-g", "@rlarua/agentrunner@latest"]
+      args: ["install", "-g", "@agentteams/runner@latest"]
     }
   ]);
   assert.equal(restarted, true);
@@ -71,11 +71,11 @@ test("runUpdateCommand continues update when latest version lookup fails", async
   assert.deepEqual(commandCalls, [
     {
       name: "npm",
-      args: ["view", "@rlarua/agentrunner", "version"]
+      args: ["view", "@agentteams/runner", "version"]
     },
     {
       name: "npm",
-      args: ["install", "-g", "@rlarua/agentrunner@latest"]
+      args: ["install", "-g", "@agentteams/runner@latest"]
     }
   ]);
 });

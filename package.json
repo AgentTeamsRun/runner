@@ -1,5 +1,5 @@
 {
-  "name": "@rlarua/agentrunner",
+  "name": "@agentteams/runner",
   "version": "0.0.46",
   "description": "AgentRunner - Background runner that polls and executes AI agent tasks",
   "type": "module",

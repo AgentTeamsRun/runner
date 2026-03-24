@@ -198,7 +198,7 @@ dir "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\agentrunner-s
   - 자동 시작 등록이 있으면 해당 OS 등록 경로로 재시작
   - 자동 시작 등록이 없으면 detached 백그라운드 프로세스로 다시 시작
 - `agentrunner update`
-  - `npm install -g @rlarua/agentrunner@latest`
+  - `npm install -g @agentteams/runner@latest`
   - 설치 성공 후 `restart` 흐름 수행
   - Windows는 서비스 재기동이 아니라 Startup script를 다시 실행하는 UX
 
@@ -257,7 +257,7 @@ npm run dev
 GitHub Actions(`.github/workflows/publish-runner.yml`)로 자동 배포됩니다.
 
 - **트리거**: `main` 브랜치에 `daemon/**` 경로 push 시
-- **패키지**: `@rlarua/agentrunner`
+- **패키지**: `@agentteams/runner`
 - **레지스트리**: npm
 
 수동 배포:
@@ -314,7 +314,7 @@ cat ~/.agentteams/daemon.json
 
 | 항목 | 값 | 비고 |
 |---|---|---|
-| npm 패키지 | `@rlarua/agentrunner` | |
+| npm 패키지 | `@agentteams/runner` | |
 | CLI 명령어 | `agentrunner` | |
 | 환경변수 접두사 | `AGENTTEAMS_DAEMON_` | 기존 호환 유지 |
 | API 엔드포인트 | `/daemon-*` | 기존 호환 유지 |

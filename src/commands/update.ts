@@ -6,7 +6,7 @@ import { logger } from "../logger.js";
 const require = createRequire(import.meta.url);
 const packageJson = require("../../package.json") as { version?: string };
 
-const packageName = "@rlarua/agentrunner";
+const packageName = "@agentteams/runner";
 
 type UpdateDeps = {
   runExecutableSync?: typeof runExecutableSync;

@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Security fixes are applied to the latest released version of `@rlarua/agentrunner`.
+Security fixes are applied to the latest released version of `@agentteams/runner`.
 
 ## Reporting a Vulnerability
 

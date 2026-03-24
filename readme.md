@@ -1,4 +1,4 @@
-# @rlarua/agentrunner
+# @agentteams/runner
 
 [![GitHub](https://img.shields.io/badge/GitHub-rlarua%2FAgentTeams--runner-blue?logo=github)](https://github.com/rlarua/AgentTeams-runner)
 [![Issues](https://img.shields.io/github/issues/rlarua/AgentTeams-runner)](https://github.com/rlarua/AgentTeams-runner/issues)
@@ -14,7 +14,7 @@ A background runner that polls and executes AI agent tasks from the AgentTeams p
 ## Installation
 
 ```bash
-npm install -g @rlarua/agentrunner
+npm install -g @agentteams/runner
 ```
 
 Verify the installation:
@@ -113,7 +113,7 @@ Restarts the runner using the current environment:
 agentrunner update
 ```
 
-Updates the globally installed `@rlarua/agentrunner` package to the latest npm version and then restarts the runner.
+Updates the globally installed `@agentteams/runner` package to the latest npm version and then restarts the runner.
 
 ### 7. Uninstall (`uninstall`)
 
