@@ -2,7 +2,7 @@ import { readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { logger } from "../logger.js";
 
-const LOG_TTL_MS = 1 * 24 * 60 * 60 * 1000;
+const LOG_TTL_MS = 6 * 60 * 60 * 1000;
 const HISTORY_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 
 type CleanupDeps = {

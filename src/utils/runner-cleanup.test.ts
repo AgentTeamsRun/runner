@@ -49,7 +49,7 @@ test("runCleanup deletes only files older than each directory TTL", async () => 
     await writeFile(freshHistory, "fresh");
 
     await touchAge(oldLog, 2 * 24 * 60 * 60 * 1000);
-    await touchAge(freshLog, 12 * 60 * 60 * 1000);
+    await touchAge(freshLog, 3 * 60 * 60 * 1000);
     await touchAge(oldHistory, 4 * 24 * 60 * 60 * 1000);
     await touchAge(freshHistory, 2 * 24 * 60 * 60 * 1000);
 
