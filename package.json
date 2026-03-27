@@ -25,10 +25,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/rlarua/AgentTeams-runner.git"
+    "url": "https://github.com/AgentTeamsRun/runner.git"
   },
   "bugs": {
-    "url": "https://github.com/rlarua/AgentTeams-runner/issues"
+    "url": "https://github.com/AgentTeamsRun/runner/issues"
   },
   "homepage": "https://agentteams.run",
   "engines": {
