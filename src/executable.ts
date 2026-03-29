@@ -44,7 +44,7 @@ const getNpmGlobalBinPath = (deps: ExecutableDeps): string | null => {
   const run = deps.execFileSync ?? execFileSync;
 
   try {
-    const output = run("npm", ["prefix", "-g"], { encoding: "utf8" }).trim();
+    const output = run("npm", ["prefix", "-g"], { encoding: "utf8", windowsHide: true }).trim();
     return output.length > 0 ? output : null;
   } catch {
     return null;
@@ -57,7 +57,7 @@ const resolveFromPathLookup = (name: string, deps: ExecutableDeps): string | nul
   const lookupCommand = os === "win32" ? "where" : "which";
 
   try {
-    const output = run(lookupCommand, [name], { encoding: "utf8" });
+    const output = run(lookupCommand, [name], { encoding: "utf8", windowsHide: true });
     return getFirstOutputLine(output);
   } catch {
     return null;
