@@ -61,6 +61,7 @@ export const maybeAutoUpdate = async (
 
   // CLI 업데이트
   if (meta.cliLatestVersion && now - lastCliUpdateAttempt >= COOLDOWN_MS) {
+    lastCliUpdateAttempt = now;
     const currentCliVersion = getInstalledCliVersion({
       runExecutableSync: resolvedRunExecutableSync,
       logger: resolvedLogger
@@ -75,13 +76,11 @@ export const maybeAutoUpdate = async (
         installPackage(CLI_PACKAGE, meta.cliLatestVersion, {
           runExecutableSync: resolvedRunExecutableSync
         });
-        lastCliUpdateAttempt = now;
         cliUpdated = true;
         resolvedLogger.info("CLI auto-update completed", {
           version: meta.cliLatestVersion
         });
       } catch (error) {
-        lastCliUpdateAttempt = now;
         resolvedLogger.error("CLI auto-update failed", {
           error: error instanceof Error ? error.message : String(error)
         });
@@ -91,6 +90,7 @@ export const maybeAutoUpdate = async (
 
   // Runner 업데이트
   if (meta.runnerLatestVersion && now - lastRunnerUpdateAttempt >= COOLDOWN_MS) {
+    lastRunnerUpdateAttempt = now;
     const currentRunnerVersion = getCurrentRunnerVersion();
 
     if (needsUpdate(currentRunnerVersion, meta.runnerLatestVersion)) {
@@ -102,7 +102,6 @@ export const maybeAutoUpdate = async (
         installPackage(RUNNER_PACKAGE, meta.runnerLatestVersion, {
           runExecutableSync: resolvedRunExecutableSync
         });
-        lastRunnerUpdateAttempt = now;
         runnerUpdated = true;
         resolvedLogger.info("Runner auto-update completed — restart required", {
           version: meta.runnerLatestVersion
@@ -117,7 +116,6 @@ export const maybeAutoUpdate = async (
           }
         }
       } catch (error) {
-        lastRunnerUpdateAttempt = now;
         resolvedLogger.error("Runner auto-update failed", {
           error: error instanceof Error ? error.message : String(error)
         });
