@@ -436,7 +436,7 @@ test("createTriggerHandler stores stdout as fallback history when the runner omi
   ]);
   assert.equal(writtenFiles.length, 1);
   assert.equal(writtenFiles[0]?.path, "/auth/path/.agentteams/runner/history/trigger-1.md");
-  assert.match(String(clientCalls[0]?.args[1]), /agentrunner version 0\.0\.11/);
+  assert.match(String(clientCalls[0]?.args[1]), /history file was not written by the agent/);
   assert.deepEqual(clientCalls.at(-1)?.args, ["trigger-1", "DONE", undefined]);
 });
 

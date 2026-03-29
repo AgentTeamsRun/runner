@@ -81,17 +81,20 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   };
 
   const buildFallbackHistory = (outputText: string, errorMessage?: string): string => {
-    const output = outputText.trim().slice(0, maxHistoryLength);
     const summaryLine = errorMessage
       ? `- Runner terminated with error: ${errorMessage}`
       : "- Runner completed successfully but did not write the requested history file.";
+    const trimmed = outputText.trim();
+    const outputNote = trimmed.length === 0
+      ? "- No stdout captured."
+      : `- stdout was not summarized — history file was not written by the agent. (${trimmed.length} chars captured)`;
     return [
       "### Summary",
       summaryLine,
-      "- Stored captured stdout as fallback history for this run.",
+      outputNote,
       "",
-      "### Output",
-      output
+      "### Questions for User",
+      "None"
     ].join("\n");
   };
 
@@ -165,17 +168,20 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
             `- Previous history path: ${parentHistoryPath ?? "(unavailable: authPath not configured)"}`,
             "- Read the previous history file first and continue without repeating completed work.",
             "- If the previous history has a Suggestions for User section, consider those suggestions in the context of the user's current prompt and proceed accordingly.",
+            "- IMPORTANT: When writing the new history file, do NOT copy or append previous session content. Merge all sessions into a single up-to-date summary. Never list sessions separately (e.g., Session 1, Session 2).",
           ]
         : []),
       `- History path: ${currentHistoryPath ?? "(unavailable: authPath not configured)"}`,
       "- Save history as a Markdown file (.md) at the history path.",
       "- Overwrite the markdown file with the latest full summary for this run.",
+      "- Purpose: The history file is a handoff document for the next session — include only what the next session needs to know.",
+      "- Target length: Keep under 2,000 characters. Be concise.",
       "- Format rules:",
       "  - Do not add a top-level title (e.g., # Runner History).",
-      "  - Use ### (h3) headings to organize sections.",
-      "  - Add whatever sections best describe the work (e.g., ### Changes, ### Verification, ### Next Steps).",
-      "  - Required section: ### Summary — 3-5 bullet points of what was done. This is used for handoff to the next session. If any CLI command output includes a `webUrl` field during this run, include it as a clickable markdown link in the relevant summary bullet.",
+      "  - Use ### (h3) headings. Only use the two required sections below — do not add extra sections.",
+      "  - Required section: ### Summary — 3-5 bullet points focused on what the next session needs to know (final state, key decisions, remaining work). If any CLI command output includes a `webUrl` field during this run, include it as a clickable markdown link in the relevant summary bullet.",
       "  - Required section: ### Questions for User — include only blocking or decision-required questions (up to 3). Write 'None' if there are no questions.",
+      "- Do NOT include: code diffs, full file contents, CLI/terminal output, step-by-step execution logs, or verification command results.",
       "----"
     ];
 
