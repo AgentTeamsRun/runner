@@ -1,6 +1,6 @@
 {
   "name": "@agentteams/runner",
-  "version": "0.0.50",
+  "version": "0.0.51",
   "description": "AgentRunner - Background runner that polls and executes AI agent tasks",
   "type": "module",
   "main": "dist/index.js",
