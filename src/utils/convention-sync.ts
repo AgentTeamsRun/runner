@@ -16,6 +16,7 @@ export const runConventionSync = async (authPath: string, deps: ConventionSyncDe
         cwd: authPath,
         shell: true,
         stdio: "ignore",
+        windowsHide: true,
       });
 
       child.on("error", (err) => {

@@ -171,7 +171,7 @@ function execPlanIssue(
       args.push("--title", issue.externalTitle);
     }
 
-    execFile("agentteams", args, { cwd, timeout: 15000 }, (error: Error | null) => {
+    execFile("agentteams", args, { cwd, timeout: 15000, windowsHide: true }, (error: Error | null) => {
       if (error) {
         // 409 or other failure — skip silently
         logger.warn("Origin issue safeguard: plan issue command failed", {

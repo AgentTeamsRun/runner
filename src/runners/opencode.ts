@@ -68,7 +68,7 @@ const terminateRunnerChild = (
 
   try {
     if (isWindows) {
-      execFileSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore" });
+      execFileSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore", windowsHide: true });
     } else {
       process.kill(-child.pid, "SIGTERM");
     }

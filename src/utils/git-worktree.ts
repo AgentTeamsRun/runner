@@ -6,7 +6,8 @@ export function isGitRepo(dirPath: string): boolean {
   try {
     execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
       cwd: dirPath,
-      stdio: "pipe"
+      stdio: "pipe",
+      windowsHide: true
     });
     return true;
   } catch {
@@ -123,7 +124,8 @@ export function removeWorktree(authPath: string, worktreePath: string, worktreeI
   try {
     execFileSync("git", ["worktree", "remove", worktreePath, "--force"], {
       cwd: authPath,
-      stdio: "pipe"
+      stdio: "pipe",
+      windowsHide: true
     });
   } catch {
     // If worktree removal via git fails, try to clean up manually
@@ -144,7 +146,8 @@ export function removeWorktree(authPath: string, worktreePath: string, worktreeI
   try {
     execFileSync("git", ["branch", "-D", branchName], {
       cwd: authPath,
-      stdio: "pipe"
+      stdio: "pipe",
+      windowsHide: true
     });
   } catch {
     // Branch may not exist or already deleted; ignore
@@ -153,11 +156,13 @@ export function removeWorktree(authPath: string, worktreePath: string, worktreeI
   try {
     execFileSync("git", ["ls-remote", "--exit-code", "origin", `refs/heads/${branchName}`], {
       cwd: authPath,
-      stdio: "pipe"
+      stdio: "pipe",
+      windowsHide: true
     });
     execFileSync("git", ["push", "origin", "--delete", branchName], {
       cwd: authPath,
-      stdio: "pipe"
+      stdio: "pipe",
+      windowsHide: true
     });
   } catch {
     // Remote branch may not exist or deletion may fail; ignore
