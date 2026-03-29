@@ -7,6 +7,8 @@ import { removeWorktree, resolveWorktreePath } from "./utils/git-worktree.js";
 import { existsSync } from "node:fs";
 import type { DaemonTrigger, RuntimeConfig } from "./types.js";
 import { maybeAutoUpdate } from "./utils/auto-update.js";
+import { getAutostartStatus } from "./autostart.js";
+import { spawnDetachedDaemon } from "./daemon-control.js";
 
 
 type TriggerHandlerFactory = (onAuthPathDiscovered: (authPath: string) => void) => (trigger: DaemonTrigger) => Promise<void>;
@@ -214,8 +216,17 @@ export const startPolling = async (
 
         // 사용자 재시작 요청 확인
         if (pendingResponse.meta?.restartRequested) {
-          logger.info("Restart requested by user — exiting for launchd/systemd restart");
-          exitProcess(1);
+          const autostartStatus = getAutostartStatus();
+          if (autostartStatus.registered) {
+            logger.info("Restart requested by user — exiting for autostart service restart", {
+              platform: autostartStatus.platform
+            });
+            exitProcess(1);
+          } else {
+            logger.info("Restart requested by user — spawning new daemon before exit (autostart not registered)");
+            spawnDetachedDaemon();
+            exitProcess(0);
+          }
         }
         return;
       }
