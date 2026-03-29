@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+process.title = "AgentTeams Runner";
 import { createRequire } from "node:module";
 import { runInitCommand } from "./commands/init.js";
 import { runStartCommand } from "./commands/start.js";
