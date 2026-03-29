@@ -20,6 +20,7 @@ type AutoUpdateDeps = {
 
 let lastCliUpdateAttempt = 0;
 let lastRunnerUpdateAttempt = 0;
+let lastSuccessfulRunnerVersion: string | null = null;
 
 const getCurrentRunnerVersion = (): string => packageJson.version ?? "0.0.0";
 
@@ -93,7 +94,7 @@ export const maybeAutoUpdate = async (
     lastRunnerUpdateAttempt = now;
     const currentRunnerVersion = getCurrentRunnerVersion();
 
-    if (needsUpdate(currentRunnerVersion, meta.runnerLatestVersion)) {
+    if (needsUpdate(currentRunnerVersion, meta.runnerLatestVersion) && lastSuccessfulRunnerVersion !== meta.runnerLatestVersion) {
       try {
         resolvedLogger.info("Auto-updating Runner", {
           currentVersion: currentRunnerVersion,
@@ -103,6 +104,7 @@ export const maybeAutoUpdate = async (
           runExecutableSync: resolvedRunExecutableSync
         });
         runnerUpdated = true;
+        lastSuccessfulRunnerVersion = meta.runnerLatestVersion;
         resolvedLogger.info("Runner auto-update completed — restart required", {
           version: meta.runnerLatestVersion
         });
@@ -130,4 +132,5 @@ export const maybeAutoUpdate = async (
 export const resetAutoUpdateState = (): void => {
   lastCliUpdateAttempt = 0;
   lastRunnerUpdateAttempt = 0;
+  lastSuccessfulRunnerVersion = null;
 };

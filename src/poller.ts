@@ -5,7 +5,6 @@ import { runConventionSync } from "./utils/convention-sync.js";
 import { loadAuthPaths, saveAuthPath } from "./utils/auth-path-store.js";
 import { removeWorktree, resolveWorktreePath } from "./utils/git-worktree.js";
 import { existsSync } from "node:fs";
-import path from "node:path";
 import type { DaemonTrigger, RuntimeConfig } from "./types.js";
 import { maybeAutoUpdate } from "./utils/auto-update.js";
 
@@ -20,6 +19,7 @@ type PollingDependencies = {
   runCleanup?: (authPath: string) => Promise<void>;
   runConventionSync?: (authPath: string) => Promise<void>;
   removeWorktree?: typeof removeWorktree;
+  maybeAutoUpdate?: typeof maybeAutoUpdate;
   setInterval?: typeof global.setInterval;
   clearInterval?: typeof global.clearInterval;
   processOn?: (event: NodeJS.Signals, listener: () => void) => void;
@@ -39,6 +39,7 @@ export const startPolling = async (
   const cleanupRunner = dependencies.runCleanup ?? runCleanup;
   const conventionSync = dependencies.runConventionSync ?? runConventionSync;
   const removeWorktreeFn = dependencies.removeWorktree ?? removeWorktree;
+  const autoUpdate = dependencies.maybeAutoUpdate ?? maybeAutoUpdate;
   const now = dependencies.now ?? Date.now;
   const registerInterval = dependencies.setInterval ?? global.setInterval;
   const unregisterInterval = dependencies.clearInterval ?? global.clearInterval;
@@ -202,7 +203,7 @@ export const startPolling = async (
       if (!trigger) {
         // idle 상태에서 자동 업데이트 시도
         try {
-          await maybeAutoUpdate(pendingResponse.meta, {
+          await autoUpdate(pendingResponse.meta, {
             onRunnerUpdated: (version) => client.notifyUpdate(version, "runner")
           });
         } catch (error) {
@@ -214,7 +215,7 @@ export const startPolling = async (
         // 사용자 재시작 요청 확인
         if (pendingResponse.meta?.restartRequested) {
           logger.info("Restart requested by user — exiting for launchd/systemd restart");
-          process.exit(1);
+          exitProcess(1);
         }
         return;
       }

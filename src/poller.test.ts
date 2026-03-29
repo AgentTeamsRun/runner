@@ -244,6 +244,51 @@ test("startPolling clears the interval and exits on shutdown signals", async () 
   await pollingPromise;
 });
 
+test("startPolling delegates auto-update via injected dependency", async () => {
+  let autoUpdateCallCount = 0;
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => ({
+      fetchPendingTrigger: async () => ({
+        data: null,
+        meta: { cliLatestVersion: null, runnerLatestVersion: "99.0.0" }
+      }),
+      claimTrigger: async () => ({ ok: true, conflict: false }),
+      fetchOrphanedCancelRequested: async () => [] as string[],
+      updateTriggerStatus: async () => undefined,
+      fetchPendingWorktreeRemovals: async () => [],
+      reportWorktreeStatus: async () => undefined,
+      notifyUpdate: async () => undefined
+    }),
+    runCleanup: async () => undefined,
+    maybeAutoUpdate: async () => {
+      autoUpdateCallCount++;
+      return { cliUpdated: false, runnerUpdated: false };
+    },
+    setInterval: (() => ({} as NodeJS.Timeout)) as typeof setInterval,
+    clearInterval: (() => undefined) as typeof clearInterval,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    processExit: (() => undefined as never) as (code: number) => never,
+    now: () => 0,
+    loadAuthPaths: () => [],
+    saveAuthPath: () => "/tmp/auth-paths.json",
+    keepAlive: () => new Promise<void>((resolve) => {
+      keepAliveResolve = resolve;
+    })
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(autoUpdateCallCount, 1, "should call injected maybeAutoUpdate on idle poll");
+
+  const resolveKeepAlive = keepAliveResolve ?? (() => {
+    throw new Error("keepAlive resolver was not registered");
+  });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
 test("startPolling restores persisted auth paths for worktree removals after restart", async () => {
   const removedWorktrees: Array<{ authPath: string; worktreePath: string; worktreeId: string }> = [];
   const reportedStatuses: Array<{ triggerId: string; status: string; worktreeError?: string }> = [];
