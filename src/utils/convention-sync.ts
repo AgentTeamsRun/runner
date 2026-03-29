@@ -14,7 +14,6 @@ export const runConventionSync = async (authPath: string, deps: ConventionSyncDe
     const exitCode = await new Promise<number | null>((resolve) => {
       const child = spawnFn("agentteams", ["convention", "download"], {
         cwd: authPath,
-        shell: true,
         stdio: "ignore",
         windowsHide: true,
       });
