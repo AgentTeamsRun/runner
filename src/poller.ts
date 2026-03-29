@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { DaemonTrigger, RuntimeConfig } from "./types.js";
 import { maybeAutoUpdate } from "./utils/auto-update.js";
-import { restartDaemon } from "./daemon-control.js";
+
 
 type TriggerHandlerFactory = (onAuthPathDiscovered: (authPath: string) => void) => (trigger: DaemonTrigger) => Promise<void>;
 
@@ -213,8 +213,8 @@ export const startPolling = async (
 
         // 사용자 재시작 요청 확인
         if (pendingResponse.meta?.restartRequested) {
-          logger.info("Restart requested by user — restarting daemon");
-          await restartDaemon();
+          logger.info("Restart requested by user — exiting for launchd/systemd restart");
+          process.exit(1);
         }
         return;
       }
