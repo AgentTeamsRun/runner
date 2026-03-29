@@ -135,7 +135,7 @@ test("requestWithRetry retries network failures with exponential backoff and war
   const client = new DaemonApiClient("https://api.example", "daemon-token");
   const result = await client.fetchPendingTrigger();
 
-  assert.equal(result, null);
+  assert.deepEqual(result, { data: null });
   assert.deepEqual(delays, [1000, 2000]);
   assert.equal(warnings.length, 2);
   assert.match(warnings[0]?.message ?? "", /Retry 1\/3/);

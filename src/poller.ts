@@ -7,6 +7,8 @@ import { removeWorktree, resolveWorktreePath } from "./utils/git-worktree.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { DaemonTrigger, RuntimeConfig } from "./types.js";
+import { maybeAutoUpdate } from "./utils/auto-update.js";
+import { restartDaemon } from "./daemon-control.js";
 
 type TriggerHandlerFactory = (onAuthPathDiscovered: (authPath: string) => void) => (trigger: DaemonTrigger) => Promise<void>;
 
@@ -14,7 +16,7 @@ const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CONVENTION_SYNC_INTERVAL_MS = 60 * 60 * 1000;
 
 type PollingDependencies = {
-  createClient?: (config: RuntimeConfig) => Pick<DaemonApiClient, "fetchPendingTrigger" | "claimTrigger" | "fetchOrphanedCancelRequested" | "updateTriggerStatus" | "fetchPendingWorktreeRemovals" | "reportWorktreeStatus">;
+  createClient?: (config: RuntimeConfig) => Pick<DaemonApiClient, "fetchPendingTrigger" | "claimTrigger" | "fetchOrphanedCancelRequested" | "updateTriggerStatus" | "fetchPendingWorktreeRemovals" | "reportWorktreeStatus" | "notifyUpdate">;
   runCleanup?: (authPath: string) => Promise<void>;
   runConventionSync?: (authPath: string) => Promise<void>;
   removeWorktree?: typeof removeWorktree;
@@ -195,25 +197,42 @@ export const startPolling = async (
       await autoCancelOrphanedTriggers();
       await processWorktreeRemovals();
 
-      const pending = await client.fetchPendingTrigger();
-      if (!pending) {
+      const pendingResponse = await client.fetchPendingTrigger();
+      const trigger = pendingResponse.data;
+      if (!trigger) {
+        // idle 상태에서 자동 업데이트 시도
+        try {
+          await maybeAutoUpdate(pendingResponse.meta, {
+            onRunnerUpdated: (version) => client.notifyUpdate(version, "runner")
+          });
+        } catch (error) {
+          logger.error("Auto-update check failed", {
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+
+        // 사용자 재시작 요청 확인
+        if (pendingResponse.meta?.restartRequested) {
+          logger.info("Restart requested by user — restarting daemon");
+          await restartDaemon();
+        }
         return;
       }
 
-      const claim = await client.claimTrigger(pending.id);
+      const claim = await client.claimTrigger(trigger.id);
       if (claim.conflict) {
-        logger.info("Trigger already claimed by another daemon", { triggerId: pending.id });
+        logger.info("Trigger already claimed by another daemon", { triggerId: trigger.id });
         return;
       }
 
       if (!claim.ok) {
-        logger.warn("Claim was rejected", { triggerId: pending.id });
+        logger.warn("Claim was rejected", { triggerId: trigger.id });
         return;
       }
 
-      void onTrigger(pending).catch((error) => {
+      void onTrigger(trigger).catch((error) => {
         logger.error("Trigger handler execution failed", {
-          triggerId: pending.id,
+          triggerId: trigger.id,
           error: error instanceof Error ? error.message : String(error)
         });
       });

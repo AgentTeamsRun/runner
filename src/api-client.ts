@@ -3,6 +3,7 @@ import type {
   DaemonInfo,
   DaemonTrigger,
   OsType,
+  PendingResponse,
   TriggerFinalStatus,
   TriggerLogInput,
   TriggerRuntime
@@ -94,7 +95,7 @@ export class DaemonApiClient {
     return payload.data;
   }
 
-  async fetchPendingTrigger(): Promise<DaemonTrigger | null> {
+  async fetchPendingTrigger(): Promise<PendingResponse> {
     const response = await this.requestWithRetry("/api/daemon-triggers/pending", {
       method: "GET",
       headers: this.daemonHeaders()
@@ -104,8 +105,8 @@ export class DaemonApiClient {
       throw new Error(`Failed to fetch pending trigger (${response.status})`);
     }
 
-    const payload = await response.json() as { data: DaemonTrigger | null };
-    return payload.data;
+    const payload = await response.json() as PendingResponse;
+    return payload;
   }
 
   async claimTrigger(triggerId: string): Promise<ClaimResult> {
@@ -253,6 +254,21 @@ export class DaemonApiClient {
 
     if (!response.ok) {
       throw new Error(`Failed to append trigger logs (${response.status})`);
+    }
+  }
+
+  async notifyUpdate(version: string, pkg: "cli" | "runner" = "runner"): Promise<void> {
+    const response = await this.requestWithRetry("/api/daemons/notify-update", {
+      method: "POST",
+      headers: {
+        ...this.daemonHeaders(),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ version, package: pkg })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to notify update (${response.status})`);
     }
   }
 }

@@ -50,6 +50,17 @@ export type DaemonTrigger = {
   updatedAt: string;
 };
 
+export type PendingMeta = {
+  cliLatestVersion: string | null;
+  runnerLatestVersion: string | null;
+  restartRequested?: boolean;
+};
+
+export type PendingResponse = {
+  data: DaemonTrigger | null;
+  meta?: PendingMeta;
+};
+
 export type TriggerFinalStatus = "DONE" | "CANCELLED" | "FAILED" | "REJECTED";
 
 export type ClaimResult = {
