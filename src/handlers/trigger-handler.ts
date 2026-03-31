@@ -10,6 +10,10 @@ import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
 import { isGitRepo, createWorktree } from "../utils/git-worktree.js";
 import { extractResultTextFromStreamJson } from "../runners/claude-code.js";
 import { runOriginIssueSafeguard } from "../utils/origin-issue-safeguard.js";
+import { loadHarnessConfig } from "../harness/config-loader.js";
+import { executePreHooks } from "../harness/hook-executor.js";
+import type { HookContext } from "../harness/hook-executor.js";
+import type { HarnessConfig } from "../harness/types.js";
 
 function sanitizeErrorMessage(msg: string): string {
   return msg.replaceAll(homedir(), '~');
@@ -262,6 +266,41 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
       const runnerPrompt = buildRunnerPrompt(trigger, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath, runtime.useWorktree, runtime.baseBranch);
 
+      // -- Pre-execution hooks --------------------------------------------------
+      let harnessConfig: HarnessConfig = { preHooks: [], postHooks: [], qualityGate: null };
+
+      if (effectiveAuthPath) {
+        harnessConfig = await loadHarnessConfig(effectiveAuthPath, client, runtime.projectId);
+
+        if (harnessConfig.preHooks.length > 0) {
+          activeLogReporter.append("INFO", `Running ${harnessConfig.preHooks.length} pre-execution hook(s).`);
+
+          const hookContext: HookContext = {
+            authPath: effectiveAuthPath,
+            triggerId: trigger.id,
+            triggerLogAppend: (level, msg) => activeLogReporter.append(level, msg),
+          };
+
+          const hookOutcome = await executePreHooks(harnessConfig.preHooks, hookContext);
+
+          if (hookOutcome.failureAction === "fail" || hookOutcome.failureAction === "needs_review") {
+            const errorMessage = hookOutcome.failureReason ?? "Pre-execution hook failed.";
+            const failStatus = hookOutcome.failureAction === "needs_review" ? "NEEDS_REVIEW" as const : "FAILED" as const;
+            logger.warn("Pre-execution hook blocked trigger", {
+              triggerId: trigger.id,
+              reason: errorMessage,
+            });
+            activeLogReporter.append("ERROR", `Trigger blocked by pre-hook: ${errorMessage}`);
+            await logReporter.stop();
+            await client.updateTriggerStatus(trigger.id, failStatus, errorMessage);
+            return;
+          }
+
+          activeLogReporter.append("INFO", "All pre-execution hooks passed.");
+        }
+      }
+      // -- End pre-execution hooks ----------------------------------------------
+
       const runner = createRunner(trigger.runnerType);
       const cancelController = new AbortController();
       let cancelRequested = false;
@@ -329,6 +368,36 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         await client.updateTriggerHistory(trigger.id, fallbackHistory);
         logReporter.append("WARN", "Runner did not write a history file. Captured stdout was stored as fallback history.");
       }
+
+      // -- Post-execution hooks -------------------------------------------------
+      let postHookStatus: "DONE" | "FAILED" | "NEEDS_REVIEW" | null = null;
+      let postHookError: string | undefined;
+
+      if (!runResult.cancelled && runResult.exitCode === 0 && effectiveAuthPath && harnessConfig.postHooks.length > 0) {
+        activeLogReporter.append("INFO", `Running ${harnessConfig.postHooks.length} post-execution hook(s).`);
+
+        const postHookContext: HookContext = {
+          authPath: effectiveAuthPath,
+          triggerId: trigger.id,
+          triggerLogAppend: (level, msg) => activeLogReporter.append(level, msg),
+        };
+
+        const postOutcome = await executePreHooks(harnessConfig.postHooks, postHookContext);
+
+        if (postOutcome.failureAction === "fail") {
+          postHookStatus = "FAILED";
+          postHookError = postOutcome.failureReason ?? "Post-execution hook failed.";
+          activeLogReporter.append("ERROR", `Post-hook blocked: ${postHookError}`);
+        } else if (postOutcome.failureAction === "needs_review") {
+          postHookStatus = "NEEDS_REVIEW";
+          postHookError = postOutcome.failureReason ?? "Post-execution hook requires review.";
+          activeLogReporter.append("WARN", `Post-hook requires review: ${postHookError}`);
+        } else {
+          activeLogReporter.append("INFO", "All post-execution hooks passed.");
+        }
+      }
+      // -- End post-execution hooks ---------------------------------------------
+
       await logReporter.stop();
 
       // 3차 방어: origin issue 자동 연결 안전장치 (fire-and-forget)
@@ -338,11 +407,15 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       const status = runResult.cancelled
         ? "CANCELLED"
-        : runResult.exitCode === 0 ? "DONE" : "FAILED";
+        : postHookStatus
+          ? postHookStatus
+          : runResult.exitCode === 0 ? "DONE" : "FAILED";
       const errorMessage = status === "FAILED"
-        ? (runResult.errorMessage || runResult.lastOutput || `Runner exited with code ${runResult.exitCode}`)
+        ? (postHookError || runResult.errorMessage || runResult.lastOutput || `Runner exited with code ${runResult.exitCode}`)
         : status === "CANCELLED"
           ? (runResult.errorMessage || "Runner cancelled by user")
+        : status === "NEEDS_REVIEW"
+          ? postHookError
         : undefined;
       await client.updateTriggerStatus(
         trigger.id,

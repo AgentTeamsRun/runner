@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { logger } from "../logger.js";
 import { createTriggerHandler } from "./trigger-handler.js";
 import type { DaemonTrigger, TriggerRuntime } from "../types.js";
@@ -544,4 +547,395 @@ test("createTriggerHandler marks the trigger as failed when runtime loading thro
 
   assert.deepEqual(clientCalls.at(-1)?.args, ["trigger-1", "FAILED", "runtime boom"]);
   assert.equal(errors.some((entry) => entry.message === "Trigger handling failed"), true);
+});
+
+// ---------------------------------------------------------------------------
+// Pre-execution hook tests
+// ---------------------------------------------------------------------------
+
+const withTempDir = async (run: (dir: string) => Promise<void>): Promise<void> => {
+  const dir = await mkdtemp(join(tmpdir(), "trigger-handler-hook-test-"));
+  try {
+    await run(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+};
+
+test("createTriggerHandler blocks trigger when pre-hook fails with onFailure=fail", async () => {
+  await withTempDir(async (dir) => {
+    // Write harness.yml with a failing pre-hook
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "preHooks:",
+      "  - name: lint-check",
+      "    command: exit 1",
+      "    onFailure: fail",
+    ].join("\n"));
+
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+    let runnerCalled = false;
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, false, "Runner should not be called when pre-hook fails");
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "FAILED");
+    assert.ok(String(statusCall.args[2]).includes("lint-check"));
+  });
+});
+
+test("createTriggerHandler continues when pre-hook fails with onFailure=warn", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "preHooks:",
+      "  - name: optional-check",
+      "    command: exit 1",
+      "    onFailure: warn",
+    ].join("\n"));
+
+    let runnerCalled = false;
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, true, "Runner should still execute when pre-hook fails with warn");
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "DONE");
+  });
+});
+
+test("createTriggerHandler runs normally when no pre-hooks are defined", async () => {
+  await withTempDir(async (dir) => {
+    // No harness.yml — should behave exactly as before
+    let runnerCalled = false;
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, true);
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "DONE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Post-execution hook tests
+// ---------------------------------------------------------------------------
+
+test("createTriggerHandler marks DONE when post-hook succeeds after runner success", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "postHooks:",
+      "  - name: quality-gate",
+      "    command: echo ok",
+      "    onFailure: fail",
+    ].join("\n"));
+
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: { daemonToken: "t", apiUrl: "https://api.example", pollingIntervalMs: 5000, timeoutMs: 1500, idleTimeoutMs: 500, runnerCmd: "opencode" },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({ run: async () => ({ exitCode: 0 } satisfies RunResult) }),
+      createLogReporter: () => ({ start: () => undefined, append: () => undefined, stop: async () => undefined }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({ currentHistoryPath: join(dir, "h.md"), parentHistoryPath: null }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "DONE");
+  });
+});
+
+test("createTriggerHandler marks FAILED when post-hook fails with onFailure=fail", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "postHooks:",
+      "  - name: quality-gate",
+      "    command: exit 1",
+      "    onFailure: fail",
+    ].join("\n"));
+
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: { daemonToken: "t", apiUrl: "https://api.example", pollingIntervalMs: 5000, timeoutMs: 1500, idleTimeoutMs: 500, runnerCmd: "opencode" },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({ run: async () => ({ exitCode: 0 } satisfies RunResult) }),
+      createLogReporter: () => ({ start: () => undefined, append: () => undefined, stop: async () => undefined }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({ currentHistoryPath: join(dir, "h.md"), parentHistoryPath: null }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "FAILED");
+    assert.ok(String(statusCall.args[2]).includes("quality-gate"));
+  });
+});
+
+test("createTriggerHandler marks NEEDS_REVIEW when post-hook fails with onFailure=needs_review", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "postHooks:",
+      "  - name: review-gate",
+      "    command: exit 1",
+      "    onFailure: needs_review",
+    ].join("\n"));
+
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: { daemonToken: "t", apiUrl: "https://api.example", pollingIntervalMs: 5000, timeoutMs: 1500, idleTimeoutMs: 500, runnerCmd: "opencode" },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({ run: async () => ({ exitCode: 0 } satisfies RunResult) }),
+      createLogReporter: () => ({ start: () => undefined, append: () => undefined, stop: async () => undefined }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({ currentHistoryPath: join(dir, "h.md"), parentHistoryPath: null }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "NEEDS_REVIEW");
+  });
+});
+
+test("createTriggerHandler skips post-hooks when runner fails", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "postHooks:",
+      "  - name: should-not-run",
+      "    command: echo unreachable",
+      "    onFailure: fail",
+    ].join("\n"));
+
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+    const logEntries: string[] = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: { daemonToken: "t", apiUrl: "https://api.example", pollingIntervalMs: 5000, timeoutMs: 1500, idleTimeoutMs: 500, runnerCmd: "opencode" },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({ run: async () => ({ exitCode: 1 } satisfies RunResult) }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: (_level: string, msg: string) => { logEntries.push(msg); },
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "",
+      resolveRunnerHistoryPaths: () => ({ currentHistoryPath: join(dir, "h.md"), parentHistoryPath: null }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "FAILED");
+    assert.equal(logEntries.some((l) => l.includes("post-execution")), false, "Post-hooks should not run when runner fails");
+  });
 });

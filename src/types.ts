@@ -62,7 +62,7 @@ export type PendingResponse = {
   meta?: PendingMeta;
 };
 
-export type TriggerFinalStatus = "DONE" | "CANCELLED" | "FAILED" | "REJECTED";
+export type TriggerFinalStatus = "DONE" | "CANCELLED" | "FAILED" | "REJECTED" | "NEEDS_REVIEW";
 
 export type ClaimResult = {
   ok: boolean;
