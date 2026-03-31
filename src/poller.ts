@@ -217,16 +217,12 @@ export const startPolling = async (
         // 사용자 재시작 요청 확인
         if (pendingResponse.meta?.restartRequested) {
           const autostartStatus = getAutostartStatus();
-          if (autostartStatus.registered) {
-            logger.info("Restart requested by user — exiting for autostart service restart", {
-              platform: autostartStatus.platform
-            });
-            exitProcess(1);
-          } else {
-            logger.info("Restart requested by user — spawning new daemon before exit (autostart not registered)");
-            spawnDetachedDaemon();
-            exitProcess(0);
-          }
+          logger.info("Restart requested by user — spawning new daemon and exiting", {
+            platform: autostartStatus.platform,
+            registered: autostartStatus.registered
+          });
+          spawnDetachedDaemon();
+          exitProcess(0);
         }
         return;
       }
