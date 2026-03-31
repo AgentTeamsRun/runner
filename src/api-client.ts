@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import type {
   ClaimResult,
   DaemonInfo,
@@ -9,6 +10,10 @@ import type {
   TriggerRuntime
 } from "./types.js";
 import { logger } from "./logger.js";
+
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json") as { version?: string };
+const runnerVersion = packageJson.version ?? "0.0.0";
 
 const MAX_NETWORK_RETRIES = 3;
 const BASE_BACKOFF_MS = 1000;
@@ -43,7 +48,8 @@ export class DaemonApiClient {
 
   private daemonHeaders(options?: { includeOsType?: boolean }): Record<string, string> {
     const headers: Record<string, string> = {
-      "x-daemon-token": this.daemonToken
+      "x-daemon-token": this.daemonToken,
+      "x-runner-version": runnerVersion
     };
 
     if (options?.includeOsType) {

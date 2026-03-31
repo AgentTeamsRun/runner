@@ -19,6 +19,7 @@ export type DaemonInfo = {
   memberId: string;
   label: string | null;
   osType: OsType | null;
+  runnerVersion: string | null;
   supportedEngines: string[];
   lastSeenAt: string | null;
   createdAt: string;

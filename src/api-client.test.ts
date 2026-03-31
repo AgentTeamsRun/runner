@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import test, { mock } from "node:test";
 import { DaemonApiClient } from "./api-client.js";
 import { logger } from "./logger.js";
+
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json") as { version?: string };
+const runnerVersion = packageJson.version ?? "0.0.0";
 
 const originalFetch = globalThis.fetch;
 const originalSetTimeout = globalThis.setTimeout;
@@ -24,7 +29,7 @@ test("validateDaemonToken sends daemon header and returns payload data", async (
 
   globalThis.fetch = (async (url, options) => {
     calls.push({ url: String(url), options });
-    return new Response(JSON.stringify({ data: { id: "d1", memberId: "m1", label: null, osType: "MACOS", supportedEngines: ["CODEX"], lastSeenAt: null, createdAt: "c", updatedAt: "u" } }), {
+    return new Response(JSON.stringify({ data: { id: "d1", memberId: "m1", label: null, osType: "MACOS", runnerVersion, supportedEngines: ["CODEX"], lastSeenAt: null, createdAt: "c", updatedAt: "u" } }), {
       status: 200,
       headers: { "Content-Type": "application/json" }
     });
@@ -38,10 +43,12 @@ test("validateDaemonToken sends daemon header and returns payload data", async (
   assert.deepEqual(calls[0]?.options?.headers, expectedOsType
     ? {
       "x-daemon-token": "daemon-token",
+      "x-runner-version": runnerVersion,
       "x-os-type": expectedOsType
     }
     : {
-      "x-daemon-token": "daemon-token"
+      "x-daemon-token": "daemon-token",
+      "x-runner-version": runnerVersion
     });
   assert.equal(result.id, "d1");
   assert.equal(result.osType, "MACOS");
@@ -49,16 +56,21 @@ test("validateDaemonToken sends daemon header and returns payload data", async (
 });
 
 test("claimTrigger returns conflict=false/ok=true on success and conflict=true on 409", async () => {
+  const calls: Array<RequestInit | undefined> = [];
   const responses = [
     new Response(null, { status: 200 }),
     new Response(null, { status: 409 })
   ];
 
-  globalThis.fetch = (async () => responses.shift() as Response) as typeof fetch;
+  globalThis.fetch = (async (_url, options) => {
+    calls.push(options);
+    return responses.shift() as Response;
+  }) as typeof fetch;
 
   const client = new DaemonApiClient("https://api.example", "daemon-token");
   assert.deepEqual(await client.claimTrigger("t1"), { ok: true, conflict: false });
   assert.deepEqual(await client.claimTrigger("t2"), { ok: false, conflict: true });
+  assert.equal((calls[0]?.headers as Record<string, string>)["x-runner-version"], runnerVersion);
 });
 
 test("updateTriggerStatus sends JSON payload including optional error message", async () => {
