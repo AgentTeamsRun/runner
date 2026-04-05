@@ -18,7 +18,7 @@ const OUTPUT_CAPTURE_MAX = 200_000;
 
 export const buildGeminiExecArgs = (prompt: string, model?: string | null): string[] => {
   const modelArgs = model ? ["--model", model] : [];
-  return ["-y", "-p", prompt, ...modelArgs];
+  return ["-y", "--sandbox=false", "--include-directories", ".agentteams", "-p", prompt, ...modelArgs];
 };
 
 const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: string, model?: string | null): string => {
@@ -33,7 +33,7 @@ const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: stri
     `$promptText = @'`,
     `${prompt.replaceAll("'@", "'@")}`,
     `'@`,
-    `& '${resolvedExecutablePath.replaceAll("'", "''")}' '-y' '--prompt' $promptText${modelSegment}`
+    `& '${resolvedExecutablePath.replaceAll("'", "''")}' '-y' '--sandbox=false' '--include-directories' '.agentteams' '--prompt' $promptText${modelSegment}`
   ].join("\r\n");
 
   return Buffer.from(scriptContent, "utf16le").toString("base64");
