@@ -21,6 +21,7 @@ type AutoUpdateDeps = {
 let lastCliUpdateAttempt = 0;
 let lastRunnerUpdateAttempt = 0;
 let lastSuccessfulRunnerVersion: string | null = null;
+let lastNotifiedRunnerVersion: string | null = null;
 
 const getCurrentRunnerVersion = (): string => packageJson.version ?? "0.0.0";
 
@@ -94,7 +95,9 @@ export const maybeAutoUpdate = async (
     lastRunnerUpdateAttempt = now;
     const currentRunnerVersion = getCurrentRunnerVersion();
 
-    if (needsUpdate(currentRunnerVersion, meta.runnerLatestVersion) && lastSuccessfulRunnerVersion !== meta.runnerLatestVersion) {
+    const isAlreadyInstalled = lastSuccessfulRunnerVersion === meta.runnerLatestVersion;
+
+    if (!isAlreadyInstalled && needsUpdate(currentRunnerVersion, meta.runnerLatestVersion)) {
       try {
         resolvedLogger.info("Auto-updating Runner", {
           currentVersion: currentRunnerVersion,
@@ -108,20 +111,25 @@ export const maybeAutoUpdate = async (
         resolvedLogger.info("Runner auto-update completed — restart required", {
           version: meta.runnerLatestVersion
         });
-        if (deps.onRunnerUpdated) {
-          try {
-            await deps.onRunnerUpdated(meta.runnerLatestVersion);
-          } catch (notifyError) {
-            resolvedLogger.error("Failed to notify runner update", {
-              error: notifyError instanceof Error ? notifyError.message : String(notifyError)
-            });
-          }
-        }
       } catch (error) {
         resolvedLogger.error("Runner auto-update failed", {
           error: error instanceof Error ? error.message : String(error)
         });
       }
+    }
+
+  }
+
+  // Runner 알림: 설치 성공 후 알림 미완료 시 매 폴링마다 재시도
+  if (meta.runnerLatestVersion && lastSuccessfulRunnerVersion === meta.runnerLatestVersion
+    && lastNotifiedRunnerVersion !== meta.runnerLatestVersion && deps.onRunnerUpdated) {
+    try {
+      await deps.onRunnerUpdated(meta.runnerLatestVersion);
+      lastNotifiedRunnerVersion = meta.runnerLatestVersion;
+    } catch (notifyError) {
+      resolvedLogger.error("Failed to notify runner update", {
+        error: notifyError instanceof Error ? notifyError.message : String(notifyError)
+      });
     }
   }
 
@@ -133,4 +141,6 @@ export const resetAutoUpdateState = (): void => {
   lastCliUpdateAttempt = 0;
   lastRunnerUpdateAttempt = 0;
   lastSuccessfulRunnerVersion = null;
+  lastNotifiedRunnerVersion = null;
 };
+
