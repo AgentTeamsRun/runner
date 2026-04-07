@@ -89,13 +89,28 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       ? `- Runner terminated with error: ${errorMessage}`
       : "- Runner completed successfully but did not write the requested history file.";
     const trimmed = outputText.trim();
-    const outputNote = trimmed.length === 0
-      ? "- No stdout captured."
-      : `- stdout was not summarized — history file was not written by the agent. (${trimmed.length} chars captured)`;
+    if (trimmed.length === 0) {
+      return [
+        "### Summary",
+        summaryLine,
+        "- No stdout captured.",
+        "",
+        "### Questions for User",
+        "None"
+      ].join("\n");
+    }
+
+    const maxOutputLength = 1500;
+    const truncated = trimmed.length > maxOutputLength
+      ? trimmed.slice(0, maxOutputLength) + "\n- *(truncated)*"
+      : trimmed;
+
     return [
       "### Summary",
       summaryLine,
-      outputNote,
+      "- Agent output (history file not written):",
+      "",
+      truncated,
       "",
       "### Questions for User",
       "None"
@@ -186,6 +201,8 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       "  - Required section: ### Summary — 3-5 bullet points focused on what the next session needs to know (final state, key decisions, remaining work). If any CLI command output includes a `webUrl` field during this run, include it as a clickable markdown link in the relevant summary bullet.",
       "  - Required section: ### Questions for User — include only blocking or decision-required questions (up to 3). Write 'None' if there are no questions.",
       "- Do NOT include: code diffs, full file contents, CLI/terminal output, step-by-step execution logs, or verification command results.",
+      "- CRITICAL: If you have questions for the user, you MUST write them in the ### Questions for User section of the history file. Do NOT rely on stdout to communicate questions — stdout is not shown to the user. The history file is the ONLY channel for user-facing questions.",
+      "- CRITICAL: Always write the history file as your last action before exiting, even if the task is incomplete or you need more information.",
       "----"
     ];
 
