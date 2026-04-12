@@ -69,6 +69,14 @@ export type ClaimResult = {
   conflict: boolean;
 };
 
+export type ConventionMeta = {
+  id: string;
+  filePath: string;
+  trigger: string | null;
+  title: string;
+  description: string | null;
+};
+
 export type TriggerRuntime = {
   triggerId: string;
   agentConfigId: string;
@@ -80,6 +88,8 @@ export type TriggerRuntime = {
   useWorktree: boolean;
   baseBranch: string | null;
   worktreeId: string | null;
+  conventions?: ConventionMeta[];
+  planType?: string | null;
 };
 
 export type TriggerLogLevel = "INFO" | "WARN" | "ERROR";

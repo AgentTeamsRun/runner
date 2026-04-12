@@ -1,4 +1,4 @@
-import type { DaemonTrigger, RuntimeConfig } from "../types.js";
+import type { ConventionMeta, DaemonTrigger, RuntimeConfig } from "../types.js";
 import { DaemonApiClient } from "../api-client.js";
 import { createRunnerFactory } from "../runners/index.js";
 import { TriggerLogReporter } from "../runners/log-reporter.js";
@@ -10,6 +10,8 @@ import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
 import { isGitRepo, createWorktree } from "../utils/git-worktree.js";
 import { extractResultTextFromStreamJson } from "../runners/claude-code.js";
 import { runOriginIssueSafeguard } from "../utils/origin-issue-safeguard.js";
+import { evaluateConventionTriggers } from "../utils/convention-evaluator.js";
+import type { HookDefinition } from "../harness/types.js";
 import { loadHarnessConfig } from "../harness/config-loader.js";
 import { executePreHooks } from "../harness/hook-executor.js";
 import type { HookContext } from "../harness/hook-executor.js";
@@ -17,6 +19,20 @@ import type { HarnessConfig } from "../harness/types.js";
 
 function sanitizeErrorMessage(msg: string): string {
   return msg.replaceAll(homedir(), '~');
+}
+
+function filterHooksByConventionMatch(
+  hooks: HookDefinition[],
+  matchedConventions: ConventionMeta[]
+): HookDefinition[] {
+  const matchedTriggers = new Set(
+    matchedConventions.map((c) => c.trigger).filter(Boolean) as string[]
+  );
+
+  return hooks.filter((hook) => {
+    if (!hook.conventionTrigger) return true;
+    return matchedTriggers.has(hook.conventionTrigger);
+  });
 }
 
 type TriggerHandlerOptions = {
@@ -138,7 +154,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     return JSON.stringify(prompt);
   };
 
-  const buildRunnerPrompt = (trigger: DaemonTrigger, currentHistoryPath: string | null, parentHistoryPath: string | null, useWorktree?: boolean, baseBranch?: string | null): string => {
+  const buildRunnerPrompt = (trigger: DaemonTrigger, currentHistoryPath: string | null, parentHistoryPath: string | null, useWorktree?: boolean, baseBranch?: string | null, matchedConventions?: ConventionMeta[]): string => {
     const basePrompt = toPromptString(trigger.prompt);
     const isContinuation = Boolean(trigger.parentTriggerId);
 
@@ -149,6 +165,16 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       "Skipping this step will result in non-compliant output.",
       "",
     ];
+
+    if (matchedConventions && matchedConventions.length > 0) {
+      conventionLines.push(
+        "**[Context-Matched Conventions (AUTO-LOADED)]**",
+        "The following conventions are automatically activated based on your current task context:",
+        ...matchedConventions.map((c) => `- \`${c.filePath}\` — ${c.description ?? c.title}`),
+        "You MUST read and follow these conventions in addition to the AGENT_RULES section.",
+        "",
+      );
+    }
 
     if (useWorktree) {
       conventionLines.push(
@@ -281,16 +307,26 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       const historyPaths = resolveHistoryPaths(effectiveAuthPath, trigger.id, trigger.parentTriggerId);
       currentHistoryPath = historyPaths.currentHistoryPath;
       await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
-      const runnerPrompt = buildRunnerPrompt(trigger, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath, runtime.useWorktree, runtime.baseBranch);
+
+      let matchedConventions: ConventionMeta[] = [];
+      if (effectiveAuthPath && runtime.conventions && runtime.conventions.length > 0) {
+        matchedConventions = evaluateConventionTriggers(runtime.conventions, {
+          authPath: effectiveAuthPath,
+          planType: runtime.planType ?? null,
+        });
+      }
+
+      const runnerPrompt = buildRunnerPrompt(trigger, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath, runtime.useWorktree, runtime.baseBranch, matchedConventions);
 
       // -- Pre-execution hooks --------------------------------------------------
       let harnessConfig: HarnessConfig = { preHooks: [], postHooks: [], qualityGate: null };
 
       if (effectiveAuthPath) {
         harnessConfig = await loadHarnessConfig(effectiveAuthPath, client, runtime.projectId);
+        const filteredPreHooks = filterHooksByConventionMatch(harnessConfig.preHooks, matchedConventions);
 
-        if (harnessConfig.preHooks.length > 0) {
-          activeLogReporter.append("INFO", `Running ${harnessConfig.preHooks.length} pre-execution hook(s).`);
+        if (filteredPreHooks.length > 0) {
+          activeLogReporter.append("INFO", `Running ${filteredPreHooks.length} pre-execution hook(s).`);
 
           const hookContext: HookContext = {
             authPath: effectiveAuthPath,
@@ -298,7 +334,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
             triggerLogAppend: (level, msg) => activeLogReporter.append(level, msg),
           };
 
-          const hookOutcome = await executePreHooks(harnessConfig.preHooks, hookContext);
+          const hookOutcome = await executePreHooks(filteredPreHooks, hookContext);
 
           if (hookOutcome.failureAction === "fail" || hookOutcome.failureAction === "needs_review") {
             const errorMessage = hookOutcome.failureReason ?? "Pre-execution hook failed.";
@@ -390,8 +426,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       let postHookStatus: "DONE" | "FAILED" | "NEEDS_REVIEW" | null = null;
       let postHookError: string | undefined;
 
-      if (!runResult.cancelled && runResult.exitCode === 0 && effectiveAuthPath && harnessConfig.postHooks.length > 0) {
-        activeLogReporter.append("INFO", `Running ${harnessConfig.postHooks.length} post-execution hook(s).`);
+      const filteredPostHooks = filterHooksByConventionMatch(harnessConfig.postHooks, matchedConventions);
+
+      if (!runResult.cancelled && runResult.exitCode === 0 && effectiveAuthPath && filteredPostHooks.length > 0) {
+        activeLogReporter.append("INFO", `Running ${filteredPostHooks.length} post-execution hook(s).`);
 
         const postHookContext: HookContext = {
           authPath: effectiveAuthPath,
@@ -399,7 +437,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           triggerLogAppend: (level, msg) => activeLogReporter.append(level, msg),
         };
 
-        const postOutcome = await executePreHooks(harnessConfig.postHooks, postHookContext);
+        const postOutcome = await executePreHooks(filteredPostHooks, postHookContext);
 
         if (postOutcome.failureAction === "fail") {
           postHookStatus = "FAILED";
