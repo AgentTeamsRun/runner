@@ -40,6 +40,7 @@ export type HarnessConfig = {
   preHooks: HookDefinition[];
   postHooks: HookDefinition[];
   qualityGate: QualityGateConfig | null;
+  conventionIds: string[];
 };
 
 /** Result of parsing the local harness.yml file */
@@ -47,6 +48,7 @@ export type HarnessYml = {
   preHooks?: HookDefinition[];
   postHooks?: HookDefinition[];
   qualityGate?: QualityGateConfig | null;
+  conventionIds?: string[];
 };
 
 // ---------------------------------------------------------------------------

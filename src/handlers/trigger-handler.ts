@@ -321,10 +321,8 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         });
       }
 
-      const runnerPrompt = buildRunnerPrompt(trigger, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath, runtime.useWorktree, runtime.baseBranch, matchedConventions);
-
-      // -- Pre-execution hooks --------------------------------------------------
-      let harnessConfig: HarnessConfig = { preHooks: [], postHooks: [], qualityGate: null };
+      // -- Load harness config & merge pinned conventions -----------------------
+      let harnessConfig: HarnessConfig = { preHooks: [], postHooks: [], qualityGate: null, conventionIds: [] };
 
       if (effectiveAuthPath) {
         if (runtime.harnessConfigId) {
@@ -333,6 +331,22 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           harnessConfig = await loadHarnessConfig(effectiveAuthPath, client, runtime.projectId);
         }
 
+        // Append harness-pinned conventions that aren't already matched
+        if (harnessConfig.conventionIds.length > 0 && runtime.conventions) {
+          const alreadyMatchedIds = new Set(matchedConventions.map((c) => c.id));
+          const pinnedConventions = runtime.conventions.filter(
+            (c) => harnessConfig.conventionIds.includes(c.id) && !alreadyMatchedIds.has(c.id)
+          );
+          if (pinnedConventions.length > 0) {
+            matchedConventions = [...matchedConventions, ...pinnedConventions];
+          }
+        }
+      }
+
+      const runnerPrompt = buildRunnerPrompt(trigger, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath, runtime.useWorktree, runtime.baseBranch, matchedConventions);
+
+      // -- Pre-execution hooks --------------------------------------------------
+      if (effectiveAuthPath) {
         const filteredPreHooks = filterHooksByConventionMatch(harnessConfig.preHooks, matchedConventions);
 
         if (filteredPreHooks.length > 0) {

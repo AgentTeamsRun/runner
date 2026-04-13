@@ -10,7 +10,8 @@ const HARNESS_YML_PATH = ".agentteams/harness.yml";
 const EMPTY_CONFIG: HarnessConfig = {
   preHooks: [],
   postHooks: [],
-  qualityGate: null
+  qualityGate: null,
+  conventionIds: []
 };
 
 /**
@@ -85,7 +86,8 @@ export const mergeHarnessConfig = (
     postHooks: local.postHooks ?? server.postHooks ?? [],
     qualityGate: local.qualityGate !== undefined
       ? local.qualityGate
-      : server.qualityGate ?? null
+      : server.qualityGate ?? null,
+    conventionIds: local.conventionIds ?? server.conventionIds ?? []
   };
 };
 
@@ -149,7 +151,8 @@ const fetchServerHarnessConfigById = async (
 const toHarnessConfig = (yml: HarnessYml): HarnessConfig => ({
   preHooks: yml.preHooks ?? [],
   postHooks: yml.postHooks ?? [],
-  qualityGate: yml.qualityGate ?? null
+  qualityGate: yml.qualityGate ?? null,
+  conventionIds: yml.conventionIds ?? []
 });
 
 const isFileNotFoundError = (error: unknown): boolean => {

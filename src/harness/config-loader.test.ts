@@ -25,7 +25,8 @@ describe("mergeHarnessConfig", () => {
     assert.deepStrictEqual(result, {
       preHooks: [],
       postHooks: [],
-      qualityGate: null
+      qualityGate: null,
+      conventionIds: []
     });
   });
 
@@ -33,12 +34,14 @@ describe("mergeHarnessConfig", () => {
     const server: HarnessYml = {
       preHooks: [{ name: "lint", command: "npm run lint", onFailure: "fail" }],
       postHooks: [],
-      qualityGate: { minScore: 80, onBelowThreshold: "warn" }
+      qualityGate: { minScore: 80, onBelowThreshold: "warn" },
+      conventionIds: ["conv-1"]
     };
 
     const result = mergeHarnessConfig(null, server);
     assert.deepStrictEqual(result.preHooks, server.preHooks);
     assert.deepStrictEqual(result.qualityGate, server.qualityGate);
+    assert.deepStrictEqual(result.conventionIds, ["conv-1"]);
   });
 
   test("returns local config when server is null", () => {
@@ -50,6 +53,7 @@ describe("mergeHarnessConfig", () => {
     assert.deepStrictEqual(result.preHooks, local.preHooks);
     assert.deepStrictEqual(result.postHooks, []);
     assert.strictEqual(result.qualityGate, null);
+    assert.deepStrictEqual(result.conventionIds, []);
   });
 
   test("local overrides server at field level", () => {
@@ -82,6 +86,30 @@ describe("mergeHarnessConfig", () => {
 
     const result = mergeHarnessConfig(local, server);
     assert.strictEqual(result.qualityGate, null);
+  });
+
+  test("local conventionIds overrides server conventionIds", () => {
+    const local: HarnessYml = {
+      conventionIds: ["local-conv-1", "local-conv-2"]
+    };
+    const server: HarnessYml = {
+      conventionIds: ["server-conv-1"]
+    };
+
+    const result = mergeHarnessConfig(local, server);
+    assert.deepStrictEqual(result.conventionIds, ["local-conv-1", "local-conv-2"]);
+  });
+
+  test("falls back to server conventionIds when local omits it", () => {
+    const local: HarnessYml = {
+      preHooks: [{ name: "test", command: "npm test", onFailure: "warn" }]
+    };
+    const server: HarnessYml = {
+      conventionIds: ["server-conv-1"]
+    };
+
+    const result = mergeHarnessConfig(local, server);
+    assert.deepStrictEqual(result.conventionIds, ["server-conv-1"]);
   });
 });
 
