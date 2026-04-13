@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, readFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { logger } from "../logger.js";
 import { createTriggerHandler } from "./trigger-handler.js";
-import type { DaemonTrigger, TriggerRuntime } from "../types.js";
+import type { ConventionMeta, DaemonTrigger, TriggerRuntime } from "../types.js";
 import type { RunResult, Runner } from "../runners/types.js";
 
 const trigger: DaemonTrigger = {
@@ -813,6 +813,439 @@ test("createTriggerHandler runs normally when no pre-hooks are defined", async (
     const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
     assert.ok(statusCall);
     assert.equal(statusCall.args[1], "DONE");
+  });
+});
+
+test("createTriggerHandler always runs pre-hooks without a convention trigger", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "preHooks:",
+      "  - name: always-run",
+      "    command: sh -c 'echo always > always.txt && exit 1'",
+      "    onFailure: fail",
+    ].join("\n"));
+
+    let runnerCalled = false;
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        conventions: [],
+        planType: "BUG_FIX",
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, false);
+    assert.equal(await readFile(join(dir, "always.txt"), "utf8"), "always\n");
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "FAILED");
+    assert.match(String(statusCall.args[2]), /always-run/);
+  });
+});
+
+test("createTriggerHandler runs convention-linked pre-hooks when the convention matches", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "preHooks:",
+      "  - name: only-on-bugfix",
+      "    command: sh -c 'echo bugfix > bugfix.txt && exit 1'",
+      "    onFailure: fail",
+      "    conventionTrigger: task:BUG_FIX",
+    ].join("\n"));
+
+    let runnerCalled = false;
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+    const conventions: ConventionMeta[] = [{
+      id: "conv-bugfix",
+      filePath: ".agentteams/rules/bugfix.md",
+      trigger: "task:BUG_FIX",
+      title: "Bug Fix Convention",
+      description: "Rules for bug fix tasks",
+    }];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        conventions,
+        planType: "BUG_FIX",
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, false);
+    assert.equal(await readFile(join(dir, "bugfix.txt"), "utf8"), "bugfix\n");
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "FAILED");
+    assert.match(String(statusCall.args[2]), /only-on-bugfix/);
+  });
+});
+
+test("createTriggerHandler skips convention-linked pre-hooks when the convention does not match", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "preHooks:",
+      "  - name: only-on-feature",
+      "    command: sh -c 'echo feature > feature.txt && exit 1'",
+      "    onFailure: fail",
+      "    conventionTrigger: task:FEATURE",
+    ].join("\n"));
+
+    let runnerCalled = false;
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+    const conventions: ConventionMeta[] = [{
+      id: "conv-bugfix",
+      filePath: ".agentteams/rules/bugfix.md",
+      trigger: "task:BUG_FIX",
+      title: "Bug Fix Convention",
+      description: "Rules for bug fix tasks",
+    }];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        conventions,
+        planType: "BUG_FIX",
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, true);
+    await assert.rejects(access(join(dir, "feature.txt")));
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "DONE");
+  });
+});
+
+test("createTriggerHandler runs unconditional hooks while skipping non-matching conditional hooks", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "preHooks:",
+      "  - name: always-run",
+      "    command: sh -c 'echo always > always.txt'",
+      "    onFailure: warn",
+      "  - name: only-on-feature",
+      "    command: sh -c 'echo feature > feature.txt && exit 1'",
+      "    onFailure: fail",
+      "    conventionTrigger: task:FEATURE",
+    ].join("\n"));
+
+    let runnerCalled = false;
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+    const conventions: ConventionMeta[] = [{
+      id: "conv-bugfix",
+      filePath: ".agentteams/rules/bugfix.md",
+      trigger: "task:BUG_FIX",
+      title: "Bug Fix Convention",
+      description: "Rules for bug fix tasks",
+    }];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        conventions,
+        planType: "BUG_FIX",
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, true);
+    assert.equal(await readFile(join(dir, "always.txt"), "utf8"), "always\n");
+    await assert.rejects(access(join(dir, "feature.txt")));
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "DONE");
+  });
+});
+
+test("createTriggerHandler injects context-matched conventions into the runner prompt", async () => {
+  await withTempDir(async (dir) => {
+    const runnerInputs: Array<{ prompt: string; authPath: string | null }> = [];
+    const conventions: ConventionMeta[] = [{
+      id: "conv-bugfix",
+      filePath: ".agentteams/rules/bugfix.md",
+      trigger: "task:BUG_FIX",
+      title: "Bug Fix Convention",
+      description: "Rules for bug fix tasks",
+    }];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        conventions,
+        planType: "BUG_FIX",
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async () => undefined,
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async (input) => {
+          runnerInputs.push({ prompt: input.prompt, authPath: input.authPath });
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerInputs.length, 1);
+    assert.match(runnerInputs[0]?.prompt ?? "", /\[IMPORTANT — Convention Reference \(MUST READ\)\]/);
+    assert.match(runnerInputs[0]?.prompt ?? "", /\[Context-Matched Conventions \(AUTO-LOADED\)\]/);
+    assert.match(runnerInputs[0]?.prompt ?? "", /`\.agentteams\/rules\/bugfix\.md` — Rules for bug fix tasks/);
+  });
+});
+
+test("createTriggerHandler omits auto-loaded convention prompt section when no conventions match", async () => {
+  await withTempDir(async (dir) => {
+    const runnerInputs: Array<{ prompt: string; authPath: string | null }> = [];
+    const conventions: ConventionMeta[] = [{
+      id: "conv-feature",
+      filePath: ".agentteams/rules/feature.md",
+      trigger: "task:FEATURE",
+      title: "Feature Convention",
+      description: "Rules for feature tasks",
+    }];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        conventions,
+        planType: "BUG_FIX",
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async () => undefined,
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async (input) => {
+          runnerInputs.push({ prompt: input.prompt, authPath: input.authPath });
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerInputs.length, 1);
+    assert.match(runnerInputs[0]?.prompt ?? "", /\[IMPORTANT — Convention Reference \(MUST READ\)\]/);
+    assert.doesNotMatch(runnerInputs[0]?.prompt ?? "", /Context-Matched Conventions \(AUTO-LOADED\)/);
   });
 });
 
