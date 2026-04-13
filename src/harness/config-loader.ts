@@ -105,6 +105,43 @@ export const loadHarnessConfig = async (
   return mergeHarnessConfig(local, server);
 };
 
+/**
+ * Load harness config by specific harnessConfigId.
+ * Falls back to local harness.yml merge with server config.
+ */
+export const loadHarnessConfigById = async (
+  authPath: string,
+  client: DaemonApiClient,
+  harnessConfigId: string
+): Promise<HarnessConfig> => {
+  const [local, server] = await Promise.all([
+    loadLocalHarnessConfig(authPath),
+    fetchServerHarnessConfigById(client, harnessConfigId)
+  ]);
+
+  return mergeHarnessConfig(local, server);
+};
+
+/**
+ * Fetch server-side harness config by its id.
+ */
+const fetchServerHarnessConfigById = async (
+  client: DaemonApiClient,
+  harnessConfigId: string
+): Promise<HarnessYml | null> => {
+  try {
+    const response = await client.fetchHarnessConfigById(harnessConfigId);
+    if (!response) return null;
+    return response.config;
+  } catch (error) {
+    logger.warn("Failed to fetch server harness config by id, continuing without it", {
+      harnessConfigId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

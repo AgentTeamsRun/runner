@@ -12,7 +12,7 @@ import { extractResultTextFromStreamJson } from "../runners/claude-code.js";
 import { runOriginIssueSafeguard } from "../utils/origin-issue-safeguard.js";
 import { evaluateConventionTriggers } from "../utils/convention-evaluator.js";
 import type { HookDefinition } from "../harness/types.js";
-import { loadHarnessConfig } from "../harness/config-loader.js";
+import { loadHarnessConfig, loadHarnessConfigById } from "../harness/config-loader.js";
 import { executePreHooks } from "../harness/hook-executor.js";
 import type { HookContext } from "../harness/hook-executor.js";
 import type { HarnessConfig } from "../harness/types.js";
@@ -25,13 +25,18 @@ function filterHooksByConventionMatch(
   hooks: HookDefinition[],
   matchedConventions: ConventionMeta[]
 ): HookDefinition[] {
+  const matchedIds = new Set(matchedConventions.map((c) => c.id));
   const matchedTriggers = new Set(
     matchedConventions.map((c) => c.trigger).filter(Boolean) as string[]
   );
 
   return hooks.filter((hook) => {
-    if (!hook.conventionTrigger) return true;
-    return matchedTriggers.has(hook.conventionTrigger);
+    // conventionId takes priority (new stable link)
+    if (hook.conventionId) return matchedIds.has(hook.conventionId);
+    // Legacy: conventionTrigger string match (deprecated)
+    if (hook.conventionTrigger) return matchedTriggers.has(hook.conventionTrigger);
+    // Unconditional hook → always runs
+    return true;
   });
 }
 
@@ -322,7 +327,12 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       let harnessConfig: HarnessConfig = { preHooks: [], postHooks: [], qualityGate: null };
 
       if (effectiveAuthPath) {
-        harnessConfig = await loadHarnessConfig(effectiveAuthPath, client, runtime.projectId);
+        if (runtime.harnessConfigId) {
+          harnessConfig = await loadHarnessConfigById(effectiveAuthPath, client, runtime.harnessConfigId);
+        } else {
+          harnessConfig = await loadHarnessConfig(effectiveAuthPath, client, runtime.projectId);
+        }
+
         const filteredPreHooks = filterHooksByConventionMatch(harnessConfig.preHooks, matchedConventions);
 
         if (filteredPreHooks.length > 0) {

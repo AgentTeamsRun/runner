@@ -18,6 +18,7 @@ export type HookDefinition = {
   command: string;
   onFailure: HookFailureAction;
   conventionTrigger?: string;
+  conventionId?: string;
 };
 
 // ---------------------------------------------------------------------------

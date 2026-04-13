@@ -90,6 +90,7 @@ export type TriggerRuntime = {
   worktreeId: string | null;
   conventions?: ConventionMeta[];
   planType?: string | null;
+  harnessConfigId?: string | null;
 };
 
 export type TriggerLogLevel = "INFO" | "WARN" | "ERROR";

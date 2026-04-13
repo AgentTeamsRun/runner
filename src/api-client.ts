@@ -278,6 +278,21 @@ export class DaemonApiClient {
     return payload.data;
   }
 
+  async fetchHarnessConfigById(id: string): Promise<ServerHarnessConfig | null> {
+    const response = await this.requestWithRetry(`/api/harness-configs/by-id/${id}`, {
+      method: "GET",
+      headers: this.daemonHeaders()
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) return null;
+      throw new Error(`Failed to fetch harness config by id (${response.status})`);
+    }
+
+    const payload = await response.json() as { data: ServerHarnessConfig | null };
+    return payload.data;
+  }
+
   async notifyUpdate(version: string, pkg: "cli" | "runner" = "runner"): Promise<void> {
     const response = await this.requestWithRetry("/api/daemons/notify-update", {
       method: "POST",
