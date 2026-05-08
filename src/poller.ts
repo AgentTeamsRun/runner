@@ -215,14 +215,28 @@ export const startPolling = async (
         }
 
         // 사용자 재시작 요청 확인
+        // launchd(SuccessfulExit=false)와 systemd(Restart=on-failure)는 정상 종료(0)를 재시작 트리거로 보지 않는다.
+        // 등록된 환경에서는 exit(1)로 빠져 OS 슈퍼바이저가 자동 재시작하게 두고,
+        // 슈퍼바이저가 없는 Windows Startup 폴더(또는 미등록)에서는 detached spawn으로 직접 새 프로세스를 띄운다.
         if (pendingResponse.meta?.restartRequested) {
           const autostartStatus = getAutostartStatus();
-          logger.info("Restart requested by user — spawning new daemon and exiting", {
-            platform: autostartStatus.platform,
-            registered: autostartStatus.registered
-          });
-          spawnDetachedDaemon();
-          exitProcess(0);
+          const supervisedRespawn =
+            autostartStatus.registered &&
+            (autostartStatus.platform === "launchd" || autostartStatus.platform === "systemd");
+
+          if (supervisedRespawn) {
+            logger.info("Restart requested — exiting non-zero so the OS supervisor restarts the daemon", {
+              platform: autostartStatus.platform
+            });
+            exitProcess(1);
+          } else {
+            logger.info("Restart requested — spawning new daemon and exiting", {
+              platform: autostartStatus.platform,
+              registered: autostartStatus.registered
+            });
+            spawnDetachedDaemon();
+            exitProcess(0);
+          }
         }
         return;
       }
