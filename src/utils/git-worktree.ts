@@ -2,13 +2,15 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 
+// 모든 git 호출은 이 헬퍼를 통해 실행해야 한다. windowsHide 누락 시 Windows에서
+// 콘솔 미부착 부모(데몬) 프로세스가 git.exe를 띄울 때 콘솔 창이 잠깐 노출된다.
+function runGit(args: string[], cwd: string): Buffer {
+  return execFileSync("git", args, { cwd, stdio: "pipe", windowsHide: true });
+}
+
 export function isGitRepo(dirPath: string): boolean {
   try {
-    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
-      cwd: dirPath,
-      stdio: "pipe",
-      windowsHide: true
-    });
+    runGit(["rev-parse", "--is-inside-work-tree"], dirPath);
     return true;
   } catch {
     return false;
@@ -71,7 +73,7 @@ export function createWorktree(authPath: string, options: {
     if (baseBranch) {
       args.push(baseBranch);
     }
-    execFileSync("git", args, { cwd: authPath, stdio: "pipe" });
+    runGit(args, authPath);
   } catch (error) {
     throw new Error(
       `Failed to create git worktree for worktreeId ${worktreeId}: ${error instanceof Error ? error.message : String(error)}`
@@ -122,18 +124,14 @@ export function removeWorktree(authPath: string, worktreePath: string, worktreeI
   }
 
   try {
-    execFileSync("git", ["worktree", "remove", worktreePath, "--force"], {
-      cwd: authPath,
-      stdio: "pipe",
-      windowsHide: true
-    });
+    runGit(["worktree", "remove", worktreePath, "--force"], authPath);
   } catch {
     // If worktree removal via git fails, try to clean up manually
     if (existsSync(worktreePath)) {
       rmSync(worktreePath, { recursive: true, force: true });
     }
     try {
-      execFileSync("git", ["worktree", "prune"], { cwd: authPath, stdio: "pipe" });
+      runGit(["worktree", "prune"], authPath);
     } catch {
       // Ignore prune errors
     }
@@ -144,26 +142,14 @@ export function removeWorktree(authPath: string, worktreePath: string, worktreeI
   }
 
   try {
-    execFileSync("git", ["branch", "-D", branchName], {
-      cwd: authPath,
-      stdio: "pipe",
-      windowsHide: true
-    });
+    runGit(["branch", "-D", branchName], authPath);
   } catch {
     // Branch may not exist or already deleted; ignore
   }
 
   try {
-    execFileSync("git", ["ls-remote", "--exit-code", "origin", `refs/heads/${branchName}`], {
-      cwd: authPath,
-      stdio: "pipe",
-      windowsHide: true
-    });
-    execFileSync("git", ["push", "origin", "--delete", branchName], {
-      cwd: authPath,
-      stdio: "pipe",
-      windowsHide: true
-    });
+    runGit(["ls-remote", "--exit-code", "origin", `refs/heads/${branchName}`], authPath);
+    runGit(["push", "origin", "--delete", branchName], authPath);
   } catch {
     // Remote branch may not exist or deletion may fail; ignore
   }
