@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
@@ -10,9 +10,9 @@ import {
 } from "../executable.js";
 import { logger } from "../logger.js";
 import { createStreamJsonLineParser } from "./stream-json-parser.js";
+import { setupCloseWatchdog, terminateRunnerChild } from "./process-control.js";
 import type { Runner, RunnerOptions, RunResult } from "./types.js";
 
-const FORCE_KILL_AFTER_MS = 10_000;
 const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
@@ -84,44 +84,6 @@ const toOutputPreview = (chunk: unknown): string => {
   }
 
   return `${text.slice(0, OUTPUT_PREVIEW_MAX)}...`;
-};
-
-const terminateRunnerChild = (
-  child: ReturnType<typeof spawn>,
-  isWindows: boolean,
-  triggerId: string,
-  reason: "timeout" | "cancel"
-) => {
-  if (!child.pid) {
-    return;
-  }
-
-  logger.warn(reason === "cancel" ? "Runner cancellation requested; sending SIGTERM" : "Runner fail-safe timeout reached; sending SIGTERM", {
-    triggerId,
-    pid: child.pid
-  });
-
-  try {
-    if (isWindows) {
-      execFileSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore", windowsHide: true });
-    } else {
-      process.kill(-child.pid, "SIGTERM");
-    }
-  } catch {
-    // ignore
-  }
-
-  if (!isWindows) {
-    setTimeout(() => {
-      try {
-        if (child.pid) {
-          process.kill(-child.pid, "SIGKILL");
-        }
-      } catch {
-        // ignore
-      }
-    }, FORCE_KILL_AFTER_MS);
-  }
 };
 
 export class ClaudeCodeRunner implements Runner {
@@ -335,7 +297,10 @@ export class ClaudeCodeRunner implements Runner {
         });
       });
 
+      const closeWatchdog = setupCloseWatchdog(child, opts.triggerId);
+
       child.on("close", (code) => {
+        closeWatchdog.cancel();
         clearTimeout(timeoutId);
         streamParser.flush();
         cleanup();
