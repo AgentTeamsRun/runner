@@ -121,6 +121,8 @@ test("createTriggerHandler runs the runner, reports history, and marks success",
   assert.equal(runnerInputs.length, 1);
   assert.match(runnerInputs[0]?.prompt ?? "", /Continuation context \(required\)/);
   assert.match(runnerInputs[0]?.prompt ?? "", /Previous history path: \/auth\/path\/\.agentteams\/runner\/history\/parent-1\.md/);
+  assert.match(runnerInputs[0]?.prompt ?? "", /## Requests/);
+  assert.match(runnerInputs[0]?.prompt ?? "", /## History \(latest\)/);
   assert.equal(logEntries.some((entry) => entry.level === "INFO" && entry.message.includes("stdout")), true);
   assert.equal(logEntries.some((entry) => entry.level === "WARN" && entry.message.includes("stderr")), true);
   assert.deepEqual(clientCalls.map((entry) => entry.method), [

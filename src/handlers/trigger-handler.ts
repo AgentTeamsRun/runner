@@ -216,9 +216,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         ? [
             `- parentTriggerId: ${trigger.parentTriggerId}`,
             `- Previous history path: ${parentHistoryPath ?? "(unavailable: authPath not configured)"}`,
-            "- Read the previous history file first and continue without repeating completed work.",
+            "- The previous history file has two sections: `## Requests` (all prior user requests in chronological order) and `## History (latest)` (the most recent cumulative summary, may be absent on the first follow-up).",
+            "- Read both sections to understand the conversation context, then continue without repeating completed work.",
             "- If the previous history has a Suggestions for User section, consider those suggestions in the context of the user's current prompt and proceed accordingly.",
-            "- IMPORTANT: When writing the new history file, do NOT copy or append previous session content. Merge all sessions into a single up-to-date summary. Never list sessions separately (e.g., Session 1, Session 2).",
+            "- IMPORTANT: When writing the new history file, do NOT copy or append previous session content. Write a single up-to-date summary that supersedes prior history.",
           ]
         : []),
       `- History path: ${currentHistoryPath ?? "(unavailable: authPath not configured)"}`,
