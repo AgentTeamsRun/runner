@@ -77,6 +77,13 @@ export type ConventionMeta = {
   description: string | null;
 };
 
+export type DaemonTriggerConventionSource = "AUTO_MATCH" | "HARNESS_PINNED";
+
+export type InjectedConventionRecord = {
+  conventionId: string;
+  source: DaemonTriggerConventionSource;
+};
+
 export type TriggerRuntime = {
   triggerId: string;
   agentConfigId: string;

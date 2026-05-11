@@ -1,4 +1,4 @@
-import type { ConventionMeta, DaemonTrigger, RuntimeConfig } from "../types.js";
+import type { ConventionMeta, DaemonTrigger, DaemonTriggerConventionSource, InjectedConventionRecord, RuntimeConfig } from "../types.js";
 import { DaemonApiClient } from "../api-client.js";
 import { createRunnerFactory } from "../runners/index.js";
 import { TriggerLogReporter } from "../runners/log-reporter.js";
@@ -315,11 +315,15 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
 
       let matchedConventions: ConventionMeta[] = [];
+      const injectedSources = new Map<string, DaemonTriggerConventionSource>();
       if (effectiveAuthPath && runtime.conventions && runtime.conventions.length > 0) {
         matchedConventions = evaluateConventionTriggers(runtime.conventions, {
           authPath: effectiveAuthPath,
           planType: runtime.planType ?? null,
         });
+        for (const c of matchedConventions) {
+          injectedSources.set(c.id, "AUTO_MATCH");
+        }
       }
 
       // -- Load harness config & merge pinned conventions -----------------------
@@ -340,7 +344,25 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           );
           if (pinnedConventions.length > 0) {
             matchedConventions = [...matchedConventions, ...pinnedConventions];
+            for (const c of pinnedConventions) {
+              injectedSources.set(c.id, "HARNESS_PINNED");
+            }
           }
+        }
+      }
+
+      if (injectedSources.size > 0) {
+        const records: InjectedConventionRecord[] = Array.from(injectedSources.entries()).map(([conventionId, source]) => ({
+          conventionId,
+          source,
+        }));
+        try {
+          await client.recordInjectedConventions(trigger.id, records);
+        } catch (err) {
+          logger.warn("Failed to record injected conventions", {
+            triggerId: trigger.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
 

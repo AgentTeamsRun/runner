@@ -1433,3 +1433,167 @@ test("createTriggerHandler skips post-hooks when runner fails", async () => {
     assert.equal(logEntries.some((l) => l.includes("post-execution")), false, "Post-hooks should not run when runner fails");
   });
 });
+
+test("createTriggerHandler records injected conventions with auto-match and harness-pinned sources", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "conventionIds:",
+      "  - conv-pinned",
+    ].join("\n"));
+
+    const conventions: ConventionMeta[] = [
+      {
+        id: "conv-auto",
+        filePath: ".agentteams/rules/bugfix.md",
+        trigger: "task:BUG_FIX",
+        title: "Auto Match Conv",
+        description: null,
+      },
+      {
+        id: "conv-pinned",
+        filePath: ".agentteams/rules/pinned.md",
+        trigger: null,
+        title: "Pinned Conv",
+        description: null,
+      },
+      {
+        id: "conv-unrelated",
+        filePath: ".agentteams/rules/unused.md",
+        trigger: "task:FEATURE",
+        title: "Unrelated Conv",
+        description: null,
+      },
+    ];
+
+    const recordedBatches: Array<{ triggerId: string; items: Array<{ conventionId: string; source: string }> }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        conventions,
+        planType: "BUG_FIX",
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async () => undefined,
+      recordInjectedConventions: async (triggerId: string, items: Array<{ conventionId: string; source: string }>) => {
+        recordedBatches.push({ triggerId, items });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => ({ exitCode: 0 } satisfies RunResult),
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(recordedBatches.length, 1);
+    assert.equal(recordedBatches[0]?.triggerId, "trigger-1");
+    const items = recordedBatches[0]?.items ?? [];
+    const byId = new Map(items.map((i) => [i.conventionId, i.source]));
+    assert.equal(byId.get("conv-auto"), "AUTO_MATCH");
+    assert.equal(byId.get("conv-pinned"), "HARNESS_PINNED");
+    assert.equal(byId.has("conv-unrelated"), false);
+  });
+});
+
+test("createTriggerHandler swallows recordInjectedConventions failures without failing the trigger", async () => {
+  await withTempDir(async (dir) => {
+    const harnessDir = join(dir, ".agentteams");
+    await mkdir(harnessDir, { recursive: true });
+    await writeFile(join(harnessDir, "harness.yml"), [
+      "conventionIds:",
+      "  - conv-pinned",
+    ].join("\n"));
+
+    const conventions: ConventionMeta[] = [
+      {
+        id: "conv-pinned",
+        filePath: ".agentteams/rules/pinned.md",
+        trigger: null,
+        title: "Pinned Conv",
+        description: null,
+      },
+    ];
+
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        conventions,
+        planType: "BUG_FIX",
+      }),
+      fetchHarnessConfig: async () => null,
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+      recordInjectedConventions: async () => {
+        throw new Error("server unavailable");
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => ({ exitCode: 0 } satisfies RunResult),
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "DONE");
+  });
+});

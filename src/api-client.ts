@@ -3,6 +3,7 @@ import type {
   ClaimResult,
   DaemonInfo,
   DaemonTrigger,
+  InjectedConventionRecord,
   OsType,
   PendingResponse,
   TriggerFinalStatus,
@@ -291,6 +292,26 @@ export class DaemonApiClient {
 
     const payload = await response.json() as { data: ServerHarnessConfig | null };
     return payload.data;
+  }
+
+  async recordInjectedConventions(
+    triggerId: string,
+    items: InjectedConventionRecord[]
+  ): Promise<void> {
+    if (items.length === 0) return;
+
+    const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/conventions`, {
+      method: "POST",
+      headers: {
+        ...this.daemonHeaders(),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ items })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to record injected conventions (${response.status})`);
+    }
   }
 
   async notifyUpdate(version: string, pkg: "cli" | "runner" = "runner"): Promise<void> {
