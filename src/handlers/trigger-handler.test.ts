@@ -1454,7 +1454,7 @@ test("createTriggerHandler records injected conventions with auto-match and harn
       {
         id: "conv-pinned",
         filePath: ".agentteams/rules/pinned.md",
-        trigger: null,
+        trigger: "always_on",
         title: "Pinned Conv",
         description: null,
       },
