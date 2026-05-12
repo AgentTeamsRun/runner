@@ -7,8 +7,7 @@ import { removeWorktree, resolveWorktreePath } from "./utils/git-worktree.js";
 import { existsSync } from "node:fs";
 import type { DaemonTrigger, RuntimeConfig } from "./types.js";
 import { maybeAutoUpdate } from "./utils/auto-update.js";
-import { getAutostartStatus } from "./autostart.js";
-import { spawnDetachedDaemon } from "./daemon-control.js";
+import { executeRestartRequest } from "./daemon-control.js";
 
 
 type TriggerHandlerFactory = (onAuthPathDiscovered: (authPath: string) => void) => (trigger: DaemonTrigger) => Promise<void>;
@@ -17,11 +16,12 @@ const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CONVENTION_SYNC_INTERVAL_MS = 60 * 60 * 1000;
 
 type PollingDependencies = {
-  createClient?: (config: RuntimeConfig) => Pick<DaemonApiClient, "fetchPendingTrigger" | "claimTrigger" | "fetchOrphanedCancelRequested" | "updateTriggerStatus" | "fetchPendingWorktreeRemovals" | "reportWorktreeStatus" | "notifyUpdate">;
+  createClient?: (config: RuntimeConfig) => Pick<DaemonApiClient, "fetchPendingTrigger" | "claimTrigger" | "fetchOrphanedCancelRequested" | "updateTriggerStatus" | "fetchPendingWorktreeRemovals" | "reportWorktreeStatus" | "notifyUpdate" | "ackRestartRequest">;
   runCleanup?: (authPath: string) => Promise<void>;
   runConventionSync?: (authPath: string) => Promise<void>;
   removeWorktree?: typeof removeWorktree;
   maybeAutoUpdate?: typeof maybeAutoUpdate;
+  executeRestartRequest?: typeof executeRestartRequest;
   setInterval?: typeof global.setInterval;
   clearInterval?: typeof global.clearInterval;
   processOn?: (event: NodeJS.Signals, listener: () => void) => void;
@@ -42,6 +42,7 @@ export const startPolling = async (
   const conventionSync = dependencies.runConventionSync ?? runConventionSync;
   const removeWorktreeFn = dependencies.removeWorktree ?? removeWorktree;
   const autoUpdate = dependencies.maybeAutoUpdate ?? maybeAutoUpdate;
+  const performRestart = dependencies.executeRestartRequest ?? executeRestartRequest;
   const now = dependencies.now ?? Date.now;
   const registerInterval = dependencies.setInterval ?? global.setInterval;
   const unregisterInterval = dependencies.clearInterval ?? global.clearInterval;
@@ -202,6 +203,24 @@ export const startPolling = async (
 
       const pendingResponse = await client.fetchPendingTrigger();
       const trigger = pendingResponse.data;
+
+      // 웹에서 요청된 재시작은 pending 작업 유무와 무관하게 우선 처리한다.
+      // 서버는 ack가 도착할 때까지 플래그를 유지하므로, ack 실패 시에는 다음 폴링에서
+      // 다시 시도되어 요청이 조용히 소실되지 않는다.
+      if (pendingResponse.meta?.restartRequested) {
+        try {
+          await client.ackRestartRequest();
+        } catch (error) {
+          logger.warn("Failed to ack restart request — will retry on next poll", {
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return;
+        }
+
+        performRestart({ processExit: exitProcess });
+        return;
+      }
+
       if (!trigger) {
         // idle 상태에서 자동 업데이트 시도
         try {
@@ -212,31 +231,6 @@ export const startPolling = async (
           logger.error("Auto-update check failed", {
             error: error instanceof Error ? error.message : String(error)
           });
-        }
-
-        // 사용자 재시작 요청 확인
-        // launchd(SuccessfulExit=false)와 systemd(Restart=on-failure)는 정상 종료(0)를 재시작 트리거로 보지 않는다.
-        // 등록된 환경에서는 exit(1)로 빠져 OS 슈퍼바이저가 자동 재시작하게 두고,
-        // 슈퍼바이저가 없는 Windows Startup 폴더(또는 미등록)에서는 detached spawn으로 직접 새 프로세스를 띄운다.
-        if (pendingResponse.meta?.restartRequested) {
-          const autostartStatus = getAutostartStatus();
-          const supervisedRespawn =
-            autostartStatus.registered &&
-            (autostartStatus.platform === "launchd" || autostartStatus.platform === "systemd");
-
-          if (supervisedRespawn) {
-            logger.info("Restart requested — exiting non-zero so the OS supervisor restarts the daemon", {
-              platform: autostartStatus.platform
-            });
-            exitProcess(1);
-          } else {
-            logger.info("Restart requested — spawning new daemon and exiting", {
-              platform: autostartStatus.platform,
-              registered: autostartStatus.registered
-            });
-            spawnDetachedDaemon();
-            exitProcess(0);
-          }
         }
         return;
       }

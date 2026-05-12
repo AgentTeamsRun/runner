@@ -314,6 +314,17 @@ export class DaemonApiClient {
     }
   }
 
+  async ackRestartRequest(): Promise<void> {
+    const response = await this.requestWithRetry("/api/daemons/restart-ack", {
+      method: "POST",
+      headers: this.daemonHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to ack restart request (${response.status})`);
+    }
+  }
+
   async notifyUpdate(version: string, pkg: "cli" | "runner" = "runner"): Promise<void> {
     const response = await this.requestWithRetry("/api/daemons/notify-update", {
       method: "POST",

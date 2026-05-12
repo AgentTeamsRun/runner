@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
-import { chmodSync, existsSync, promises as fs } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, promises as fs, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { resolveExecutablePath } from "./executable.js";
 import { logger } from "./logger.js";
 
@@ -21,6 +21,9 @@ const getWindowsBatPath = (): string =>
 
 const getWindowsVbsPath = (): string =>
   join(homedir(), ".agentteams", "agentrunner-start.vbs");
+
+const getWindowsRestartVbsPath = (): string =>
+  join(homedir(), ".agentteams", "agentrunner-restart.vbs");
 
 const getWindowsStartupVbsPath = (): string =>
   join(
@@ -450,4 +453,41 @@ const restartWindowsStartup = async (config: AutostartConfig | null): Promise<vo
   }
 
   execSync(`wscript.exe "${startupVbsPath}"`, { windowsHide: true });
+};
+
+// --- Windows hidden launcher (for on-demand restart) ---
+
+type LaunchWindowsHiddenDeps = {
+  existsSync?: (path: string) => boolean;
+  writeFileSync?: (path: string, data: string, encoding: BufferEncoding) => void;
+  mkdirSync?: (path: string, options: { recursive: boolean }) => void;
+  execSync?: (command: string, options: { windowsHide: boolean }) => unknown;
+  getAutostartConfig?: () => AutostartConfig | null;
+};
+
+// Run agentrunner via wscript+VBS so no console window appears.
+// Prefers the registered Startup VBS if present; otherwise writes a fresh VBS
+// next to the daemon config and runs it.
+export const launchWindowsHiddenDaemon = (deps: LaunchWindowsHiddenDeps = {}): void => {
+  const resolvedExists = deps.existsSync ?? existsSync;
+  const resolvedWrite = deps.writeFileSync ?? writeFileSync;
+  const resolvedMkdir = deps.mkdirSync ?? mkdirSync;
+  const resolvedExec = deps.execSync ?? execSync;
+  const resolvedGetConfig = deps.getAutostartConfig ?? getAutostartConfigFromEnv;
+
+  const startupVbsPath = getWindowsStartupVbsPath();
+  if (resolvedExists(startupVbsPath)) {
+    resolvedExec(`wscript.exe "${startupVbsPath}"`, { windowsHide: true });
+    return;
+  }
+
+  const config = resolvedGetConfig();
+  if (!config) {
+    throw new Error("Cannot launch Windows daemon hidden: AGENTTEAMS_DAEMON_TOKEN/AGENTTEAMS_API_URL are missing.");
+  }
+
+  const restartVbsPath = getWindowsRestartVbsPath();
+  resolvedMkdir(dirname(restartVbsPath), { recursive: true });
+  resolvedWrite(restartVbsPath, buildWindowsVbsContent(config), "utf8");
+  resolvedExec(`wscript.exe "${restartVbsPath}"`, { windowsHide: true });
 };

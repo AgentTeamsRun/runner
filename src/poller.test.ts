@@ -66,7 +66,8 @@ test("startPolling handles a claimed trigger, registers auth paths, and runs sch
     updateTriggerStatus: async () => undefined,
     fetchPendingWorktreeRemovals: async () => [],
     reportWorktreeStatus: async () => undefined,
-    notifyUpdate: async () => undefined
+    notifyUpdate: async () => undefined,
+    ackRestartRequest: async () => undefined
   };
 
   const createHandler = (onAuthPathDiscovered: (authPath: string) => void) => {
@@ -142,7 +143,8 @@ test("startPolling logs conflicts and suppresses overlapping polling cycles", as
     updateTriggerStatus: async () => undefined,
     fetchPendingWorktreeRemovals: async () => [],
     reportWorktreeStatus: async () => undefined,
-    notifyUpdate: async () => undefined
+    notifyUpdate: async () => undefined,
+    ackRestartRequest: async () => undefined
   };
 
   const intervalCallbacks: Array<() => void> = [];
@@ -202,7 +204,8 @@ test("startPolling clears the interval and exits on shutdown signals", async () 
       updateTriggerStatus: async () => undefined,
       fetchPendingWorktreeRemovals: async () => [],
       reportWorktreeStatus: async () => undefined,
-      notifyUpdate: async () => undefined
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => undefined
     }),
     runCleanup: async () => undefined,
     setInterval: (() => intervalHandle) as typeof setInterval,
@@ -259,7 +262,8 @@ test("startPolling delegates auto-update via injected dependency", async () => {
       updateTriggerStatus: async () => undefined,
       fetchPendingWorktreeRemovals: async () => [],
       reportWorktreeStatus: async () => undefined,
-      notifyUpdate: async () => undefined
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => undefined
     }),
     runCleanup: async () => undefined,
     maybeAutoUpdate: async () => {
@@ -316,7 +320,8 @@ test("startPolling restores persisted auth paths for worktree removals after res
       reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
         reportedStatuses.push({ triggerId, status, worktreeError });
       },
-      notifyUpdate: async () => undefined
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => undefined
     }),
     runCleanup: async () => undefined,
     removeWorktree: (authPath: string, worktreePath: string, worktreeId: string) => {
@@ -374,7 +379,8 @@ test("startPolling reports FAILED when no persisted auth path matches the worktr
       reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
         reportedStatuses.push({ triggerId, status, worktreeError });
       },
-      notifyUpdate: async () => undefined
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => undefined
     }),
     runCleanup: async () => undefined,
     removeWorktree: () => {
@@ -435,7 +441,8 @@ test("startPolling reports FAILED when worktree removal throws after matching a 
       reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
         reportedStatuses.push({ triggerId, status, worktreeError });
       },
-      notifyUpdate: async () => undefined
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => undefined
     }),
     runCleanup: async () => undefined,
     removeWorktree: () => {
@@ -469,4 +476,147 @@ test("startPolling reports FAILED when worktree removal throws after matching a 
   resolveKeepAlive();
   await pollingPromise;
   fsModule.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test("startPolling acks and runs restart when meta.restartRequested is true with no pending trigger", async () => {
+  let ackCalled = 0;
+  let restartCalled = 0;
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => ({
+      fetchPendingTrigger: async () => ({ data: null, meta: { cliLatestVersion: null, runnerLatestVersion: null, restartRequested: true } }),
+      claimTrigger: async () => ({ ok: true, conflict: false }),
+      fetchOrphanedCancelRequested: async () => [] as string[],
+      updateTriggerStatus: async () => undefined,
+      fetchPendingWorktreeRemovals: async () => [],
+      reportWorktreeStatus: async () => undefined,
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => {
+        ackCalled += 1;
+      }
+    }),
+    runCleanup: async () => undefined,
+    maybeAutoUpdate: async () => {
+      throw new Error("auto-update must be skipped while restarting");
+    },
+    executeRestartRequest: () => {
+      restartCalled += 1;
+    },
+    setInterval: (() => ({} as NodeJS.Timeout)) as typeof setInterval,
+    clearInterval: (() => undefined) as typeof clearInterval,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    processExit: (() => undefined as never) as (code: number) => never,
+    now: () => 0,
+    loadAuthPaths: () => [],
+    saveAuthPath: () => "/tmp/auth-paths.json",
+    keepAlive: () => new Promise<void>((resolve) => {
+      keepAliveResolve = resolve;
+    })
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ackCalled, 1, "ackRestartRequest should be called exactly once");
+  assert.equal(restartCalled, 1, "executeRestartRequest should be called exactly once");
+
+  const resolveKeepAlive = keepAliveResolve ?? (() => {
+    throw new Error("keepAlive resolver was not registered");
+  });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
+test("startPolling restarts even when a pending trigger is present, ignoring the trigger", async () => {
+  let ackCalled = 0;
+  let restartCalled = 0;
+  let claimCalled = 0;
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => {
+    throw new Error("trigger handler must not run when restart wins");
+  }, {
+    createClient: () => ({
+      fetchPendingTrigger: async () => ({ data: trigger, meta: { cliLatestVersion: null, runnerLatestVersion: null, restartRequested: true } }),
+      claimTrigger: async () => {
+        claimCalled += 1;
+        return { ok: true, conflict: false };
+      },
+      fetchOrphanedCancelRequested: async () => [] as string[],
+      updateTriggerStatus: async () => undefined,
+      fetchPendingWorktreeRemovals: async () => [],
+      reportWorktreeStatus: async () => undefined,
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => {
+        ackCalled += 1;
+      }
+    }),
+    runCleanup: async () => undefined,
+    executeRestartRequest: () => {
+      restartCalled += 1;
+    },
+    setInterval: (() => ({} as NodeJS.Timeout)) as typeof setInterval,
+    clearInterval: (() => undefined) as typeof clearInterval,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    processExit: (() => undefined as never) as (code: number) => never,
+    now: () => 0,
+    loadAuthPaths: () => [],
+    saveAuthPath: () => "/tmp/auth-paths.json",
+    keepAlive: () => new Promise<void>((resolve) => {
+      keepAliveResolve = resolve;
+    })
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ackCalled, 1, "ack should run before restart");
+  assert.equal(restartCalled, 1, "restart should run even with a pending trigger");
+  assert.equal(claimCalled, 0, "trigger must not be claimed while restarting");
+
+  const resolveKeepAlive = keepAliveResolve ?? (() => {
+    throw new Error("keepAlive resolver was not registered");
+  });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
+test("startPolling skips restart and leaves the flag for retry when ack fails", async () => {
+  let restartCalled = 0;
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => ({
+      fetchPendingTrigger: async () => ({ data: null, meta: { cliLatestVersion: null, runnerLatestVersion: null, restartRequested: true } }),
+      claimTrigger: async () => ({ ok: true, conflict: false }),
+      fetchOrphanedCancelRequested: async () => [] as string[],
+      updateTriggerStatus: async () => undefined,
+      fetchPendingWorktreeRemovals: async () => [],
+      reportWorktreeStatus: async () => undefined,
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => {
+        throw new Error("network down");
+      }
+    }),
+    runCleanup: async () => undefined,
+    executeRestartRequest: () => {
+      restartCalled += 1;
+    },
+    setInterval: (() => ({} as NodeJS.Timeout)) as typeof setInterval,
+    clearInterval: (() => undefined) as typeof clearInterval,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    processExit: (() => undefined as never) as (code: number) => never,
+    now: () => 0,
+    loadAuthPaths: () => [],
+    saveAuthPath: () => "/tmp/auth-paths.json",
+    keepAlive: () => new Promise<void>((resolve) => {
+      keepAliveResolve = resolve;
+    })
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(restartCalled, 0, "restart must not run when ack fails");
+
+  const resolveKeepAlive = keepAliveResolve ?? (() => {
+    throw new Error("keepAlive resolver was not registered");
+  });
+  resolveKeepAlive();
+  await pollingPromise;
 });
