@@ -1,4 +1,4 @@
-import type { ConventionMeta, DaemonTrigger, DaemonTriggerConventionSource, InjectedConventionRecord, RuntimeConfig } from "../types.js";
+import type { ConventionMeta, DaemonTrigger, RuntimeConfig } from "../types.js";
 import { DaemonApiClient } from "../api-client.js";
 import { createRunnerFactory } from "../runners/index.js";
 import { TriggerLogReporter } from "../runners/log-reporter.js";
@@ -78,6 +78,18 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const clearIntervalFn = dependencies.clearIntervalFn ?? global.clearInterval;
   const cancelPollIntervalMs = dependencies.cancelPollIntervalMs ?? 2000;
   const stripUtf8Bom = (content: string): string => content.replace(/^\uFEFF/, "");
+  const currentHistoryPathPlaceholder = "{{AGENTRUNNER_CURRENT_HISTORY_PATH}}";
+  const parentHistoryPathPlaceholder = "{{AGENTRUNNER_PARENT_HISTORY_PATH}}";
+
+  const resolveRunnerPrompt = (
+    runnerPrompt: string,
+    currentPath: string | null,
+    parentPath: string | null
+  ): string => {
+    return runnerPrompt
+      .replaceAll(currentHistoryPathPlaceholder, currentPath ?? "(unavailable: authPath not configured)")
+      .replaceAll(parentHistoryPathPlaceholder, parentPath ?? "(unavailable: authPath not configured)");
+  };
 
   const reportHistoryToDatabase = async (
     triggerId: string,
@@ -149,96 +161,6 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     }
 
     await writeHistoryFile(parentHistoryPath, normalizedMarkdown.slice(0, maxHistoryLength));
-  };
-
-  const toPromptString = (prompt: DaemonTrigger["prompt"]): string => {
-    if (typeof prompt === "string") {
-      return prompt;
-    }
-
-    return JSON.stringify(prompt);
-  };
-
-  const buildRunnerPrompt = (trigger: DaemonTrigger, currentHistoryPath: string | null, parentHistoryPath: string | null, useWorktree?: boolean, baseBranch?: string | null, matchedConventions?: ConventionMeta[]): string => {
-    const basePrompt = toPromptString(trigger.prompt);
-    const isContinuation = Boolean(trigger.parentTriggerId);
-
-    const conventionLines = [
-      "**[IMPORTANT — Convention Reference (MUST READ)]**",
-      "You MUST read `.agentteams/convention.md` before starting any work.",
-      "This file defines mandatory project rules, coding conventions, and workflow guidelines.",
-      "Skipping this step will result in non-compliant output.",
-      "",
-    ];
-
-    if (matchedConventions && matchedConventions.length > 0) {
-      conventionLines.push(
-        "**[Context-Matched Conventions (AUTO-LOADED)]**",
-        "The following conventions are automatically activated based on your current task context:",
-        ...matchedConventions.map((c) => `- \`${c.filePath}\` — ${c.description ?? c.title}`),
-        "You MUST read and follow these conventions in addition to the AGENT_RULES section.",
-        "",
-      );
-    }
-
-    if (useWorktree) {
-      conventionLines.push(
-        "**[Branch Rule]**",
-        "Do not use the worktree branch name directly.",
-        "The runner creates worktrees on branches like `worktree/{id}`.",
-        "When you need to push or create a PR, always create a new branch with a descriptive name (e.g., `feat/add-login-api`, `fix/null-pointer-dashboard`).",
-        "The `worktree/…` branch is a system-managed throwaway — pushing or opening a PR from it pollutes the branch list.",
-        "",
-        "**[Worktree Checkout Rule]**",
-        "Do NOT checkout other branches in the worktree. Stay on the current branch at all times.",
-        `To sync with the latest changes, use: git fetch origin && git merge origin/${baseBranch ?? "main"}`,
-        "",
-      );
-    }
-
-    const conventionPrefix = conventionLines.join("\n");
-
-    const planModePrefix = trigger.planMode
-      ? [
-          "**[PLAN MODE - NO CODE MODIFICATIONS]**",
-          "You are in Plan Mode. You MUST NOT modify, create, or delete any code files.",
-          "Do NOT implement any code changes.",
-          "Do NOT use `agentteams plan quick`. Quick plans are not allowed in Plan Mode.",
-          "",
-        ].join("\n")
-      : "";
-
-    const historyLines = [
-      "",
-      "----",
-      isContinuation ? "Continuation context (required):" : "History context (required):",
-      ...(isContinuation
-        ? [
-            `- parentTriggerId: ${trigger.parentTriggerId}`,
-            `- Previous history path: ${parentHistoryPath ?? "(unavailable: authPath not configured)"}`,
-            "- The previous history file has two sections: `## Requests` (all prior user requests in chronological order) and `## History (latest)` (the most recent cumulative summary, may be absent on the first follow-up).",
-            "- Read both sections to understand the conversation context, then continue without repeating completed work.",
-            "- If the previous history has a Suggestions for User section, consider those suggestions in the context of the user's current prompt and proceed accordingly.",
-            "- IMPORTANT: When writing the new history file, do NOT copy or append previous session content. Write a single up-to-date summary that supersedes prior history.",
-          ]
-        : []),
-      `- History path: ${currentHistoryPath ?? "(unavailable: authPath not configured)"}`,
-      "- Save history as a Markdown file (.md) at the history path.",
-      "- Overwrite the markdown file with the latest full summary for this run.",
-      "- Purpose: The history file is a handoff document for the next session — include only what the next session needs to know.",
-      "- Target length: Keep under 2,000 characters. Be concise.",
-      "- Format rules:",
-      "  - Do not add a top-level title (e.g., # Runner History).",
-      "  - Use ### (h3) headings. Only use the two required sections below — do not add extra sections.",
-      "  - Required section: ### Summary — 3-5 bullet points focused on what the next session needs to know (final state, key decisions, remaining work). If any CLI command output includes a `webUrl` field during this run, include it as a clickable markdown link in the relevant summary bullet.",
-      "  - Required section: ### Questions for User — include only blocking or decision-required questions (up to 3). Write 'None' if there are no questions.",
-      "- Do NOT include: code diffs, full file contents, CLI/terminal output, step-by-step execution logs, or verification command results.",
-      "- CRITICAL: If you have questions for the user, you MUST write them in the ### Questions for User section of the history file. Do NOT rely on stdout to communicate questions — stdout is not shown to the user. The history file is the ONLY channel for user-facing questions.",
-      "- CRITICAL: Always write the history file as your last action before exiting, even if the task is incomplete or you need more information.",
-      "----"
-    ];
-
-    return `${conventionPrefix}${planModePrefix}${basePrompt}\n${historyLines.join("\n")}`;
   };
 
   return async (trigger: DaemonTrigger): Promise<void> => {
@@ -313,17 +235,14 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       const historyPaths = resolveHistoryPaths(effectiveAuthPath, trigger.id, trigger.parentTriggerId);
       currentHistoryPath = historyPaths.currentHistoryPath;
       await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
+      const runnerPrompt = resolveRunnerPrompt(runtime.runnerPrompt, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath);
 
       let matchedConventions: ConventionMeta[] = [];
-      const injectedSources = new Map<string, DaemonTriggerConventionSource>();
       if (effectiveAuthPath && runtime.conventions && runtime.conventions.length > 0) {
         matchedConventions = evaluateConventionTriggers(runtime.conventions, {
           authPath: effectiveAuthPath,
           planType: runtime.planType ?? null,
         });
-        for (const c of matchedConventions) {
-          injectedSources.set(c.id, "AUTO_MATCH");
-        }
       }
 
       // -- Load selected server harness config & append pinned conventions ------
@@ -340,29 +259,9 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           );
           if (pinnedConventions.length > 0) {
             matchedConventions = [...matchedConventions, ...pinnedConventions];
-            for (const c of pinnedConventions) {
-              injectedSources.set(c.id, "HARNESS_PINNED");
-            }
           }
         }
       }
-
-      if (injectedSources.size > 0) {
-        const records: InjectedConventionRecord[] = Array.from(injectedSources.entries()).map(([conventionId, source]) => ({
-          conventionId,
-          source,
-        }));
-        try {
-          await client.recordInjectedConventions(trigger.id, records);
-        } catch (err) {
-          logger.warn("Failed to record injected conventions", {
-            triggerId: trigger.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-
-      const runnerPrompt = buildRunnerPrompt(trigger, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath, runtime.useWorktree, runtime.baseBranch, matchedConventions);
 
       // -- Pre-execution hooks --------------------------------------------------
       if (effectiveAuthPath) {

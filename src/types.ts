@@ -77,7 +77,7 @@ export type ConventionMeta = {
   description: string | null;
 };
 
-export type DaemonTriggerConventionSource = "AUTO_MATCH" | "HARNESS_PINNED";
+export type DaemonTriggerConventionSource = "AUTO_MATCH" | "HARNESS_PINNED" | "PROMPT_REFERENCE";
 
 export type InjectedConventionRecord = {
   conventionId: string;
@@ -91,6 +91,7 @@ export type TriggerRuntime = {
   apiKey: string;
   teamId: string;
   projectId: string;
+  runnerPrompt: string;
   parentHistoryMarkdown: string | null;
   useWorktree: boolean;
   baseBranch: string | null;
