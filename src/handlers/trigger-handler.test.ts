@@ -7,6 +7,7 @@ import { logger } from "../logger.js";
 import { createTriggerHandler } from "./trigger-handler.js";
 import type { ConventionMeta, DaemonTrigger, TriggerRuntime } from "../types.js";
 import type { RunResult, Runner } from "../runners/types.js";
+import type { HarnessYml } from "../harness/types.js";
 
 const trigger: DaemonTrigger = {
   id: "trigger-1",
@@ -623,27 +624,25 @@ const withTempDir = async (run: (dir: string) => Promise<void>): Promise<void> =
   }
 };
 
+const withHarnessRuntime = (authPath: string, overrides: Partial<TriggerRuntime> = {}): TriggerRuntime => ({
+  ...runtime,
+  authPath,
+  harnessConfigId: "harness-1",
+  ...overrides,
+});
+
+const fetchServerHarness = (config: HarnessYml) => async () => ({ config });
+
 test("createTriggerHandler blocks trigger when pre-hook fails with onFailure=fail", async () => {
   await withTempDir(async (dir) => {
-    // Write harness.yml with a failing pre-hook
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "preHooks:",
-      "  - name: lint-check",
-      "    command: exit 1",
-      "    onFailure: fail",
-    ].join("\n"));
-
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
     let runnerCalled = false;
 
     const client = {
-      fetchTriggerRuntime: async () => ({
-        ...runtime,
-        authPath: dir,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir),
+      fetchHarnessConfigById: fetchServerHarness({
+        preHooks: [{ name: "lint-check", command: "exit 1", onFailure: "fail" }],
       }),
-      fetchHarnessConfig: async () => null,
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -694,24 +693,14 @@ test("createTriggerHandler blocks trigger when pre-hook fails with onFailure=fai
 
 test("createTriggerHandler continues when pre-hook fails with onFailure=warn", async () => {
   await withTempDir(async (dir) => {
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "preHooks:",
-      "  - name: optional-check",
-      "    command: exit 1",
-      "    onFailure: warn",
-    ].join("\n"));
-
     let runnerCalled = false;
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
 
     const client = {
-      fetchTriggerRuntime: async () => ({
-        ...runtime,
-        authPath: dir,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir),
+      fetchHarnessConfigById: fetchServerHarness({
+        preHooks: [{ name: "optional-check", command: "exit 1", onFailure: "warn" }],
       }),
-      fetchHarnessConfig: async () => null,
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -761,16 +750,11 @@ test("createTriggerHandler continues when pre-hook fails with onFailure=warn", a
 
 test("createTriggerHandler runs normally when no pre-hooks are defined", async () => {
   await withTempDir(async (dir) => {
-    // No harness.yml — should behave exactly as before
     let runnerCalled = false;
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
 
     const client = {
-      fetchTriggerRuntime: async () => ({
-        ...runtime,
-        authPath: dir,
-      }),
-      fetchHarnessConfig: async () => null,
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -818,14 +802,14 @@ test("createTriggerHandler runs normally when no pre-hooks are defined", async (
   });
 });
 
-test("createTriggerHandler always runs pre-hooks without a convention trigger", async () => {
+test("createTriggerHandler ignores local harness file when no server harness is selected", async () => {
   await withTempDir(async (dir) => {
     const harnessDir = join(dir, ".agentteams");
     await mkdir(harnessDir, { recursive: true });
     await writeFile(join(harnessDir, "harness.yml"), [
       "preHooks:",
-      "  - name: always-run",
-      "    command: sh -c 'echo always > always.txt && exit 1'",
+      "  - name: local-should-not-run",
+      "    command: sh -c 'echo local > local.txt && exit 1'",
       "    onFailure: fail",
     ].join("\n"));
 
@@ -833,13 +817,68 @@ test("createTriggerHandler always runs pre-hooks without a convention trigger", 
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
 
     const client = {
-      fetchTriggerRuntime: async () => ({
-        ...runtime,
-        authPath: dir,
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir, harnessConfigId: null }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerHistory", args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: "updateTriggerStatus", args });
+      },
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, true);
+    await assert.rejects(access(join(dir, "local.txt")));
+    const statusCall = clientCalls.find((c) => c.method === "updateTriggerStatus");
+    assert.ok(statusCall);
+    assert.equal(statusCall.args[1], "DONE");
+  });
+});
+
+test("createTriggerHandler always runs pre-hooks without a convention trigger", async () => {
+  await withTempDir(async (dir) => {
+    let runnerCalled = false;
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir, {
         conventions: [],
         planType: "BUG_FIX",
       }),
-      fetchHarnessConfig: async () => null,
+      fetchHarnessConfigById: fetchServerHarness({
+        preHooks: [{ name: "always-run", command: "sh -c 'echo always > always.txt && exit 1'", onFailure: "fail" }],
+      }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -891,16 +930,6 @@ test("createTriggerHandler always runs pre-hooks without a convention trigger", 
 
 test("createTriggerHandler runs convention-linked pre-hooks when the convention matches", async () => {
   await withTempDir(async (dir) => {
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "preHooks:",
-      "  - name: only-on-bugfix",
-      "    command: sh -c 'echo bugfix > bugfix.txt && exit 1'",
-      "    onFailure: fail",
-      "    conventionTrigger: task:BUG_FIX",
-    ].join("\n"));
-
     let runnerCalled = false;
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
     const conventions: ConventionMeta[] = [{
@@ -912,13 +941,18 @@ test("createTriggerHandler runs convention-linked pre-hooks when the convention 
     }];
 
     const client = {
-      fetchTriggerRuntime: async () => ({
-        ...runtime,
-        authPath: dir,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir, {
         conventions,
         planType: "BUG_FIX",
       }),
-      fetchHarnessConfig: async () => null,
+      fetchHarnessConfigById: fetchServerHarness({
+        preHooks: [{
+          name: "only-on-bugfix",
+          command: "sh -c 'echo bugfix > bugfix.txt && exit 1'",
+          onFailure: "fail",
+          conventionTrigger: "task:BUG_FIX",
+        }],
+      }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -970,16 +1004,6 @@ test("createTriggerHandler runs convention-linked pre-hooks when the convention 
 
 test("createTriggerHandler skips convention-linked pre-hooks when the convention does not match", async () => {
   await withTempDir(async (dir) => {
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "preHooks:",
-      "  - name: only-on-feature",
-      "    command: sh -c 'echo feature > feature.txt && exit 1'",
-      "    onFailure: fail",
-      "    conventionTrigger: task:FEATURE",
-    ].join("\n"));
-
     let runnerCalled = false;
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
     const conventions: ConventionMeta[] = [{
@@ -991,13 +1015,18 @@ test("createTriggerHandler skips convention-linked pre-hooks when the convention
     }];
 
     const client = {
-      fetchTriggerRuntime: async () => ({
-        ...runtime,
-        authPath: dir,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir, {
         conventions,
         planType: "BUG_FIX",
       }),
-      fetchHarnessConfig: async () => null,
+      fetchHarnessConfigById: fetchServerHarness({
+        preHooks: [{
+          name: "only-on-feature",
+          command: "sh -c 'echo feature > feature.txt && exit 1'",
+          onFailure: "fail",
+          conventionTrigger: "task:FEATURE",
+        }],
+      }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -1048,19 +1077,6 @@ test("createTriggerHandler skips convention-linked pre-hooks when the convention
 
 test("createTriggerHandler runs unconditional hooks while skipping non-matching conditional hooks", async () => {
   await withTempDir(async (dir) => {
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "preHooks:",
-      "  - name: always-run",
-      "    command: sh -c 'echo always > always.txt'",
-      "    onFailure: warn",
-      "  - name: only-on-feature",
-      "    command: sh -c 'echo feature > feature.txt && exit 1'",
-      "    onFailure: fail",
-      "    conventionTrigger: task:FEATURE",
-    ].join("\n"));
-
     let runnerCalled = false;
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
     const conventions: ConventionMeta[] = [{
@@ -1072,13 +1088,21 @@ test("createTriggerHandler runs unconditional hooks while skipping non-matching 
     }];
 
     const client = {
-      fetchTriggerRuntime: async () => ({
-        ...runtime,
-        authPath: dir,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir, {
         conventions,
         planType: "BUG_FIX",
       }),
-      fetchHarnessConfig: async () => null,
+      fetchHarnessConfigById: fetchServerHarness({
+        preHooks: [
+          { name: "always-run", command: "sh -c 'echo always > always.txt'", onFailure: "warn" },
+          {
+            name: "only-on-feature",
+            command: "sh -c 'echo feature > feature.txt && exit 1'",
+            onFailure: "fail",
+            conventionTrigger: "task:FEATURE",
+          },
+        ],
+      }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -1146,7 +1170,6 @@ test("createTriggerHandler injects context-matched conventions into the runner p
         conventions,
         planType: "BUG_FIX",
       }),
-      fetchHarnessConfig: async () => null,
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async () => undefined,
       updateTriggerStatus: async () => undefined,
@@ -1208,7 +1231,6 @@ test("createTriggerHandler omits auto-loaded convention prompt section when no c
         conventions,
         planType: "BUG_FIX",
       }),
-      fetchHarnessConfig: async () => null,
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async () => undefined,
       updateTriggerStatus: async () => undefined,
@@ -1257,20 +1279,13 @@ test("createTriggerHandler omits auto-loaded convention prompt section when no c
 
 test("createTriggerHandler marks DONE when post-hook succeeds after runner success", async () => {
   await withTempDir(async (dir) => {
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "postHooks:",
-      "  - name: quality-gate",
-      "    command: echo ok",
-      "    onFailure: fail",
-    ].join("\n"));
-
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
 
     const client = {
-      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir }),
-      fetchHarnessConfig: async () => null,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir),
+      fetchHarnessConfigById: fetchServerHarness({
+        postHooks: [{ name: "quality-gate", command: "echo ok", onFailure: "fail" }],
+      }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -1300,20 +1315,13 @@ test("createTriggerHandler marks DONE when post-hook succeeds after runner succe
 
 test("createTriggerHandler marks FAILED when post-hook fails with onFailure=fail", async () => {
   await withTempDir(async (dir) => {
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "postHooks:",
-      "  - name: quality-gate",
-      "    command: exit 1",
-      "    onFailure: fail",
-    ].join("\n"));
-
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
 
     const client = {
-      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir }),
-      fetchHarnessConfig: async () => null,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir),
+      fetchHarnessConfigById: fetchServerHarness({
+        postHooks: [{ name: "quality-gate", command: "exit 1", onFailure: "fail" }],
+      }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -1344,20 +1352,13 @@ test("createTriggerHandler marks FAILED when post-hook fails with onFailure=fail
 
 test("createTriggerHandler marks NEEDS_REVIEW when post-hook fails with onFailure=needs_review", async () => {
   await withTempDir(async (dir) => {
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "postHooks:",
-      "  - name: review-gate",
-      "    command: exit 1",
-      "    onFailure: needs_review",
-    ].join("\n"));
-
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
 
     const client = {
-      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir }),
-      fetchHarnessConfig: async () => null,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir),
+      fetchHarnessConfigById: fetchServerHarness({
+        postHooks: [{ name: "review-gate", command: "exit 1", onFailure: "needs_review" }],
+      }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -1387,21 +1388,14 @@ test("createTriggerHandler marks NEEDS_REVIEW when post-hook fails with onFailur
 
 test("createTriggerHandler skips post-hooks when runner fails", async () => {
   await withTempDir(async (dir) => {
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "postHooks:",
-      "  - name: should-not-run",
-      "    command: echo unreachable",
-      "    onFailure: fail",
-    ].join("\n"));
-
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
     const logEntries: string[] = [];
 
     const client = {
-      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir }),
-      fetchHarnessConfig: async () => null,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir),
+      fetchHarnessConfigById: fetchServerHarness({
+        postHooks: [{ name: "should-not-run", command: "echo unreachable", onFailure: "fail" }],
+      }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });
@@ -1436,13 +1430,6 @@ test("createTriggerHandler skips post-hooks when runner fails", async () => {
 
 test("createTriggerHandler records injected conventions with auto-match and harness-pinned sources", async () => {
   await withTempDir(async (dir) => {
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "conventionIds:",
-      "  - conv-pinned",
-    ].join("\n"));
-
     const conventions: ConventionMeta[] = [
       {
         id: "conv-auto",
@@ -1470,13 +1457,13 @@ test("createTriggerHandler records injected conventions with auto-match and harn
     const recordedBatches: Array<{ triggerId: string; items: Array<{ conventionId: string; source: string }> }> = [];
 
     const client = {
-      fetchTriggerRuntime: async () => ({
-        ...runtime,
-        authPath: dir,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir, {
         conventions,
         planType: "BUG_FIX",
       }),
-      fetchHarnessConfig: async () => null,
+      fetchHarnessConfigById: fetchServerHarness({
+        conventionIds: ["conv-pinned"],
+      }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async () => undefined,
       updateTriggerStatus: async () => undefined,
@@ -1525,13 +1512,6 @@ test("createTriggerHandler records injected conventions with auto-match and harn
 
 test("createTriggerHandler swallows recordInjectedConventions failures without failing the trigger", async () => {
   await withTempDir(async (dir) => {
-    const harnessDir = join(dir, ".agentteams");
-    await mkdir(harnessDir, { recursive: true });
-    await writeFile(join(harnessDir, "harness.yml"), [
-      "conventionIds:",
-      "  - conv-pinned",
-    ].join("\n"));
-
     const conventions: ConventionMeta[] = [
       {
         id: "conv-pinned",
@@ -1545,13 +1525,13 @@ test("createTriggerHandler swallows recordInjectedConventions failures without f
     const clientCalls: Array<{ method: string; args: unknown[] }> = [];
 
     const client = {
-      fetchTriggerRuntime: async () => ({
-        ...runtime,
-        authPath: dir,
+      fetchTriggerRuntime: async () => withHarnessRuntime(dir, {
         conventions,
         planType: "BUG_FIX",
       }),
-      fetchHarnessConfig: async () => null,
+      fetchHarnessConfigById: fetchServerHarness({
+        conventionIds: ["conv-pinned"],
+      }),
       isTriggerCancelRequested: async () => false,
       updateTriggerHistory: async (...args: unknown[]) => {
         clientCalls.push({ method: "updateTriggerHistory", args });

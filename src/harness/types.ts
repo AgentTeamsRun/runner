@@ -35,7 +35,7 @@ export type QualityGateConfig = {
 // Root config
 // ---------------------------------------------------------------------------
 
-/** Full harness configuration (merged result of local + server) */
+/** Full harness configuration used by the daemon runtime */
 export type HarnessConfig = {
   preHooks: HookDefinition[];
   postHooks: HookDefinition[];
@@ -43,7 +43,7 @@ export type HarnessConfig = {
   conventionIds: string[];
 };
 
-/** Result of parsing the local harness.yml file */
+/** Stored server harness config payload */
 export type HarnessYml = {
   preHooks?: HookDefinition[];
   postHooks?: HookDefinition[];
@@ -55,7 +55,7 @@ export type HarnessYml = {
 // Server response shape
 // ---------------------------------------------------------------------------
 
-/** Shape returned by GET /api/harness-configs/:projectId */
+/** Shape returned by GET /api/harness-configs/by-id/:id */
 export type ServerHarnessConfig = {
   config: HarnessYml;
 };

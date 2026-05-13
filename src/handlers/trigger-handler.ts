@@ -12,7 +12,7 @@ import { extractResultTextFromStreamJson } from "../runners/claude-code.js";
 import { runOriginIssueSafeguard } from "../utils/origin-issue-safeguard.js";
 import { evaluateConventionTriggers } from "../utils/convention-evaluator.js";
 import type { HookDefinition } from "../harness/types.js";
-import { loadHarnessConfig, loadHarnessConfigById } from "../harness/config-loader.js";
+import { createEmptyHarnessConfig, loadHarnessConfigById } from "../harness/config-loader.js";
 import { executePreHooks } from "../harness/hook-executor.js";
 import type { HookContext } from "../harness/hook-executor.js";
 import type { HarnessConfig } from "../harness/types.js";
@@ -326,15 +326,11 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         }
       }
 
-      // -- Load harness config & merge pinned conventions -----------------------
-      let harnessConfig: HarnessConfig = { preHooks: [], postHooks: [], qualityGate: null, conventionIds: [] };
+      // -- Load selected server harness config & append pinned conventions ------
+      let harnessConfig: HarnessConfig = createEmptyHarnessConfig();
 
-      if (effectiveAuthPath) {
-        if (runtime.harnessConfigId) {
-          harnessConfig = await loadHarnessConfigById(effectiveAuthPath, client, runtime.harnessConfigId);
-        } else {
-          harnessConfig = await loadHarnessConfig(effectiveAuthPath, client, runtime.projectId);
-        }
+      if (effectiveAuthPath && runtime.harnessConfigId) {
+        harnessConfig = await loadHarnessConfigById(client, runtime.harnessConfigId);
 
         // Append harness-pinned conventions that aren't already matched
         if (harnessConfig.conventionIds.length > 0 && runtime.conventions) {

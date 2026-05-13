@@ -265,20 +265,6 @@ export class DaemonApiClient {
     }
   }
 
-  async fetchHarnessConfig(projectId: string): Promise<ServerHarnessConfig | null> {
-    const response = await this.requestWithRetry(`/api/harness-configs/${projectId}`, {
-      method: "GET",
-      headers: this.daemonHeaders()
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch harness config (${response.status})`);
-    }
-
-    const payload = await response.json() as { data: ServerHarnessConfig | null };
-    return payload.data;
-  }
-
   async fetchHarnessConfigById(id: string): Promise<ServerHarnessConfig | null> {
     const response = await this.requestWithRetry(`/api/harness-configs/by-id/${id}`, {
       method: "GET",
