@@ -77,7 +77,7 @@ export type ConventionMeta = {
   description: string | null;
 };
 
-export type DaemonTriggerConventionSource = "AUTO_MATCH" | "HARNESS_PINNED" | "PROMPT_REFERENCE";
+export type DaemonTriggerConventionSource = "AUTO_MATCH" | "PROMPT_REFERENCE" | "USER_CUSTOM";
 
 export type InjectedConventionRecord = {
   conventionId: string;
@@ -98,7 +98,7 @@ export type TriggerRuntime = {
   worktreeId: string | null;
   conventions?: ConventionMeta[];
   planType?: string | null;
-  harnessConfigId?: string | null;
+  userConventionIds?: string[];
 };
 
 export type TriggerLogLevel = "INFO" | "WARN" | "ERROR";

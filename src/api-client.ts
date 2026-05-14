@@ -10,7 +10,6 @@ import type {
   TriggerLogInput,
   TriggerRuntime
 } from "./types.js";
-import type { ServerHarnessConfig } from "./harness/types.js";
 import { logger } from "./logger.js";
 
 const require = createRequire(import.meta.url);
@@ -263,21 +262,6 @@ export class DaemonApiClient {
     if (!response.ok) {
       throw new Error(`Failed to append trigger logs (${response.status})`);
     }
-  }
-
-  async fetchHarnessConfigById(id: string): Promise<ServerHarnessConfig | null> {
-    const response = await this.requestWithRetry(`/api/harness-configs/by-id/${id}`, {
-      method: "GET",
-      headers: this.daemonHeaders()
-    });
-
-    if (!response.ok) {
-      if (response.status === 404) return null;
-      throw new Error(`Failed to fetch harness config by id (${response.status})`);
-    }
-
-    const payload = await response.json() as { data: ServerHarnessConfig | null };
-    return payload.data;
   }
 
   async recordInjectedConventions(

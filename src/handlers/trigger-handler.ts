@@ -1,4 +1,4 @@
-import type { ConventionMeta, DaemonTrigger, RuntimeConfig } from "../types.js";
+import type { DaemonTrigger, RuntimeConfig } from "../types.js";
 import { DaemonApiClient } from "../api-client.js";
 import { createRunnerFactory } from "../runners/index.js";
 import { TriggerLogReporter } from "../runners/log-reporter.js";
@@ -10,34 +10,9 @@ import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
 import { isGitRepo, createWorktree } from "../utils/git-worktree.js";
 import { extractResultTextFromStreamJson } from "../runners/claude-code.js";
 import { runOriginIssueSafeguard } from "../utils/origin-issue-safeguard.js";
-import { evaluateConventionTriggers } from "../utils/convention-evaluator.js";
-import type { HookDefinition } from "../harness/types.js";
-import { createEmptyHarnessConfig, loadHarnessConfigById } from "../harness/config-loader.js";
-import { executePreHooks } from "../harness/hook-executor.js";
-import type { HookContext } from "../harness/hook-executor.js";
-import type { HarnessConfig } from "../harness/types.js";
 
 function sanitizeErrorMessage(msg: string): string {
   return msg.replaceAll(homedir(), '~');
-}
-
-function filterHooksByConventionMatch(
-  hooks: HookDefinition[],
-  matchedConventions: ConventionMeta[]
-): HookDefinition[] {
-  const matchedIds = new Set(matchedConventions.map((c) => c.id));
-  const matchedTriggers = new Set(
-    matchedConventions.map((c) => c.trigger).filter(Boolean) as string[]
-  );
-
-  return hooks.filter((hook) => {
-    // conventionId takes priority (new stable link)
-    if (hook.conventionId) return matchedIds.has(hook.conventionId);
-    // Legacy: conventionTrigger string match (deprecated)
-    if (hook.conventionTrigger) return matchedTriggers.has(hook.conventionTrigger);
-    // Unconditional hook → always runs
-    return true;
-  });
 }
 
 type TriggerHandlerOptions = {
@@ -237,65 +212,6 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
       const runnerPrompt = resolveRunnerPrompt(runtime.runnerPrompt, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath);
 
-      let matchedConventions: ConventionMeta[] = [];
-      if (effectiveAuthPath && runtime.conventions && runtime.conventions.length > 0) {
-        matchedConventions = evaluateConventionTriggers(runtime.conventions, {
-          authPath: effectiveAuthPath,
-          planType: runtime.planType ?? null,
-        });
-      }
-
-      // -- Load selected server harness config & append pinned conventions ------
-      let harnessConfig: HarnessConfig = createEmptyHarnessConfig();
-
-      if (effectiveAuthPath && runtime.harnessConfigId) {
-        harnessConfig = await loadHarnessConfigById(client, runtime.harnessConfigId);
-
-        // Append harness-pinned conventions that aren't already matched
-        if (harnessConfig.conventionIds.length > 0 && runtime.conventions) {
-          const alreadyMatchedIds = new Set(matchedConventions.map((c) => c.id));
-          const pinnedConventions = runtime.conventions.filter(
-            (c) => harnessConfig.conventionIds.includes(c.id) && !alreadyMatchedIds.has(c.id)
-          );
-          if (pinnedConventions.length > 0) {
-            matchedConventions = [...matchedConventions, ...pinnedConventions];
-          }
-        }
-      }
-
-      // -- Pre-execution hooks --------------------------------------------------
-      if (effectiveAuthPath) {
-        const filteredPreHooks = filterHooksByConventionMatch(harnessConfig.preHooks, matchedConventions);
-
-        if (filteredPreHooks.length > 0) {
-          activeLogReporter.append("INFO", `Running ${filteredPreHooks.length} pre-execution hook(s).`);
-
-          const hookContext: HookContext = {
-            authPath: effectiveAuthPath,
-            triggerId: trigger.id,
-            triggerLogAppend: (level, msg) => activeLogReporter.append(level, msg),
-          };
-
-          const hookOutcome = await executePreHooks(filteredPreHooks, hookContext);
-
-          if (hookOutcome.failureAction === "fail" || hookOutcome.failureAction === "needs_review") {
-            const errorMessage = hookOutcome.failureReason ?? "Pre-execution hook failed.";
-            const failStatus = hookOutcome.failureAction === "needs_review" ? "NEEDS_REVIEW" as const : "FAILED" as const;
-            logger.warn("Pre-execution hook blocked trigger", {
-              triggerId: trigger.id,
-              reason: errorMessage,
-            });
-            activeLogReporter.append("ERROR", `Trigger blocked by pre-hook: ${errorMessage}`);
-            await logReporter.stop();
-            await client.updateTriggerStatus(trigger.id, failStatus, errorMessage);
-            return;
-          }
-
-          activeLogReporter.append("INFO", "All pre-execution hooks passed.");
-        }
-      }
-      // -- End pre-execution hooks ----------------------------------------------
-
       const runner = createRunner(trigger.runnerType);
       const cancelController = new AbortController();
       let cancelRequested = false;
@@ -364,37 +280,6 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         logReporter.append("WARN", "Runner did not write a history file. Captured stdout was stored as fallback history.");
       }
 
-      // -- Post-execution hooks -------------------------------------------------
-      let postHookStatus: "DONE" | "FAILED" | "NEEDS_REVIEW" | null = null;
-      let postHookError: string | undefined;
-
-      const filteredPostHooks = filterHooksByConventionMatch(harnessConfig.postHooks, matchedConventions);
-
-      if (!runResult.cancelled && runResult.exitCode === 0 && effectiveAuthPath && filteredPostHooks.length > 0) {
-        activeLogReporter.append("INFO", `Running ${filteredPostHooks.length} post-execution hook(s).`);
-
-        const postHookContext: HookContext = {
-          authPath: effectiveAuthPath,
-          triggerId: trigger.id,
-          triggerLogAppend: (level, msg) => activeLogReporter.append(level, msg),
-        };
-
-        const postOutcome = await executePreHooks(filteredPostHooks, postHookContext);
-
-        if (postOutcome.failureAction === "fail") {
-          postHookStatus = "FAILED";
-          postHookError = postOutcome.failureReason ?? "Post-execution hook failed.";
-          activeLogReporter.append("ERROR", `Post-hook blocked: ${postHookError}`);
-        } else if (postOutcome.failureAction === "needs_review") {
-          postHookStatus = "NEEDS_REVIEW";
-          postHookError = postOutcome.failureReason ?? "Post-execution hook requires review.";
-          activeLogReporter.append("WARN", `Post-hook requires review: ${postHookError}`);
-        } else {
-          activeLogReporter.append("INFO", "All post-execution hooks passed.");
-        }
-      }
-      // -- End post-execution hooks ---------------------------------------------
-
       await logReporter.stop();
 
       // 3차 방어: origin issue 자동 연결 안전장치 (fire-and-forget)
@@ -404,15 +289,11 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       const status = runResult.cancelled
         ? "CANCELLED"
-        : postHookStatus
-          ? postHookStatus
-          : runResult.exitCode === 0 ? "DONE" : "FAILED";
+        : runResult.exitCode === 0 ? "DONE" : "FAILED";
       const errorMessage = status === "FAILED"
-        ? (postHookError || runResult.errorMessage || runResult.lastOutput || `Runner exited with code ${runResult.exitCode}`)
+        ? (runResult.errorMessage || runResult.lastOutput || `Runner exited with code ${runResult.exitCode}`)
         : status === "CANCELLED"
           ? (runResult.errorMessage || "Runner cancelled by user")
-        : status === "NEEDS_REVIEW"
-          ? postHookError
         : undefined;
       await client.updateTriggerStatus(
         trigger.id,
