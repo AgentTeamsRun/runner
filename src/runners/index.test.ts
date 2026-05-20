@@ -5,6 +5,7 @@ import { CodexRunner } from "./codex.js";
 import { GeminiRunner } from "./gemini.js";
 import { createRunnerFactory } from "./index.js";
 import { OpenCodeRunner } from "./opencode.js";
+import { AntigravityRunner } from "./antigravity.js";
 
 test("createRunnerFactory returns the expected runner implementations", () => {
   const createRunner = createRunnerFactory("custom-opencode");
@@ -13,6 +14,7 @@ test("createRunnerFactory returns the expected runner implementations", () => {
   assert.equal(createRunner("CLAUDE_CODE") instanceof ClaudeCodeRunner, true);
   assert.equal(createRunner("CODEX") instanceof CodexRunner, true);
   assert.equal(createRunner("GEMINI") instanceof GeminiRunner, true);
+  assert.equal(createRunner("ANTIGRAVITY") instanceof AntigravityRunner, true);
 });
 
 test("createRunnerFactory throws for unsupported runner types", () => {
