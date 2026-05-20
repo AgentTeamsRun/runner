@@ -16,6 +16,46 @@ const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
+export const GEMINI_SUNSET_NOTICE =
+  "Gemini CLI ends requests for personal Google AI Pro/Ultra and free Gemini Code Assist for individuals on 2026-06-18. Paid Code Assist Standard/Enterprise and Gemini API key users keep access. See https://developers.googleblog.com/en/an-important-update-transitioning-gemini-cli-to-antigravity-cli/";
+
+const GEMINI_SUNSET_ERROR_HINTS: RegExp[] = [
+  /quota/i,
+  /rate.?limit/i,
+  /\b401\b/,
+  /\b403\b/,
+  /unauthori[sz]ed/i,
+  /forbidden/i,
+  /authentication/i,
+  /sign\s?in/i,
+  /not\s+entitled/i,
+  /not\s+enabled/i,
+  /access\s+denied/i,
+  /no\s+longer\s+available/i,
+  /discontinued/i,
+  /personal\s+account/i,
+  /free\s+tier/i,
+  /code\s+assist/i,
+  /requests?\s+(?:are\s+)?disabled/i
+];
+
+export const annotateGeminiSunsetError = (baseMessage: string | undefined): string | undefined => {
+  if (!baseMessage) {
+    return baseMessage;
+  }
+
+  if (baseMessage.includes("2026-06-18")) {
+    return baseMessage;
+  }
+
+  const matches = GEMINI_SUNSET_ERROR_HINTS.some((pattern) => pattern.test(baseMessage));
+  if (!matches) {
+    return baseMessage;
+  }
+
+  return `${baseMessage}\n\n${GEMINI_SUNSET_NOTICE}`;
+};
+
 export const buildGeminiExecArgs = (prompt: string, model?: string | null): string[] => {
   const modelArgs = model ? ["--model", model] : [];
   return ["-y", "--sandbox=false", "--include-directories", ".agentteams", "-p", prompt, ...modelArgs];
@@ -258,7 +298,7 @@ export class GeminiRunner implements Runner {
           exitCode: 1,
           lastOutput,
           outputText: outputText.trim() || undefined,
-          errorMessage: error.message
+          errorMessage: annotateGeminiSunsetError(error.message)
         });
       });
 
@@ -302,7 +342,9 @@ export class GeminiRunner implements Runner {
           exitCode: code ?? 1,
           lastOutput,
           outputText: outputText.trim() || undefined,
-          errorMessage: code === 0 ? undefined : (lastErrorOutput || lastOutput || `Runner exited with code ${code ?? 1}`)
+          errorMessage: code === 0
+            ? undefined
+            : annotateGeminiSunsetError(lastErrorOutput || lastOutput || `Runner exited with code ${code ?? 1}`)
         });
       });
     });
