@@ -86,6 +86,38 @@ const resolveFromNpmGlobalBin = (name: string, deps: ExecutableDeps): string | n
   return null;
 };
 
+const getKnownWindowsBinPaths = (name: string, deps: ExecutableDeps): string[] => {
+  const env = deps.env ?? process.env;
+  const normalizedName = name.replace(/\.(?:cmd|exe|bat|com)$/iu, "");
+
+  if (normalizedName !== "agy") {
+    return [];
+  }
+
+  return env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, "agy", "bin")] : [];
+};
+
+const resolveFromKnownWindowsBin = (name: string, deps: ExecutableDeps): string | null => {
+  const os = (deps.platform ?? getPlatform)();
+  if (os !== "win32") {
+    return null;
+  }
+
+  const fileExists = deps.existsSync ?? existsSync;
+  const candidateNames = getWindowsExecutableNames(name, deps.env ?? process.env);
+
+  for (const binPath of getKnownWindowsBinPaths(name, deps)) {
+    for (const candidateName of candidateNames) {
+      const candidatePath = join(binPath, candidateName);
+      if (fileExists(candidatePath)) {
+        return candidatePath;
+      }
+    }
+  }
+
+  return null;
+};
+
 const escapeForPowerShell = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
 export const buildPowerShellCommand = (executablePath: string, args: string[]): string => {
@@ -96,12 +128,15 @@ export const buildPowerShellCommand = (executablePath: string, args: string[]): 
 export const resolveExecutablePath = (name: string, deps: ExecutableDeps = {}): string => {
   const os = (deps.platform ?? getPlatform)();
 
-  const resolvedPath = resolveFromPathLookup(name, deps) ?? resolveFromNpmGlobalBin(name, deps);
+  const resolvedPath =
+    resolveFromPathLookup(name, deps)
+    ?? resolveFromNpmGlobalBin(name, deps)
+    ?? resolveFromKnownWindowsBin(name, deps);
   if (resolvedPath) {
     return resolvedPath;
   }
 
-  const checkedLocations = os === "win32" ? "PATH and npm global bin" : "PATH";
+  const checkedLocations = os === "win32" ? "PATH, npm global bin, and known app install paths" : "PATH";
   throw new Error(
     `Cannot find '${name}' executable. Checked ${checkedLocations}. Ensure it is installed and available globally.`
   );
@@ -113,7 +148,10 @@ export const resolveExecutablePathWithPreference = (
   deps: ExecutableDeps = {}
 ): string => {
   for (const preferredName of preferredNames) {
-    const resolvedPath = resolveFromPathLookup(preferredName, deps) ?? resolveFromNpmGlobalBin(preferredName, deps);
+    const resolvedPath =
+      resolveFromPathLookup(preferredName, deps)
+      ?? resolveFromNpmGlobalBin(preferredName, deps)
+      ?? resolveFromKnownWindowsBin(preferredName, deps);
     if (resolvedPath) {
       return resolvedPath;
     }

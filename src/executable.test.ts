@@ -22,11 +22,35 @@ test("resolveExecutablePath falls back to npm global bin on Windows", () => {
       }
 
       throw new Error(`unexpected command: ${command}`);
-    }) as typeof import("node:child_process").execFileSync,
+    }) as unknown as typeof import("node:child_process").execFileSync,
     existsSync: ((path: string) => /AppData[\\/]+Roaming[\\/]+npm[\\/]+opencode\.cmd$/u.test(path)) as typeof import("node:fs").existsSync
   });
 
   assert.match(resolved, /C:\\Users\\rlaru\\AppData\\Roaming\\npm[\\/]opencode\.cmd$/u);
+});
+
+test("resolveExecutablePath falls back to Antigravity local app bin on Windows", () => {
+  const resolved = resolveExecutablePath("agy", {
+    env: {
+      LOCALAPPDATA: "C:\\Users\\rlaru\\AppData\\Local",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD"
+    },
+    platform: () => "win32",
+    execFileSync: ((command: string, args?: readonly string[]) => {
+      if (command === "where") {
+        throw new Error("not found");
+      }
+
+      if (command === "npm" && args?.[0] === "prefix") {
+        throw new Error("npm unavailable");
+      }
+
+      throw new Error(`unexpected command: ${command}`);
+    }) as unknown as typeof import("node:child_process").execFileSync,
+    existsSync: ((path: string) => /AppData[\\/]+Local[\\/]+agy[\\/]+bin[\\/]+agy\.exe$/u.test(path)) as typeof import("node:fs").existsSync
+  });
+
+  assert.match(resolved, /C:\\Users\\rlaru\\AppData\\Local[\\/]agy[\\/]bin[\\/]agy\.exe$/u);
 });
 
 test("resolveExecutablePath prefers PATH lookup results", () => {
@@ -61,6 +85,30 @@ test("resolveExecutablePathWithPreference prefers opencode.cmd on Windows", () =
   });
 
   assert.equal(resolved, "C:\\Users\\rlaru\\AppData\\Roaming\\npm\\opencode.cmd");
+});
+
+test("resolveExecutablePathWithPreference falls back to agy.exe for preferred agy names on Windows", () => {
+  const resolved = resolveExecutablePathWithPreference("agy", ["agy.cmd", "agy"], {
+    env: {
+      LOCALAPPDATA: "C:\\Users\\rlaru\\AppData\\Local",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD"
+    },
+    platform: () => "win32",
+    execFileSync: ((command: string, args?: readonly string[]) => {
+      if (command === "where") {
+        throw new Error("not found");
+      }
+
+      if (command === "npm" && args?.[0] === "prefix") {
+        throw new Error("npm unavailable");
+      }
+
+      throw new Error(`unexpected command: ${command} ${args?.join(" ") ?? ""}`);
+    }) as unknown as typeof import("node:child_process").execFileSync,
+    existsSync: ((path: string) => /AppData[\\/]+Local[\\/]+agy[\\/]+bin[\\/]+agy\.exe$/u.test(path)) as typeof import("node:fs").existsSync
+  });
+
+  assert.match(resolved, /C:\\Users\\rlaru\\AppData\\Local[\\/]agy[\\/]bin[\\/]agy\.exe$/u);
 });
 
 test("buildPowerShellCommand preserves multiline arguments and escapes single quotes", () => {
