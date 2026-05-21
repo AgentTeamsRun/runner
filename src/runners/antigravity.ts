@@ -1,6 +1,6 @@
 import { createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, open, stat } from "node:fs/promises";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -16,16 +16,28 @@ const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 const DEFAULT_PRINT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const INTERNAL_LOG_POLL_MS = 1_000;
+const INTERNAL_LOG_MAX_LINES_PER_TICK = 20;
+const INTERNAL_LOG_MAX_LINE_LENGTH = 1_000;
+const INTERNAL_LOG_MAX_FORWARDED_BYTES = 50_000;
+const INTERNAL_LOG_PREFIX = "Antigravity internal log";
 
 const toPrintTimeout = (timeoutMs: number = DEFAULT_PRINT_TIMEOUT_MS): string => {
   return `${Math.max(1, Math.ceil(timeoutMs / 1000))}s`;
 };
 
-export const buildAntigravityExecArgs = (prompt: string, timeoutMs?: number): string[] => {
+export const buildAntigravityExecArgs = (
+  prompt: string,
+  agentteamsDir: string,
+  internalLogPath: string,
+  timeoutMs?: number
+): string[] => {
   return [
     "--dangerously-skip-permissions",
     "--add-dir",
-    ".agentteams",
+    agentteamsDir,
+    "--log-file",
+    internalLogPath,
     "--print-timeout",
     toPrintTimeout(timeoutMs),
     "--print",
@@ -35,7 +47,13 @@ export const buildAntigravityExecArgs = (prompt: string, timeoutMs?: number): st
 
 const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
-const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: string, timeoutMs?: number): string => {
+export const toPowerShellEncodedCommand = (
+  resolvedExecutablePath: string,
+  prompt: string,
+  agentteamsDir: string,
+  internalLogPath: string,
+  timeoutMs?: number
+): string => {
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
     "$utf8NoBom = [System.Text.UTF8Encoding]::new($false)",
@@ -46,10 +64,152 @@ const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: stri
     `$promptText = @'`,
     `${prompt.replaceAll("'@", "'@")}`,
     `'@`,
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '--dangerously-skip-permissions' '--add-dir' '.agentteams' '--print-timeout' ${toPowerShellLiteral(toPrintTimeout(timeoutMs))} '--print' $promptText`
+    `& ${toPowerShellLiteral(resolvedExecutablePath)} '--dangerously-skip-permissions' '--add-dir' ${toPowerShellLiteral(agentteamsDir)} '--log-file' ${toPowerShellLiteral(internalLogPath)} '--print-timeout' ${toPowerShellLiteral(toPrintTimeout(timeoutMs))} '--print' $promptText`
   ].join("\r\n");
 
   return Buffer.from(scriptContent, "utf16le").toString("base64");
+};
+
+export const sanitizeAntigravityInternalLogLine = (line: string): string => {
+  return line
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/\b(api[-_]?key|access[-_]?token|refresh[-_]?token|token|cookie|set-cookie)(["'\s:=]+)([^"',;\s]+)/gi, "$1$2[REDACTED]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]");
+};
+
+const toForwardedInternalLogLine = (line: string): string => {
+  const sanitized = sanitizeAntigravityInternalLogLine(line.trim());
+  const truncated = sanitized.length > INTERNAL_LOG_MAX_LINE_LENGTH
+    ? `${sanitized.slice(0, INTERNAL_LOG_MAX_LINE_LENGTH)}...`
+    : sanitized;
+  return `[${INTERNAL_LOG_PREFIX}] ${truncated}`;
+};
+
+type InternalLogForwarderOptions = {
+  logPath: string;
+  triggerId: string;
+  onLine: (line: string) => void;
+  onActivity?: () => void;
+  pollMs?: number;
+};
+
+export const createAntigravityInternalLogForwarder = ({
+  logPath,
+  triggerId,
+  onLine,
+  onActivity,
+  pollMs = INTERNAL_LOG_POLL_MS
+}: InternalLogForwarderOptions) => {
+  let offset = 0;
+  let pendingText = "";
+  let forwardedBytes = 0;
+  let intervalId: ReturnType<typeof setInterval> | null = null;
+  let isReading = false;
+
+  const forwardLines = (text: string, flush: boolean) => {
+    const combined = pendingText + text;
+    const parts = combined.split(/\r?\n/);
+    pendingText = flush ? "" : (parts.pop() ?? "");
+    const completeLines = flush ? parts : parts;
+
+    let forwardedLines = 0;
+    for (const line of completeLines) {
+      if (forwardedLines >= INTERNAL_LOG_MAX_LINES_PER_TICK || forwardedBytes >= INTERNAL_LOG_MAX_FORWARDED_BYTES) {
+        break;
+      }
+
+      if (line.trim().length === 0) {
+        continue;
+      }
+
+      const output = toForwardedInternalLogLine(line);
+      const allowedBytes = INTERNAL_LOG_MAX_FORWARDED_BYTES - forwardedBytes;
+      const boundedOutput = Buffer.byteLength(output, "utf8") > allowedBytes
+        ? output.slice(0, Math.max(0, allowedBytes))
+        : output;
+
+      if (boundedOutput.length === 0) {
+        break;
+      }
+
+      forwardedBytes += Buffer.byteLength(boundedOutput, "utf8");
+      forwardedLines += 1;
+      onLine(boundedOutput);
+      onActivity?.();
+      logger.info("Runner antigravity internal log", {
+        triggerId,
+        output: boundedOutput
+      });
+    }
+  };
+
+  const readNewContent = async (flush = false): Promise<void> => {
+    if (isReading) {
+      return;
+    }
+
+    isReading = true;
+    try {
+      const fileStat = await stat(logPath).catch((err: NodeJS.ErrnoException) => {
+        if (err.code === "ENOENT") {
+          return null;
+        }
+        throw err;
+      });
+
+      if (!fileStat) {
+        if (flush && pendingText.trim().length > 0) {
+          forwardLines("", true);
+        }
+        return;
+      }
+
+      if (fileStat.size < offset) {
+        offset = 0;
+        pendingText = "";
+      }
+
+      if (fileStat.size > offset) {
+        const length = fileStat.size - offset;
+        const buffer = Buffer.alloc(length);
+        const file = await open(logPath, "r");
+        try {
+          const result = await file.read(buffer, 0, length, offset);
+          offset += result.bytesRead;
+          forwardLines(buffer.subarray(0, result.bytesRead).toString("utf8"), flush);
+        } finally {
+          await file.close();
+        }
+      } else if (flush && pendingText.trim().length > 0) {
+        forwardLines("", true);
+      }
+    } catch (err) {
+      logger.warn("Runner antigravity internal log read error", {
+        triggerId,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      isReading = false;
+    }
+  };
+
+  return {
+    start: () => {
+      if (intervalId) {
+        return;
+      }
+      intervalId = setInterval(() => {
+        void readNewContent(false);
+      }, pollMs);
+    },
+    flush: () => readNewContent(true),
+    stop: () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    }
+  };
 };
 
 const toPromptPreview = (prompt: string): string => {
@@ -81,18 +241,20 @@ export class AntigravityRunner implements Runner {
 
     const cwd = opts.authPath;
     const logPath = join(cwd, ".agentteams", "runner", "log", `${opts.triggerId}.log`);
+    const internalLogPath = join(cwd, ".agentteams", "runner", "log", `${opts.triggerId}.antigravity.log`);
+    const agentteamsDir = join(cwd, ".agentteams");
     await mkdir(dirname(logPath), { recursive: true });
     const isWindows = platform() === "win32";
     const resolvedExecutablePath = isWindows
       ? resolveExecutablePathWithPreference("agy", ["agy.cmd", "agy"])
       : resolveExecutablePathWithPreference("agy", ["agy"]);
     const windowsEncodedCommand = isWindows
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.timeoutMs)
+      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, agentteamsDir, internalLogPath, opts.timeoutMs)
       : null;
     const executableInfo = describeExecutableResolution("agy", {
       platform: () => (isWindows ? "win32" : platform())
     });
-    const antigravityArgs = buildAntigravityExecArgs(opts.prompt, opts.timeoutMs);
+    const antigravityArgs = buildAntigravityExecArgs(opts.prompt, agentteamsDir, internalLogPath, opts.timeoutMs);
 
     if (opts.model && opts.model.trim().length > 0) {
       logger.warn("Antigravity CLI does not expose a verified launch-time model flag; model is ignored", {
@@ -159,6 +321,15 @@ export class AntigravityRunner implements Runner {
     let lastOutput = "";
     let lastErrorOutput = "";
     let outputText = "";
+    const internalLogForwarder = createAntigravityInternalLogForwarder({
+      logPath: internalLogPath,
+      triggerId: opts.triggerId,
+      onLine: (line) => {
+        lastOutput = line;
+        opts.onStdoutChunk?.(line);
+      },
+      onActivity: () => idleTimer.reset()
+    });
 
     const appendOutputText = (chunk: string) => {
       if (outputText.length >= OUTPUT_CAPTURE_MAX) {
@@ -203,6 +374,7 @@ export class AntigravityRunner implements Runner {
       triggerId: opts.triggerId,
       cwd,
       logPath,
+      internalLogPath,
       pid: child.pid
     });
 
@@ -235,13 +407,16 @@ export class AntigravityRunner implements Runner {
       };
 
       startIdleTimeout();
+      internalLogForwarder.start();
 
-      const cleanup = () => {
+      const cleanup = async () => {
         if (finished) {
           return;
         }
 
         finished = true;
+        internalLogForwarder.stop();
+        await internalLogForwarder.flush();
         if (idleTimeoutId) {
           clearTimeout(idleTimeoutId);
         }
@@ -269,16 +444,17 @@ export class AntigravityRunner implements Runner {
 
       child.on("error", (error) => {
         clearTimeout(timeoutId);
-        cleanup();
-        logger.error("Runner process launch failed", {
-          triggerId: opts.triggerId,
-          error: error.message
-        });
-        resolve({
-          exitCode: 1,
-          lastOutput,
-          outputText: outputText.trim() || undefined,
-          errorMessage: error.message
+        void cleanup().then(() => {
+          logger.error("Runner process launch failed", {
+            triggerId: opts.triggerId,
+            error: error.message
+          });
+          resolve({
+            exitCode: 1,
+            lastOutput,
+            outputText: outputText.trim() || undefined,
+            errorMessage: error.message
+          });
         });
       });
 
@@ -287,44 +463,45 @@ export class AntigravityRunner implements Runner {
       child.on("close", (code) => {
         closeWatchdog.cancel();
         clearTimeout(timeoutId);
-        cleanup();
-        logger.info("Runner process closed", {
-          triggerId: opts.triggerId,
-          pid: child.pid,
-          exitCode: code,
-          timedOut
-        });
+        void cleanup().then(() => {
+          logger.info("Runner process closed", {
+            triggerId: opts.triggerId,
+            pid: child.pid,
+            exitCode: code,
+            timedOut
+          });
 
-        if (timedOut) {
+          if (timedOut) {
+            resolve({
+              exitCode: 1,
+              lastOutput,
+              outputText: outputText.trim() || undefined,
+              errorMessage: idleTimedOut
+                ? `Runner idle timed out after ${Math.round(opts.idleTimeoutMs / 60_000)}m of no output`
+                : `Runner fail-safe timed out after ${Math.round(opts.timeoutMs / 3_600_000)}h`
+            });
+            return;
+          }
+
+          if (cancelled) {
+            resolve({
+              exitCode: 1,
+              cancelled: true,
+              lastOutput,
+              outputText: outputText.trim() || undefined,
+              errorMessage: "Runner cancelled by user"
+            });
+            return;
+          }
+
           resolve({
-            exitCode: 1,
+            exitCode: code ?? 1,
             lastOutput,
             outputText: outputText.trim() || undefined,
-            errorMessage: idleTimedOut
-              ? `Runner idle timed out after ${Math.round(opts.idleTimeoutMs / 60_000)}m of no output`
-              : `Runner fail-safe timed out after ${Math.round(opts.timeoutMs / 3_600_000)}h`
+            errorMessage: code === 0
+              ? undefined
+              : lastErrorOutput || lastOutput || `Runner exited with code ${code ?? 1}`
           });
-          return;
-        }
-
-        if (cancelled) {
-          resolve({
-            exitCode: 1,
-            cancelled: true,
-            lastOutput,
-            outputText: outputText.trim() || undefined,
-            errorMessage: "Runner cancelled by user"
-          });
-          return;
-        }
-
-        resolve({
-          exitCode: code ?? 1,
-          lastOutput,
-          outputText: outputText.trim() || undefined,
-          errorMessage: code === 0
-            ? undefined
-            : lastErrorOutput || lastOutput || `Runner exited with code ${code ?? 1}`
         });
       });
     });
