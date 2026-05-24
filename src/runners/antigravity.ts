@@ -2,7 +2,7 @@ import { createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
 import { mkdir, open, stat } from "node:fs/promises";
 import { platform } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   describeExecutableResolution,
   resolveExecutablePathWithPreference,
@@ -20,7 +20,6 @@ const INTERNAL_LOG_POLL_MS = 1_000;
 const INTERNAL_LOG_MAX_LINES_PER_TICK = 20;
 const INTERNAL_LOG_MAX_LINE_LENGTH = 1_000;
 const INTERNAL_LOG_MAX_FORWARDED_BYTES = 50_000;
-const INTERNAL_LOG_PREFIX = "Antigravity internal log";
 
 const toPrintTimeout = (timeoutMs: number = DEFAULT_PRINT_TIMEOUT_MS): string => {
   return `${Math.max(1, Math.ceil(timeoutMs / 1000))}s`;
@@ -77,18 +76,84 @@ export const sanitizeAntigravityInternalLogLine = (line: string): string => {
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]");
 };
 
-const toForwardedInternalLogLine = (line: string): string => {
-  const sanitized = sanitizeAntigravityInternalLogLine(line.trim());
-  const truncated = sanitized.length > INTERNAL_LOG_MAX_LINE_LENGTH
-    ? `${sanitized.slice(0, INTERNAL_LOG_MAX_LINE_LENGTH)}...`
-    : sanitized;
-  return `[${INTERNAL_LOG_PREFIX}] ${truncated}`;
+export type AntigravityReadableEvent = {
+  message: string;
+  level: "INFO" | "WARN";
+};
+
+const parseAntigravityKlogLine = (line: string): { level: string; message: string } | null => {
+  const match = line.match(/^([IWEF])\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+[^:\]]+\.go:\d+\]\s+(.*)$/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    level: match[1] ?? "",
+    message: match[2] ?? ""
+  };
+};
+
+export const extractAntigravityReadableEvent = (line: string): AntigravityReadableEvent | null => {
+  const parsed = parseAntigravityKlogLine(line.trim());
+  if (!parsed) {
+    return null;
+  }
+
+  const { level, message } = parsed;
+  const authMatch = message.match(/^OAuth: authenticated successfully as (.+)$/);
+  if (authMatch) {
+    return { message: `[Session] Authenticated as ${authMatch[1]}`, level: "INFO" };
+  }
+
+  const projectMatch = message.match(/^project: using project "([^"]+)" \(id=([0-9a-f-]+)\)/i);
+  if (projectMatch) {
+    return {
+      message: `[Session] Project: ${basename(projectMatch[1] ?? "")} (#${(projectMatch[2] ?? "").slice(0, 8)})`,
+      level: "INFO"
+    };
+  }
+
+  const printModeMatch = message.match(/^Print mode: starting \(promptLength=(\d+)/);
+  if (printModeMatch) {
+    return { message: `[Session] Session started (prompt=${printModeMatch[1]} chars)`, level: "INFO" };
+  }
+
+  const modelMatch = message.match(/^Propagating selected model override to backend: label="([^"]+)"/);
+  if (modelMatch) {
+    return { message: `[Session] Model: ${modelMatch[1]}`, level: "INFO" };
+  }
+
+  const conversationMatch = message.match(/^Created conversation ([0-9a-f-]+)/i);
+  if (conversationMatch) {
+    return { message: `[Session] Conversation: ${(conversationMatch[1] ?? "").slice(0, 8)}`, level: "INFO" };
+  }
+
+  const toolMatch = message.match(/^Auto-approving tool confirmation: "([^"]+)" at step (\d+)/);
+  if (toolMatch) {
+    return { message: `[Tool] ${toolMatch[1]} (step ${toolMatch[2]})`, level: "INFO" };
+  }
+
+  const dripMatch = message.match(/^Drip stopped: .* length=(\d+)/);
+  if (dripMatch) {
+    return { message: `[Result] Streamed ${dripMatch[1]} chars`, level: "INFO" };
+  }
+
+  if (message === "Language server shutting down") {
+    return { message: "[Result] Session ended", level: "INFO" };
+  }
+
+  if (level === "E" && !message.includes("not logged into Antigravity")) {
+    return { message, level: "WARN" };
+  }
+
+  return null;
 };
 
 type InternalLogForwarderOptions = {
   logPath: string;
   triggerId: string;
   onLine: (line: string) => void;
+  onWarnLine?: (line: string) => void;
   onActivity?: () => void;
   pollMs?: number;
 };
@@ -97,6 +162,7 @@ export const createAntigravityInternalLogForwarder = ({
   logPath,
   triggerId,
   onLine,
+  onWarnLine,
   onActivity,
   pollMs = INTERNAL_LOG_POLL_MS
 }: InternalLogForwarderOptions) => {
@@ -105,6 +171,7 @@ export const createAntigravityInternalLogForwarder = ({
   let forwardedBytes = 0;
   let intervalId: ReturnType<typeof setInterval> | null = null;
   let isReading = false;
+  let forwardedModel = false;
 
   const forwardLines = (text: string, flush: boolean) => {
     const combined = pendingText + text;
@@ -122,7 +189,22 @@ export const createAntigravityInternalLogForwarder = ({
         continue;
       }
 
-      const output = toForwardedInternalLogLine(line);
+      const sanitized = sanitizeAntigravityInternalLogLine(line.trim());
+      const event = extractAntigravityReadableEvent(sanitized);
+      if (!event) {
+        continue;
+      }
+
+      if (event.message.startsWith("[Session] Model:")) {
+        if (forwardedModel) {
+          continue;
+        }
+        forwardedModel = true;
+      }
+
+      const output = event.message.length > INTERNAL_LOG_MAX_LINE_LENGTH
+        ? `${event.message.slice(0, INTERNAL_LOG_MAX_LINE_LENGTH)}...`
+        : event.message;
       const allowedBytes = INTERNAL_LOG_MAX_FORWARDED_BYTES - forwardedBytes;
       const boundedOutput = Buffer.byteLength(output, "utf8") > allowedBytes
         ? output.slice(0, Math.max(0, allowedBytes))
@@ -134,12 +216,21 @@ export const createAntigravityInternalLogForwarder = ({
 
       forwardedBytes += Buffer.byteLength(boundedOutput, "utf8");
       forwardedLines += 1;
-      onLine(boundedOutput);
+      if (event.level === "WARN") {
+        (onWarnLine ?? onLine)(boundedOutput);
+      } else {
+        onLine(boundedOutput);
+      }
       onActivity?.();
-      logger.info("Runner antigravity internal log", {
+      const logPayload = {
         triggerId,
         output: boundedOutput
-      });
+      };
+      if (event.level === "WARN") {
+        logger.warn("Runner antigravity internal log", logPayload);
+      } else {
+        logger.info("Runner antigravity internal log", logPayload);
+      }
     }
   };
 
@@ -327,6 +418,11 @@ export class AntigravityRunner implements Runner {
       onLine: (line) => {
         lastOutput = line;
         opts.onStdoutChunk?.(line);
+      },
+      onWarnLine: (line) => {
+        lastOutput = line;
+        lastErrorOutput = line;
+        opts.onStderrChunk?.(line);
       },
       onActivity: () => idleTimer.reset()
     });
