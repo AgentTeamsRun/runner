@@ -17,9 +17,10 @@ const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
-export const buildClaudeCodeArgs = (model?: string | null): string[] => {
+export const buildClaudeCodeArgs = (model?: string | null, fastMode = false): string[] => {
   const modelArgs = model ? ["--model", model] : [];
-  return ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", ...modelArgs];
+  const settingsArgs = fastMode ? ["--settings", "{\"fastMode\":true}"] : [];
+  return ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", ...settingsArgs, ...modelArgs];
 };
 
 export const extractResultTextFromStreamJson = (outputText: string): string => {
@@ -49,8 +50,8 @@ export const extractResultTextFromStreamJson = (outputText: string): string => {
   return trimmedOutput;
 };
 
-const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: string, model?: string | null): string => {
-  const argSegment = buildClaudeCodeArgs(model)
+const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: string, model?: string | null, fastMode = false): string => {
+  const argSegment = buildClaudeCodeArgs(model, fastMode)
     .map((arg) => ` '${arg.replaceAll("'", "''")}'`)
     .join("");
   const scriptContent = [
@@ -104,9 +105,9 @@ export class ClaudeCodeRunner implements Runner {
       ? resolveExecutablePathWithPreference("claude", ["claude.cmd", "claude"])
       : resolveExecutablePathWithPreference("claude", ["claude"]);
     const windowsEncodedCommand = isWindows
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model)
+      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, opts.fastMode === true)
       : null;
-    const claudeArgs = buildClaudeCodeArgs(opts.model);
+    const claudeArgs = buildClaudeCodeArgs(opts.model, opts.fastMode === true);
     const executableInfo = describeExecutableResolution("claude", {
       platform: () => (isWindows ? "win32" : platform())
     });
@@ -120,7 +121,8 @@ export class ClaudeCodeRunner implements Runner {
       platform: executableInfo.platform,
       shell: executableInfo.shell,
       detached: isWindows ? false : true,
-      windowsWrapper: isWindows ? "powershell.exe -EncodedCommand" : null
+      windowsWrapper: isWindows ? "powershell.exe -EncodedCommand" : null,
+      fastMode: opts.fastMode === true
     });
 
     const child = isWindows

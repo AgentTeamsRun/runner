@@ -24,6 +24,20 @@ test("buildClaudeCodeArgs omits the model flag when no model is provided", () =>
   ]);
 });
 
+test("buildClaudeCodeArgs injects fast mode settings", () => {
+  assert.deepEqual(buildClaudeCodeArgs("claude-opus-4-7", true), [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--dangerously-skip-permissions",
+    "--settings",
+    "{\"fastMode\":true}",
+    "--model",
+    "claude-opus-4-7"
+  ]);
+});
+
 test("extractResultTextFromStreamJson returns the final result payload", () => {
   const output = [
     "{\"type\":\"message_start\"}",

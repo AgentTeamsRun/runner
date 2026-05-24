@@ -37,6 +37,25 @@ test("buildCodexExecArgs keeps sandboxing by default", () => {
   ]);
 });
 
+test("buildCodexExecArgs enables fast mode with service tier config", () => {
+  assert.deepEqual(buildCodexExecArgs("hello", "gpt-5.5", "workspace-write", true), [
+    "-a",
+    "never",
+    "exec",
+    "-s",
+    "workspace-write",
+    "-c",
+    "sandbox_workspace_write.network_access=true",
+    "-c",
+    "features.fast_mode=true",
+    "-c",
+    "service_tier=\"fast\"",
+    "--model",
+    "gpt-5.5",
+    "hello"
+  ]);
+});
+
 test("buildCodexExecArgs disables sandbox when requested", () => {
   assert.deepEqual(buildCodexExecArgs("hello", null, "off"), [
     "-a",

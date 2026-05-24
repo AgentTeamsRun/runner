@@ -14,6 +14,7 @@ export interface RunnerOptions {
   idleTimeoutMs: number;
   agentConfigId: string;
   model?: string | null;
+  fastMode?: boolean;
   signal?: AbortSignal;
   onStdoutChunk?: (chunk: string) => void;
   onStderrChunk?: (chunk: string) => void;

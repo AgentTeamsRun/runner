@@ -242,6 +242,16 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       cancelInterval = setIntervalFn(() => {
         void checkCancelRequested();
       }, cancelPollIntervalMs);
+      const runnerFastMode = (trigger.runnerType === "CODEX" || trigger.runnerType === "CLAUDE_CODE")
+        ? trigger.fastMode
+        : false;
+      if (trigger.fastMode && !runnerFastMode) {
+        logger.warn("Fast mode requested for unsupported runner; ignoring", {
+          triggerId: trigger.id,
+          runnerType: trigger.runnerType
+        });
+        activeLogReporter.append("WARN", `Fast mode is not supported for runner ${trigger.runnerType}; ignoring.`);
+      }
       const runResult = await runner.run({
         triggerId: trigger.id,
         prompt: runnerPrompt,
@@ -254,6 +264,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         idleTimeoutMs: config.idleTimeoutMs,
         agentConfigId: runtime.agentConfigId,
         model: trigger.model,
+        fastMode: runnerFastMode,
         signal: cancelController.signal,
         onStdoutChunk: (chunk) => {
           activeLogReporter.append("INFO", chunk);

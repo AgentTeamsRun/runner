@@ -28,14 +28,18 @@ export const resolveCodexSandboxLevel = (rawValue: string | undefined = process.
 export const buildCodexExecArgs = (
   prompt: string,
   model?: string | null,
-  sandboxLevel: "workspace-write" | "off" = resolveCodexSandboxLevel()
+  sandboxLevel: "workspace-write" | "off" = resolveCodexSandboxLevel(),
+  fastMode = false
 ): string[] => {
   const baseArgs =
     sandboxLevel === "off"
       ? ["-a", "never", "exec", "--dangerously-bypass-approvals-and-sandbox"]
       : ["-a", "never", "exec", "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
+  const fastModeArgs = fastMode
+    ? ["-c", "features.fast_mode=true", "-c", "service_tier=\"fast\""]
+    : [];
 
-  return model ? [...baseArgs, "--model", model, prompt] : [...baseArgs, prompt];
+  return model ? [...baseArgs, ...fastModeArgs, "--model", model, prompt] : [...baseArgs, ...fastModeArgs, prompt];
 };
 
 const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
@@ -44,13 +48,15 @@ const toPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
   prompt: string,
   model?: string | null,
-  sandboxLevel: "workspace-write" | "off" = resolveCodexSandboxLevel()
+  sandboxLevel: "workspace-write" | "off" = resolveCodexSandboxLevel(),
+  fastMode = false
 ): string => {
   const sandboxSegment =
     sandboxLevel === "off"
       ? "'--dangerously-bypass-approvals-and-sandbox'"
       : "'-s' 'workspace-write' '-c' 'sandbox_workspace_write.network_access=true'";
   const modelSegment = model ? ` '--model' ${toPowerShellLiteral(model)}` : "";
+  const fastModeSegment = fastMode ? " '-c' 'features.fast_mode=true' '-c' 'service_tier=\"fast\"'" : "";
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
     "$utf8NoBom = [System.Text.UTF8Encoding]::new($false)",
@@ -61,7 +67,7 @@ const toPowerShellEncodedCommand = (
     `$promptText = @'`,
     `${prompt.replaceAll("'@", "'@")}`,
     `'@`,
-    `$promptText | & ${toPowerShellLiteral(resolvedExecutablePath)} '-a' 'never' 'exec' ${sandboxSegment}${modelSegment}`
+    `$promptText | & ${toPowerShellLiteral(resolvedExecutablePath)} '-a' 'never' 'exec' ${sandboxSegment}${fastModeSegment}${modelSegment}`
   ].join("\r\n");
 
   return Buffer.from(scriptContent, "utf16le").toString("base64");
@@ -103,9 +109,9 @@ export class CodexRunner implements Runner {
       ? resolveExecutablePathWithPreference("codex", ["codex.cmd", "codex"])
       : resolveExecutablePathWithPreference("codex", ["codex"]);
     const windowsEncodedCommand = isWindows
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, sandboxLevel)
+      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, sandboxLevel, opts.fastMode === true)
       : null;
-    const codexArgs = buildCodexExecArgs(opts.prompt, opts.model, sandboxLevel);
+    const codexArgs = buildCodexExecArgs(opts.prompt, opts.model, sandboxLevel, opts.fastMode === true);
     const executableInfo = describeExecutableResolution("codex", {
       platform: () => (isWindows ? "win32" : platform())
     });
@@ -126,7 +132,8 @@ export class CodexRunner implements Runner {
       shell: executableInfo.shell,
       detached: isWindows ? false : true,
       windowsWrapper: isWindows ? "powershell.exe -EncodedCommand" : null,
-      sandboxLevel
+      sandboxLevel,
+      fastMode: opts.fastMode === true
     });
 
     const child = isWindows

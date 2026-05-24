@@ -21,6 +21,7 @@ const trigger: DaemonTrigger = {
   prompt: "hello",
   runnerType: "CODEX",
   model: "o4-mini",
+  fastMode: false,
   status: "PENDING",
   agentConfigId: "agent-1",
   startedAt: null,

@@ -31,6 +31,7 @@ export type DaemonTrigger = {
   prompt: string | Record<string, unknown>;
   runnerType: string;
   model: string | null;
+  fastMode: boolean;
   status: string;
   agentConfigId: string;
   startedAt: string | null;
