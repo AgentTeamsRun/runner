@@ -162,6 +162,34 @@ test("mergeLogs returns empty array for empty input", () => {
   assert.deepEqual(mergeLogs([]), []);
 });
 
+test("mergeLogs splits at category prefix boundaries", () => {
+  const result = mergeLogs([
+    { level: "INFO", message: "[Tool] Read: web/src/a.ts" },
+    { level: "INFO", message: "[Tool] Read: web/src/b.ts" },
+    { level: "INFO", message: "Now wire the refetch." },
+    { level: "INFO", message: "[Tool] Edit: web/src/a.ts" }
+  ]);
+
+  assert.equal(result.length, 3);
+  assert.deepEqual(result[0], {
+    level: "INFO",
+    message: "[Tool] Read: web/src/a.ts\n[Tool] Read: web/src/b.ts"
+  });
+  assert.deepEqual(result[1], { level: "INFO", message: "Now wire the refetch." });
+  assert.deepEqual(result[2], { level: "INFO", message: "[Tool] Edit: web/src/a.ts" });
+});
+
+test("mergeLogs keeps [Result] separate from plain text even at same level", () => {
+  const result = mergeLogs([
+    { level: "INFO", message: "Task 1 done" },
+    { level: "INFO", message: "[Result] Completed in 12s (4 turns)" }
+  ]);
+
+  assert.equal(result.length, 2);
+  assert.equal(result[0].message, "Task 1 done");
+  assert.equal(result[1].message, "[Result] Completed in 12s (4 turns)");
+});
+
 test("TriggerLogReporter merges same-level logs during flush", async () => {
   const payloads: Payload[] = [];
   const client = {

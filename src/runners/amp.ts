@@ -155,7 +155,7 @@ export class AmpCodeRunner implements Runner {
       for (const entry of entries) {
         opts.onStdoutChunk?.(entry.message);
       }
-    });
+    }, { cwd });
     child.stdout?.on("data", (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
       appendOutputText(rawOutput);

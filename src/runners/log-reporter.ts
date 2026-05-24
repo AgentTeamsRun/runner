@@ -9,6 +9,13 @@ const DEFAULT_FLUSH_INTERVAL_MS = 2000;
 const ANSI_ESCAPE_PATTERN = /\u001B\[[0-9;?]*[ -/]*[@-~]/g;
 const CONTROL_CHAR_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
+const CATEGORY_PREFIX_PATTERN = /^\[([^\]]+)\]/;
+
+const categoryOf = (message: string): string => {
+  const match = message.match(CATEGORY_PREFIX_PATTERN);
+  return match ? match[1] : "";
+};
+
 export const mergeLogs = (logs: TriggerLogInput[]): TriggerLogInput[] => {
   if (logs.length === 0) {
     return [];
@@ -16,15 +23,19 @@ export const mergeLogs = (logs: TriggerLogInput[]): TriggerLogInput[] => {
 
   const merged: TriggerLogInput[] = [];
   let current = { level: logs[0].level, message: logs[0].message };
+  let currentCategory = categoryOf(current.message);
 
   for (let i = 1; i < logs.length; i++) {
     const log = logs[i];
+    const logCategory = categoryOf(log.message);
     const combined = current.message + "\n" + log.message;
-    if (log.level === current.level && combined.length <= MAX_MESSAGE_LENGTH) {
+    const sameCategory = logCategory === currentCategory;
+    if (log.level === current.level && sameCategory && combined.length <= MAX_MESSAGE_LENGTH) {
       current.message = combined;
     } else {
       merged.push(current);
       current = { level: log.level, message: log.message };
+      currentCategory = logCategory;
     }
   }
 
