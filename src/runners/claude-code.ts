@@ -17,9 +17,15 @@ const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
+// Claude Code CLI's `--settings` flag accepts either a JSON file path or an inline JSON
+// string. We use an inline JSON object so we do not need to manage a temp file. The
+// `fastMode` setting is the key Claude Code honors to opt into fast inference for the
+// session; if the installed CLI does not recognize it, the option is silently ignored.
+const FAST_MODE_SETTINGS_JSON = JSON.stringify({ fastMode: true });
+
 export const buildClaudeCodeArgs = (model?: string | null, fastMode = false): string[] => {
   const modelArgs = model ? ["--model", model] : [];
-  const settingsArgs = fastMode ? ["--settings", "{\"fastMode\":true}"] : [];
+  const settingsArgs = fastMode ? ["--settings", FAST_MODE_SETTINGS_JSON] : [];
   return ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", ...settingsArgs, ...modelArgs];
 };
 
