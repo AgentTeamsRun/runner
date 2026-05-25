@@ -3,7 +3,7 @@ import { DaemonApiClient } from "../api-client.js";
 import { createRunnerFactory } from "../runners/index.js";
 import { TriggerLogReporter } from "../runners/log-reporter.js";
 import { logger } from "../logger.js";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
@@ -25,6 +25,7 @@ type ReporterLike = Pick<TriggerLogReporter, "start" | "append" | "stop">;
 type ReadHistoryFile = (path: string, encoding: BufferEncoding) => Promise<string>;
 type WriteHistoryFile = (path: string, content: string) => Promise<void>;
 type FetchAttachmentFile = (downloadUrl: string) => Promise<Uint8Array>;
+type RemoveAttachmentDirectory = (path: string) => Promise<void>;
 
 type TriggerHandlerDependencies = {
   createRunnerFactory?: typeof createRunnerFactory;
@@ -32,6 +33,7 @@ type TriggerHandlerDependencies = {
   readHistoryFile?: ReadHistoryFile;
   writeHistoryFile?: WriteHistoryFile;
   fetchAttachmentFile?: FetchAttachmentFile;
+  removeAttachmentDirectory?: RemoveAttachmentDirectory;
   resolveRunnerHistoryPaths?: typeof resolveRunnerHistoryPaths;
   setIntervalFn?: typeof global.setInterval;
   clearIntervalFn?: typeof global.clearInterval;
@@ -55,6 +57,9 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       throw new Error(`Attachment download failed (${response.status})`);
     }
     return new Uint8Array(await response.arrayBuffer());
+  });
+  const removeAttachmentDirectory: RemoveAttachmentDirectory = dependencies.removeAttachmentDirectory ?? (async (path) => {
+    await rm(path, { recursive: true, force: true });
   });
   const resolveHistoryPaths = dependencies.resolveRunnerHistoryPaths ?? resolveRunnerHistoryPaths;
   const maxHistoryLength = 200000;
@@ -225,6 +230,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     let logReporter: ReporterLike | null = null;
     let currentHistoryPath: string | null = null;
     let cancelInterval: NodeJS.Timeout | null = null;
+    let attachmentDir: string | null = null;
 
     try {
       if (trigger.parentTriggerId && /[\/\\]|\.\./.test(trigger.parentTriggerId)) {
@@ -293,6 +299,9 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       const historyPaths = resolveHistoryPaths(effectiveAuthPath, trigger.id, trigger.parentTriggerId);
       currentHistoryPath = historyPaths.currentHistoryPath;
       await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
+      if (effectiveAuthPath && runtime.attachments && runtime.attachments.length > 0) {
+        attachmentDir = join(effectiveAuthPath, ".agentteams", "runner", "attachments", trigger.id);
+      }
       const downloadedAttachments = await downloadRuntimeAttachments(runtime.attachments, effectiveAuthPath, trigger.id);
       if (downloadedAttachments.length > 0) {
         activeLogReporter.append("INFO", `Downloaded ${downloadedAttachments.length} attachment(s) for runner access.`);
@@ -432,6 +441,18 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           triggerId: trigger.id,
           error: statusError instanceof Error ? statusError.message : String(statusError)
         });
+      }
+    } finally {
+      if (attachmentDir) {
+        try {
+          await removeAttachmentDirectory(attachmentDir);
+        } catch (cleanupError) {
+          logger.warn("Failed to remove runner attachment directory", {
+            triggerId: trigger.id,
+            attachmentDir,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          });
+        }
       }
     }
   };

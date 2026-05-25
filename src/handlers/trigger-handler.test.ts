@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
-import { mkdtemp, mkdir, writeFile, rm, readFile, access } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { logger } from "../logger.js";
@@ -747,7 +747,126 @@ test("createTriggerHandler downloads attachments into the runner workspace and i
     const localPathMatch = prompt.match(/Local path: (.+01-attachme-notes-file\.md)$/m);
     assert.ok(localPathMatch?.[1]);
     assert.equal(localPathMatch[1].startsWith(join(dir, ".agentteams", "runner", "attachments", "trigger-1")), true);
-    assert.equal(await readFile(localPathMatch[1], "utf8"), "hello world\n");
+
+    const attachmentDir = join(dir, ".agentteams", "runner", "attachments", "trigger-1");
+    await assert.rejects(stat(attachmentDir), /ENOENT/);
+  });
+});
+
+test("createTriggerHandler removes the attachment directory after runner failure", async () => {
+  await withTempDir(async (dir) => {
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        runnerPrompt: "Use the attached file.",
+        attachments: [{
+          id: "attachment-1",
+          originalName: "notes.md",
+          mimeType: "text/markdown",
+          size: 12,
+          downloadUrl: "https://storage.example/attachment-1",
+          expiresInSeconds: 300,
+        }],
+      }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async () => undefined,
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          throw new Error("runner crashed");
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      fetchAttachmentFile: async () => new TextEncoder().encode("hello world\n"),
+      readHistoryFile: async () => "",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    const attachmentDir = join(dir, ".agentteams", "runner", "attachments", "trigger-1");
+    await assert.rejects(stat(attachmentDir), /ENOENT/);
+  });
+});
+
+test("createTriggerHandler logs but does not throw when attachment cleanup fails", async () => {
+  await withTempDir(async (dir) => {
+    const cleanupCalls: string[] = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        runnerPrompt: "Use the attached file.",
+        attachments: [{
+          id: "attachment-1",
+          originalName: "notes.md",
+          mimeType: "text/markdown",
+          size: 12,
+          downloadUrl: "https://storage.example/attachment-1",
+          expiresInSeconds: 300,
+        }],
+      }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async () => undefined,
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async () => ({ exitCode: 0 } satisfies RunResult),
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      fetchAttachmentFile: async () => new TextEncoder().encode("hello world\n"),
+      removeAttachmentDirectory: async (path) => {
+        cleanupCalls.push(path);
+        throw new Error("cleanup boom");
+      },
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.deepEqual(cleanupCalls, [join(dir, ".agentteams", "runner", "attachments", "trigger-1")]);
   });
 });
 
