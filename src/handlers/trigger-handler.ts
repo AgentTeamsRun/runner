@@ -1,10 +1,10 @@
-import type { DaemonTrigger, RuntimeConfig } from "../types.js";
+import type { DaemonTrigger, RuntimeConfig, TriggerRuntimeAttachment } from "../types.js";
 import { DaemonApiClient } from "../api-client.js";
 import { createRunnerFactory } from "../runners/index.js";
 import { TriggerLogReporter } from "../runners/log-reporter.js";
 import { logger } from "../logger.js";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
 import { isGitRepo, createWorktree } from "../utils/git-worktree.js";
@@ -24,12 +24,14 @@ type TriggerHandlerOptions = {
 type ReporterLike = Pick<TriggerLogReporter, "start" | "append" | "stop">;
 type ReadHistoryFile = (path: string, encoding: BufferEncoding) => Promise<string>;
 type WriteHistoryFile = (path: string, content: string) => Promise<void>;
+type FetchAttachmentFile = (downloadUrl: string) => Promise<Uint8Array>;
 
 type TriggerHandlerDependencies = {
   createRunnerFactory?: typeof createRunnerFactory;
   createLogReporter?: (client: DaemonApiClient, triggerId: string) => ReporterLike;
   readHistoryFile?: ReadHistoryFile;
   writeHistoryFile?: WriteHistoryFile;
+  fetchAttachmentFile?: FetchAttachmentFile;
   resolveRunnerHistoryPaths?: typeof resolveRunnerHistoryPaths;
   setIntervalFn?: typeof global.setInterval;
   clearIntervalFn?: typeof global.clearInterval;
@@ -47,6 +49,13 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, content, "utf8");
   });
+  const fetchAttachmentFile: FetchAttachmentFile = dependencies.fetchAttachmentFile ?? (async (downloadUrl) => {
+    const response = await fetch(downloadUrl);
+    if (!response.ok) {
+      throw new Error(`Attachment download failed (${response.status})`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  });
   const resolveHistoryPaths = dependencies.resolveRunnerHistoryPaths ?? resolveRunnerHistoryPaths;
   const maxHistoryLength = 200000;
   const setIntervalFn = dependencies.setIntervalFn ?? global.setInterval;
@@ -55,6 +64,80 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const stripUtf8Bom = (content: string): string => content.replace(/^\uFEFF/, "");
   const currentHistoryPathPlaceholder = "{{AGENTRUNNER_CURRENT_HISTORY_PATH}}";
   const parentHistoryPathPlaceholder = "{{AGENTRUNNER_PARENT_HISTORY_PATH}}";
+
+  const sanitizeAttachmentFileName = (fileName: string): string => {
+    const sanitized = fileName
+      .normalize("NFKD")
+      .replace(/[^\w.\-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^[.\-]+/g, "")
+      .replace(/-$/g, "")
+      .slice(0, 120);
+    return sanitized.length > 0 ? sanitized : "attachment";
+  };
+
+  const assertInsideWorkspace = (workspaceRoot: string, targetPath: string): void => {
+    const relativePath = relative(resolve(workspaceRoot), resolve(targetPath));
+    if (relativePath === "" || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))) {
+      return;
+    }
+    throw new Error(`Attachment path escaped runner workspace: ${targetPath}`);
+  };
+
+  const downloadRuntimeAttachments = async (
+    attachments: TriggerRuntimeAttachment[] | undefined,
+    workspaceRoot: string | null,
+    triggerId: string
+  ): Promise<Array<TriggerRuntimeAttachment & { localPath: string }>> => {
+    if (!attachments || attachments.length === 0) {
+      return [];
+    }
+
+    if (!workspaceRoot) {
+      throw new Error("Cannot deliver attachments because runner workspace path is not configured.");
+    }
+
+    const attachmentDir = join(workspaceRoot, ".agentteams", "runner", "attachments", triggerId);
+    assertInsideWorkspace(workspaceRoot, attachmentDir);
+    await mkdir(attachmentDir, { recursive: true });
+
+    const downloaded: Array<TriggerRuntimeAttachment & { localPath: string }> = [];
+    for (const [index, attachment] of attachments.entries()) {
+      const fileName = `${String(index + 1).padStart(2, "0")}-${attachment.id.slice(0, 8)}-${sanitizeAttachmentFileName(attachment.originalName)}`;
+      const localPath = join(attachmentDir, fileName);
+      assertInsideWorkspace(workspaceRoot, localPath);
+      const bytes = await fetchAttachmentFile(attachment.downloadUrl);
+      await writeFile(localPath, bytes);
+      await access(localPath);
+      downloaded.push({ ...attachment, localPath });
+    }
+
+    return downloaded;
+  };
+
+  const formatBytes = (size: number): string => `${size} bytes`;
+
+  const appendAttachmentSection = (
+    runnerPrompt: string,
+    attachments: Array<TriggerRuntimeAttachment & { localPath: string }>
+  ): string => {
+    if (attachments.length === 0) {
+      return runnerPrompt;
+    }
+
+    const lines = [
+      "## Attached Files",
+      "The user attached the following files. Read them from these local paths when they are relevant to the request.",
+      ...attachments.flatMap((attachment, index) => [
+        `${index + 1}. ${attachment.originalName}`,
+        `   - MIME type: ${attachment.mimeType}`,
+        `   - Size: ${formatBytes(attachment.size)}`,
+        `   - Local path: ${attachment.localPath}`,
+      ]),
+    ];
+
+    return `${runnerPrompt.trimEnd()}\n\n${lines.join("\n")}`;
+  };
 
   const resolveRunnerPrompt = (
     runnerPrompt: string,
@@ -210,7 +293,14 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       const historyPaths = resolveHistoryPaths(effectiveAuthPath, trigger.id, trigger.parentTriggerId);
       currentHistoryPath = historyPaths.currentHistoryPath;
       await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
-      const runnerPrompt = resolveRunnerPrompt(runtime.runnerPrompt, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath);
+      const downloadedAttachments = await downloadRuntimeAttachments(runtime.attachments, effectiveAuthPath, trigger.id);
+      if (downloadedAttachments.length > 0) {
+        activeLogReporter.append("INFO", `Downloaded ${downloadedAttachments.length} attachment(s) for runner access.`);
+      }
+      const runnerPrompt = appendAttachmentSection(
+        resolveRunnerPrompt(runtime.runnerPrompt, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath),
+        downloadedAttachments
+      );
 
       const runner = createRunner(trigger.runnerType);
       const cancelController = new AbortController();

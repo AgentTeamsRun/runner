@@ -676,6 +676,141 @@ test("createTriggerHandler passes the API-provided runner prompt unchanged", asy
   });
 });
 
+test("createTriggerHandler downloads attachments into the runner workspace and injects local paths", async () => {
+  await withTempDir(async (dir) => {
+    const runnerInputs: Array<{ prompt: string; authPath: string | null }> = [];
+    const downloadedUrls: string[] = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: dir,
+        runnerPrompt: "Use the attached file.",
+        attachments: [{
+          id: "attachment-1",
+          originalName: "../notes file.md",
+          mimeType: "text/markdown",
+          size: 12,
+          downloadUrl: "https://storage.example/attachment-1",
+          expiresInSeconds: 300,
+        }],
+      }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async () => undefined,
+    };
+
+    const handler = createTriggerHandler({
+      config: {
+        daemonToken: "daemon-token",
+        apiUrl: "https://api.example",
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: "opencode",
+      },
+      client: client as never,
+    }, {
+      createRunnerFactory: () => () => ({
+        run: async (input) => {
+          runnerInputs.push({ prompt: input.prompt, authPath: input.authPath });
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      fetchAttachmentFile: async (downloadUrl) => {
+        downloadedUrls.push(downloadUrl);
+        return new TextEncoder().encode("hello world\n");
+      },
+      readHistoryFile: async () => "### Summary\n- done\n",
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: join(dir, ".agentteams/runner/history/trigger-1.md"),
+        parentHistoryPath: null,
+      }),
+    });
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.deepEqual(downloadedUrls, ["https://storage.example/attachment-1"]);
+    assert.equal(runnerInputs.length, 1);
+    const prompt = runnerInputs[0]?.prompt ?? "";
+    assert.match(prompt, /## Attached Files/);
+    assert.match(prompt, /MIME type: text\/markdown/);
+    assert.match(prompt, /Size: 12 bytes/);
+    assert.match(prompt, /01-attachme-notes-file\.md/);
+    assert.doesNotMatch(prompt, /https:\/\/storage\.example/);
+
+    const localPathMatch = prompt.match(/Local path: (.+01-attachme-notes-file\.md)$/m);
+    assert.ok(localPathMatch?.[1]);
+    assert.equal(localPathMatch[1].startsWith(join(dir, ".agentteams", "runner", "attachments", "trigger-1")), true);
+    assert.equal(await readFile(localPathMatch[1], "utf8"), "hello world\n");
+  });
+});
+
+test("createTriggerHandler fails before runner execution when attachments have no runner workspace", async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  let runnerCalled = false;
+  const client = {
+    fetchTriggerRuntime: async () => ({
+      ...runtime,
+      authPath: null,
+      attachments: [{
+        id: "attachment-1",
+        originalName: "notes.md",
+        mimeType: "text/markdown",
+        size: 12,
+        downloadUrl: "https://storage.example/attachment-1",
+        expiresInSeconds: 300,
+      }],
+    }),
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: "updateTriggerHistory", args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: "updateTriggerStatus", args });
+    },
+  };
+
+  const handler = createTriggerHandler({
+    config: {
+      daemonToken: "daemon-token",
+      apiUrl: "https://api.example",
+      pollingIntervalMs: 5000,
+      timeoutMs: 1500,
+      idleTimeoutMs: 500,
+      runnerCmd: "opencode",
+    },
+    client: client as never,
+  }, {
+    createRunnerFactory: () => () => ({
+      run: async () => {
+        runnerCalled = true;
+        return { exitCode: 0 } satisfies RunResult;
+      },
+    }),
+    createLogReporter: () => ({
+      start: () => undefined,
+      append: () => undefined,
+      stop: async () => undefined,
+    }),
+    fetchAttachmentFile: async () => new Uint8Array(),
+  });
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.equal(runnerCalled, false);
+  assert.deepEqual(clientCalls.at(-1)?.args, [
+    "trigger-1",
+    "FAILED",
+    "Cannot deliver attachments because runner workspace path is not configured."
+  ]);
+});
+
 test("createTriggerHandler does not append history or convention text to the API prompt", async () => {
   await withTempDir(async (dir) => {
     const runnerInputs: Array<{ prompt: string; authPath: string | null }> = [];

@@ -93,6 +93,7 @@ export type TriggerRuntime = {
   teamId: string;
   projectId: string;
   runnerPrompt: string;
+  attachments?: TriggerRuntimeAttachment[];
   parentHistoryMarkdown: string | null;
   useWorktree: boolean;
   baseBranch: string | null;
@@ -100,6 +101,15 @@ export type TriggerRuntime = {
   conventions?: ConventionMeta[];
   planType?: string | null;
   userConventionIds?: string[];
+};
+
+export type TriggerRuntimeAttachment = {
+  id: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  downloadUrl: string;
+  expiresInSeconds: number;
 };
 
 export type TriggerLogLevel = "INFO" | "WARN" | "ERROR";
