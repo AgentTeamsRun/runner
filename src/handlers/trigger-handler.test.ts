@@ -452,7 +452,7 @@ test("createTriggerHandler truncates long agent output in fallback history", asy
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
   const writtenFiles: Array<{ path: string; content: string }> = [];
 
-  const longOutput = "x".repeat(2000);
+  const longOutput = "x".repeat(9000);
 
   const client = {
     fetchTriggerRuntime: async () => runtime,
@@ -503,7 +503,66 @@ test("createTriggerHandler truncates long agent output in fallback history", asy
 
   const fallbackContent = String(clientCalls[0]?.args[1]);
   assert.match(fallbackContent, /\*\(truncated\)\*/);
-  assert.ok(fallbackContent.length < 2000, "Fallback history should be truncated");
+  assert.ok(fallbackContent.length < 9000, "Fallback history should be truncated");
+  assert.ok(fallbackContent.includes("x".repeat(8000)), "Fallback history should retain output up to the 8,000 character limit");
+});
+
+test("createTriggerHandler preserves fallback agent output within history limit", async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const writtenFiles: Array<{ path: string; content: string }> = [];
+
+  const output = "x".repeat(8000);
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: "updateTriggerHistory", args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: "updateTriggerStatus", args });
+    }
+  };
+
+  const handler = createTriggerHandler({
+    config: {
+      daemonToken: "daemon-token",
+      apiUrl: "https://api.example",
+      pollingIntervalMs: 5000,
+      timeoutMs: 1500,
+      idleTimeoutMs: 500,
+      runnerCmd: "opencode"
+    },
+    client: client as never
+  }, {
+    createRunnerFactory: () => () => ({
+      run: async () => ({
+        exitCode: 0,
+        outputText: output
+      } satisfies RunResult)
+    }),
+    createLogReporter: () => ({
+      start: () => undefined,
+      append: () => undefined,
+      stop: async () => undefined
+    }),
+    writeHistoryFile: async (path, content) => {
+      writtenFiles.push({ path, content });
+    },
+    readHistoryFile: async () => {
+      throw new Error("ENOENT");
+    },
+    resolveRunnerHistoryPaths: () => ({
+      currentHistoryPath: "/auth/path/.agentteams/runner/history/trigger-1.md",
+      parentHistoryPath: null
+    })
+  });
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  const fallbackContent = String(clientCalls[0]?.args[1]);
+  assert.doesNotMatch(fallbackContent, /\*\(truncated\)\*/);
+  assert.match(fallbackContent, new RegExp(`x{${output.length}}`));
 });
 
 test("createTriggerHandler cancels the runner when the server reports a cancel request", async () => {

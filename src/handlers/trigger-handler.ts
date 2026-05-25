@@ -63,6 +63,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   });
   const resolveHistoryPaths = dependencies.resolveRunnerHistoryPaths ?? resolveRunnerHistoryPaths;
   const maxHistoryLength = 200000;
+  const fallbackOutputMaxLength = 8000;
   const setIntervalFn = dependencies.setIntervalFn ?? global.setInterval;
   const clearIntervalFn = dependencies.clearIntervalFn ?? global.clearInterval;
   const cancelPollIntervalMs = dependencies.cancelPollIntervalMs ?? 2000;
@@ -196,9 +197,8 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       ].join("\n");
     }
 
-    const maxOutputLength = 1500;
-    const truncated = trimmed.length > maxOutputLength
-      ? trimmed.slice(0, maxOutputLength) + "\n- *(truncated)*"
+    const truncated = trimmed.length > fallbackOutputMaxLength
+      ? trimmed.slice(0, fallbackOutputMaxLength) + "\n- *(truncated)*"
       : trimmed;
 
     return [
