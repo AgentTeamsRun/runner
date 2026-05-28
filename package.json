@@ -43,8 +43,8 @@
   "license": "Apache-2.0",
   "dependencies": {},
   "devDependencies": {
-    "@types/node": "^24.12.4",
+    "@types/node": "^25.9.1",
     "tsx": "^4.22.3",
-    "typescript": "^5.9.2"
+    "typescript": "^6.0.3"
   }
 }
