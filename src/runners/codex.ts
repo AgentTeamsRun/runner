@@ -1,6 +1,6 @@
 import { createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { platform } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -44,9 +44,12 @@ export const buildCodexExecArgs = (
 
 const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
-const toPowerShellEncodedCommand = (
+// Windows에서는 전체 prompt를 command line(-EncodedCommand)에 싣지 않고 UTF-8 임시 파일로 전달한다.
+// prompt를 직접 인자로 넘기면 길이가 커질 때 `spawn ENAMETOOLONG`이 발생하므로,
+// encoded command에는 prompt 파일 경로만 포함하고 PowerShell에서 UTF-8(no BOM)로 읽어 Codex stdin에 pipe한다.
+export const toPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
-  prompt: string,
+  promptFilePath: string,
   model?: string | null,
   sandboxLevel: "workspace-write" | "off" = resolveCodexSandboxLevel(),
   fastMode = false
@@ -64,9 +67,7 @@ const toPowerShellEncodedCommand = (
     "[Console]::OutputEncoding = $utf8NoBom",
     "$OutputEncoding = $utf8NoBom",
     "chcp 65001 > $null",
-    `$promptText = @'`,
-    `${prompt.replaceAll("'@", "'@")}`,
-    `'@`,
+    `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
     `$promptText | & ${toPowerShellLiteral(resolvedExecutablePath)} '-a' 'never' 'exec' ${sandboxSegment}${fastModeSegment}${modelSegment}`
   ].join("\r\n");
 
@@ -108,8 +109,16 @@ export class CodexRunner implements Runner {
     const resolvedExecutablePath = isWindows
       ? resolveExecutablePathWithPreference("codex", ["codex.cmd", "codex"])
       : resolveExecutablePathWithPreference("codex", ["codex"]);
-    const windowsEncodedCommand = isWindows
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, sandboxLevel, opts.fastMode === true)
+    // Windows: 긴 prompt가 command line 길이 제한(spawn ENAMETOOLONG)에 걸리지 않도록 UTF-8 임시 파일로 전달한다.
+    const windowsPromptFilePath = isWindows
+      ? join(cwd, ".agentteams", "runner", "tmp", `${opts.triggerId}.prompt.txt`)
+      : null;
+    if (windowsPromptFilePath) {
+      await mkdir(dirname(windowsPromptFilePath), { recursive: true });
+      await writeFile(windowsPromptFilePath, opts.prompt, { encoding: "utf8" });
+    }
+    const windowsEncodedCommand = windowsPromptFilePath
+      ? toPowerShellEncodedCommand(resolvedExecutablePath, windowsPromptFilePath, opts.model, sandboxLevel, opts.fastMode === true)
       : null;
     const codexArgs = buildCodexExecArgs(opts.prompt, opts.model, sandboxLevel, opts.fastMode === true);
     const executableInfo = describeExecutableResolution("codex", {
@@ -229,6 +238,24 @@ export class CodexRunner implements Runner {
       pid: child.pid
     });
 
+    // 정상 종료/실패 종료/취소 경로 모두에서 Windows prompt 임시 파일을 정리한다.
+    // 삭제 실패는 runner 결과를 덮어쓰지 않고 warning 으로만 남긴다.
+    const removeWindowsPromptFile = async () => {
+      if (!windowsPromptFilePath) {
+        return;
+      }
+
+      try {
+        await rm(windowsPromptFilePath, { force: true });
+      } catch (error) {
+        logger.warn("Failed to remove Windows prompt temp file", {
+          triggerId: opts.triggerId,
+          promptFilePath: windowsPromptFilePath,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    };
+
     return await new Promise<RunResult>((resolve) => {
       let finished = false;
       let timedOut = false;
@@ -271,6 +298,7 @@ export class CodexRunner implements Runner {
 
         idleTimer.reset = () => {};
         logStream.end();
+        void removeWindowsPromptFile();
         if (opts.signal) {
           opts.signal.removeEventListener("abort", handleAbort);
         }
