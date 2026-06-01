@@ -17,13 +17,42 @@ type RunExecutableSyncOptions = ExecutableDeps & {
   cwd?: string;
 };
 
-const getFirstOutputLine = (output: string): string | null => {
-  const firstLine = output
+const getOutputLines = (output: string): string[] =>
+  output
     .split(/\r?\n/u)
     .map((line) => line.trim())
-    .find((line) => line.length > 0);
+    .filter((line) => line.length > 0);
+
+const getFirstOutputLine = (output: string): string | null => {
+  const firstLine = getOutputLines(output)[0];
 
   return firstLine ?? null;
+};
+
+const getWindowsCommandBaseName = (name: string): string =>
+  name.replace(/\.(?:cmd|exe|bat|com)$/iu, "").toLowerCase();
+
+const getWindowsPathFileName = (path: string): string => {
+  const parts = path.split(/[\\/]/u);
+  return parts[parts.length - 1]?.toLowerCase() ?? "";
+};
+
+const selectPathLookupResult = (name: string, output: string, os: NodeJS.Platform): string | null => {
+  if (os !== "win32") {
+    return getFirstOutputLine(output);
+  }
+
+  const lines = getOutputLines(output);
+  const commandBaseName = getWindowsCommandBaseName(name);
+
+  if (commandBaseName === "npm" || commandBaseName === "npx") {
+    const cmdShim = lines.find((line) => getWindowsPathFileName(line) === `${commandBaseName}.cmd`);
+    if (cmdShim) {
+      return cmdShim;
+    }
+  }
+
+  return lines[0] ?? null;
 };
 
 const getWindowsExecutableNames = (name: string, env: NodeJS.ProcessEnv): string[] => {
@@ -58,7 +87,7 @@ const resolveFromPathLookup = (name: string, deps: ExecutableDeps): string | nul
 
   try {
     const output = run(lookupCommand, [name], { encoding: "utf8", windowsHide: true });
-    return getFirstOutputLine(output);
+    return selectPathLookupResult(name, output, os);
   } catch {
     return null;
   }

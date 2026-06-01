@@ -29,6 +29,21 @@ test("resolveExecutablePath falls back to npm global bin on Windows", () => {
   assert.match(resolved, /C:\\Users\\rlaru\\AppData\\Roaming\\npm[\\/]opencode\.cmd$/u);
 });
 
+test("resolveExecutablePath prefers npm.cmd when Windows PATH lookup returns npm first", () => {
+  const resolved = resolveExecutablePath("npm", {
+    platform: () => "win32",
+    execFileSync: ((command: string, args: string[]) => {
+      if (command === "where" && args[0] === "npm") {
+        return "C:\\nvm4w\\nodejs\\npm\nC:\\nvm4w\\nodejs\\npm.cmd\n";
+      }
+
+      throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+    }) as typeof import("node:child_process").execFileSync
+  });
+
+  assert.equal(resolved, "C:\\nvm4w\\nodejs\\npm.cmd");
+});
+
 test("resolveExecutablePath falls back to Antigravity local app bin on Windows", () => {
   const resolved = resolveExecutablePath("agy", {
     env: {
