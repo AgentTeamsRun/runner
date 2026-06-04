@@ -170,7 +170,7 @@ export const createAntigravityInternalLogForwarder = ({
   let pendingText = "";
   let forwardedBytes = 0;
   let intervalId: ReturnType<typeof setInterval> | null = null;
-  let isReading = false;
+  let activeRead: Promise<void> | null = null;
   let forwardedModel = false;
 
   const forwardLines = (text: string, flush: boolean) => {
@@ -234,12 +234,7 @@ export const createAntigravityInternalLogForwarder = ({
     }
   };
 
-  const readNewContent = async (flush = false): Promise<void> => {
-    if (isReading) {
-      return;
-    }
-
-    isReading = true;
+  const performRead = async (flush: boolean): Promise<void> => {
     try {
       const fileStat = await stat(logPath).catch((err: NodeJS.ErrnoException) => {
         if (err.code === "ENOENT") {
@@ -279,8 +274,25 @@ export const createAntigravityInternalLogForwarder = ({
         triggerId,
         error: err instanceof Error ? err.message : String(err)
       });
+    }
+  };
+
+  const readNewContent = async (flush = false): Promise<void> => {
+    while (activeRead) {
+      if (!flush) {
+        return activeRead;
+      }
+      await activeRead;
+    }
+
+    const readPromise = performRead(flush);
+    activeRead = readPromise;
+    try {
+      await readPromise;
     } finally {
-      isReading = false;
+      if (activeRead === readPromise) {
+        activeRead = null;
+      }
     }
   };
 
