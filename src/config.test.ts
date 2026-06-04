@@ -21,7 +21,8 @@ const envKeys = [
   "POLLING_INTERVAL_MS",
   "IDLE_TIMEOUT_MS",
   "TIMEOUT_MS",
-  "RUNNER_CMD"
+  "RUNNER_CMD",
+  "DAEMON_PREVENT_SLEEP"
 ] as const;
 
 const withTempHome = async (run: (homeDir: string) => Promise<void>): Promise<void> => {
@@ -115,8 +116,19 @@ test("resolveRuntimeConfig prefers environment variables and applies numeric par
       pollingIntervalMs: 30_000,
       timeoutMs: 1234,
       idleTimeoutMs: 600_000,
-      runnerCmd: "codex"
+      runnerCmd: "codex",
+      preventSleepWhileBusy: true
     });
+  });
+});
+
+test("resolveRuntimeConfig disables sleep prevention when DAEMON_PREVENT_SLEEP is falsy", async () => {
+  await withTempHome(async () => {
+    process.env.AGENTTEAMS_DAEMON_TOKEN = "env-token";
+    process.env.DAEMON_PREVENT_SLEEP = "false";
+
+    const result = await resolveRuntimeConfig();
+    assert.equal(result.preventSleepWhileBusy, false);
   });
 });
 

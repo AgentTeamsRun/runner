@@ -91,7 +91,8 @@ test("createTriggerHandler runs the runner, reports history, and marks success",
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never,
     onAuthPathDiscovered: (authPath) => {
@@ -157,7 +158,8 @@ test("createTriggerHandler strips a UTF-8 BOM before reporting history to the da
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never
   }, {
@@ -202,7 +204,8 @@ test("createTriggerHandler restores parent history from server-side coaction con
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never
   }, {
@@ -261,7 +264,8 @@ test("createTriggerHandler strips a UTF-8 BOM before restoring parent history fr
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never
   }, {
@@ -311,7 +315,8 @@ test("createTriggerHandler overwrites existing parent history with server cumula
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never
   }, {
@@ -362,7 +367,8 @@ test("createTriggerHandler reports runner failures and falls back to last output
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never
   }, {
@@ -408,7 +414,8 @@ test("createTriggerHandler stores stdout as fallback history when the runner omi
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never
   }, {
@@ -472,7 +479,8 @@ test("createTriggerHandler truncates long agent output in fallback history", asy
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never
   }, {
@@ -531,7 +539,8 @@ test("createTriggerHandler preserves fallback agent output within history limit"
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never
   }, {
@@ -589,7 +598,8 @@ test("createTriggerHandler cancels the runner when the server reports a cancel r
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never
   }, {
@@ -654,7 +664,8 @@ test("createTriggerHandler marks the trigger as failed when runtime loading thro
       pollingIntervalMs: 5000,
       timeoutMs: 1500,
       idleTimeoutMs: 500,
-      runnerCmd: "opencode"
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
     },
     client: client as never
   }, {
@@ -707,6 +718,7 @@ test("createTriggerHandler passes the API-provided runner prompt unchanged", asy
         timeoutMs: 1500,
         idleTimeoutMs: 500,
         runnerCmd: "opencode",
+        preventSleepWhileBusy: false,
       },
       client: client as never,
     }, {
@@ -767,6 +779,7 @@ test("createTriggerHandler downloads attachments into the runner workspace and i
         timeoutMs: 1500,
         idleTimeoutMs: 500,
         runnerCmd: "opencode",
+        preventSleepWhileBusy: false,
       },
       client: client as never,
     }, {
@@ -841,6 +854,7 @@ test("createTriggerHandler removes the attachment directory after runner failure
         timeoutMs: 1500,
         idleTimeoutMs: 500,
         runnerCmd: "opencode",
+        preventSleepWhileBusy: false,
       },
       client: client as never,
     }, {
@@ -900,6 +914,7 @@ test("createTriggerHandler logs but does not throw when attachment cleanup fails
         timeoutMs: 1500,
         idleTimeoutMs: 500,
         runnerCmd: "opencode",
+        preventSleepWhileBusy: false,
       },
       client: client as never,
     }, {
@@ -962,6 +977,7 @@ test("createTriggerHandler fails before runner execution when attachments have n
       timeoutMs: 1500,
       idleTimeoutMs: 500,
       runnerCmd: "opencode",
+      preventSleepWhileBusy: false,
     },
     client: client as never,
   }, {
@@ -1021,6 +1037,7 @@ test("createTriggerHandler does not append history or convention text to the API
         timeoutMs: 1500,
         idleTimeoutMs: 500,
         runnerCmd: "opencode",
+        preventSleepWhileBusy: false,
       },
       client: client as never,
     }, {
@@ -1048,4 +1065,107 @@ test("createTriggerHandler does not append history or convention text to the API
     assert.equal(runnerInputs[0]?.prompt, "Only the API prompt");
     assert.doesNotMatch(runnerInputs[0]?.prompt ?? "", /Context-Matched Conventions \(AUTO-LOADED\)/);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Sleep prevention (power save blocker) integration tests
+// ---------------------------------------------------------------------------
+
+type BlockerEvents = { events: string[]; blocker: { acquire: (label?: string) => () => void } };
+
+const createRecordingBlocker = (): BlockerEvents => {
+  const events: string[] = [];
+  return {
+    events,
+    blocker: {
+      acquire: (label?: string) => {
+        events.push(`acquire:${label ?? ""}`);
+        return () => events.push(`release:${label ?? ""}`);
+      }
+    }
+  };
+};
+
+const baseConfig = {
+  daemonToken: "daemon-token",
+  apiUrl: "https://api.example",
+  pollingIntervalMs: 5000,
+  timeoutMs: 1500,
+  idleTimeoutMs: 500,
+  runnerCmd: "opencode",
+  preventSleepWhileBusy: true
+};
+
+const passthroughLogReporter = () => ({
+  start: () => undefined,
+  append: () => undefined,
+  stop: async () => undefined
+});
+
+test("createTriggerHandler acquires and releases the power save blocker on success", async () => {
+  const { events, blocker } = createRecordingBlocker();
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async () => undefined
+  };
+
+  const handler = createTriggerHandler({
+    config: baseConfig,
+    client: client as never
+  }, {
+    createRunnerFactory: () => () => ({
+      run: async () => {
+        events.push("run");
+        return { exitCode: 0 } satisfies RunResult;
+      }
+    }),
+    createLogReporter: passthroughLogReporter,
+    readHistoryFile: async () => "### Summary\n- done\n",
+    resolveRunnerHistoryPaths: () => ({
+      currentHistoryPath: "/auth/path/.agentteams/runner/history/trigger-1.md",
+      parentHistoryPath: null
+    }),
+    powerSaveBlocker: blocker
+  });
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.deepEqual(events, ["acquire:trigger-1", "run", "release:trigger-1"]);
+});
+
+test("createTriggerHandler releases the power save blocker when the runner throws", async () => {
+  const { events, blocker } = createRecordingBlocker();
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async () => undefined
+  };
+
+  const handler = createTriggerHandler({
+    config: baseConfig,
+    client: client as never
+  }, {
+    createRunnerFactory: () => () => ({
+      run: async () => {
+        events.push("run");
+        throw new Error("runner crashed");
+      }
+    }),
+    createLogReporter: passthroughLogReporter,
+    readHistoryFile: async () => "",
+    resolveRunnerHistoryPaths: () => ({
+      currentHistoryPath: "/auth/path/.agentteams/runner/history/trigger-1.md",
+      parentHistoryPath: null
+    }),
+    powerSaveBlocker: blocker
+  });
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.deepEqual(events, ["acquire:trigger-1", "run", "release:trigger-1"]);
 });

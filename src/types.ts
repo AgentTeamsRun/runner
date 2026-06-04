@@ -7,6 +7,7 @@ export type RuntimeConfig = {
   timeoutMs: number;
   idleTimeoutMs: number;
   runnerCmd: string;
+  preventSleepWhileBusy: boolean;
 };
 
 export type DaemonConfigFile = {

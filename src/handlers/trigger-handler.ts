@@ -10,6 +10,7 @@ import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
 import { isGitRepo, createWorktree } from "../utils/git-worktree.js";
 import { extractResultTextFromStreamJson } from "../runners/claude-code.js";
 import { runOriginIssueSafeguard } from "../utils/origin-issue-safeguard.js";
+import { createPowerSaveBlocker, type PowerSaveBlocker } from "../utils/power-save-blocker.js";
 
 function sanitizeErrorMessage(msg: string): string {
   return msg.replaceAll(homedir(), '~');
@@ -38,6 +39,7 @@ type TriggerHandlerDependencies = {
   setIntervalFn?: typeof global.setInterval;
   clearIntervalFn?: typeof global.clearInterval;
   cancelPollIntervalMs?: number;
+  powerSaveBlocker?: PowerSaveBlocker;
 };
 
 export const createTriggerHandler = (options: TriggerHandlerOptions, dependencies: TriggerHandlerDependencies = {}) => {
@@ -67,6 +69,8 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const setIntervalFn = dependencies.setIntervalFn ?? global.setInterval;
   const clearIntervalFn = dependencies.clearIntervalFn ?? global.clearInterval;
   const cancelPollIntervalMs = dependencies.cancelPollIntervalMs ?? 2000;
+  // 핸들러 생성 시 한 번만 만들어 동시 트리거가 동일 blocker(reference count)를 공유하게 한다.
+  const powerSaveBlocker = dependencies.powerSaveBlocker ?? createPowerSaveBlocker({ enabled: config.preventSleepWhileBusy });
   const stripUtf8Bom = (content: string): string => content.replace(/^\uFEFF/, "");
   const currentHistoryPathPlaceholder = "{{AGENTRUNNER_CURRENT_HISTORY_PATH}}";
   const parentHistoryPathPlaceholder = "{{AGENTRUNNER_PARENT_HISTORY_PATH}}";
@@ -231,6 +235,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     let currentHistoryPath: string | null = null;
     let cancelInterval: NodeJS.Timeout | null = null;
     let attachmentDir: string | null = null;
+    let releasePowerSaveBlocker: (() => void) | null = null;
 
     try {
       if (trigger.parentTriggerId && /[\/\\]|\.\./.test(trigger.parentTriggerId)) {
@@ -351,6 +356,8 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         });
         activeLogReporter.append("WARN", `Fast mode is not supported for runner ${trigger.runnerType}; ignoring.`);
       }
+      // runner 실행 동안에만 절전 방지를 유지한다. (배터리/비 macOS는 유틸 내부에서 no-op)
+      releasePowerSaveBlocker = powerSaveBlocker.acquire(trigger.id);
       const runResult = await runner.run({
         triggerId: trigger.id,
         prompt: runnerPrompt,
@@ -443,6 +450,11 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         });
       }
     } finally {
+      // 성공/실패/취소/timeout 등 모든 경로에서 절전 방지를 해제한다. release는 idempotent하다.
+      if (releasePowerSaveBlocker) {
+        releasePowerSaveBlocker();
+        releasePowerSaveBlocker = null;
+      }
       if (attachmentDir) {
         try {
           await removeAttachmentDirectory(attachmentDir);

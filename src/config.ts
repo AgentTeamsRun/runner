@@ -9,6 +9,21 @@ const DEFAULT_IDLE_TIMEOUT_MS = 600_000;
 const DEFAULT_RUNNER_CMD = "opencode";
 const DEFAULT_API_URL = "https://api.agentteams.run";
 
+const parseBoolean = (rawValue: string | undefined, fallback: boolean): boolean => {
+  if (rawValue === undefined) {
+    return fallback;
+  }
+
+  const normalized = rawValue.trim().toLowerCase();
+  if (["false", "0", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  if (["true", "1", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  return fallback;
+};
+
 export const getDaemonConfigPath = (): string => {
   return join(homedir(), ".agentteams", "daemon.json");
 };
@@ -69,7 +84,9 @@ export const resolveRuntimeConfig = async (): Promise<RuntimeConfig> => {
     pollingIntervalMs: parsePositiveInteger(process.env.POLLING_INTERVAL_MS, DEFAULT_POLLING_INTERVAL_MS),
     timeoutMs: parsePositiveInteger(process.env.TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
     idleTimeoutMs: parsePositiveInteger(process.env.IDLE_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS),
-    runnerCmd: process.env.RUNNER_CMD?.trim() || DEFAULT_RUNNER_CMD
+    runnerCmd: process.env.RUNNER_CMD?.trim() || DEFAULT_RUNNER_CMD,
+    // macOS에서는 기본 활성. 비 macOS는 유틸 레벨에서 no-op으로 처리된다.
+    preventSleepWhileBusy: parseBoolean(process.env.DAEMON_PREVENT_SLEEP, true)
   };
 };
 

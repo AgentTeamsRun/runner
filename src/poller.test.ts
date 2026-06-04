@@ -13,7 +13,8 @@ const config: RuntimeConfig = {
   pollingIntervalMs: 5000,
   timeoutMs: 1000,
   idleTimeoutMs: 500,
-  runnerCmd: "opencode"
+  runnerCmd: "opencode",
+  preventSleepWhileBusy: false
 };
 
 const trigger: DaemonTrigger = {
