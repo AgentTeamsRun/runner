@@ -47,6 +47,21 @@ test.afterEach(() => {
   mock.restoreAll();
 });
 
+type BlockerEvents = { events: string[]; blocker: { acquire: (label?: string) => () => void } };
+
+const createRecordingBlocker = (): BlockerEvents => {
+  const events: string[] = [];
+  return {
+    events,
+    blocker: {
+      acquire: (label?: string) => {
+        events.push(`acquire:${label ?? ""}`);
+        return () => events.push(`release:${label ?? ""}`);
+      }
+    }
+  };
+};
+
 test("startPolling handles a claimed trigger, registers auth paths, and runs scheduled cleanup", async () => {
   const infos: Array<{ message: string; meta?: Record<string, unknown> }> = [];
   mock.method(logger, "info", (message: string, meta?: Record<string, unknown>) => {
@@ -621,4 +636,92 @@ test("startPolling skips restart and leaves the flag for retry when ack fails", 
   });
   resolveKeepAlive();
   await pollingPromise;
+});
+
+test("startPolling acquires the power save blocker on start and releases it on shutdown", async () => {
+  const { events, blocker } = createRecordingBlocker();
+  const signals = new Map<string, () => void>();
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => ({
+      fetchPendingTrigger: async () => ({ data: null }),
+      claimTrigger: async () => ({ ok: true, conflict: false }),
+      fetchOrphanedCancelRequested: async () => [] as string[],
+      updateTriggerStatus: async () => undefined,
+      fetchPendingWorktreeRemovals: async () => [],
+      reportWorktreeStatus: async () => undefined,
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => undefined
+    }),
+    runCleanup: async () => undefined,
+    setInterval: (() => ({} as NodeJS.Timeout)) as typeof setInterval,
+    clearInterval: (() => undefined) as typeof clearInterval,
+    processOn: ((event: NodeJS.Signals, listener: () => void) => {
+      signals.set(event, listener);
+    }) as (event: NodeJS.Signals, listener: () => void) => void,
+    processExit: (() => undefined as never) as (code: number) => never,
+    now: () => 0,
+    loadAuthPaths: () => [],
+    saveAuthPath: () => "/tmp/auth-paths.json",
+    powerSaveBlocker: blocker,
+    keepAlive: () => new Promise<void>((resolve) => {
+      keepAliveResolve = resolve;
+    })
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["acquire:daemon-polling"], "blocker should be acquired exactly once on start");
+
+  const sigterm = signals.get("SIGTERM");
+  assert.ok(sigterm);
+  sigterm();
+  assert.deepEqual(events, ["acquire:daemon-polling", "release:daemon-polling"], "blocker should be released on shutdown");
+
+  const resolveKeepAlive = keepAliveResolve ?? (() => {
+    throw new Error("keepAlive resolver was not registered");
+  });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
+test("startPolling releases the power save blocker when keepAlive resolves", async () => {
+  const { events, blocker } = createRecordingBlocker();
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => ({
+      fetchPendingTrigger: async () => ({ data: null }),
+      claimTrigger: async () => ({ ok: true, conflict: false }),
+      fetchOrphanedCancelRequested: async () => [] as string[],
+      updateTriggerStatus: async () => undefined,
+      fetchPendingWorktreeRemovals: async () => [],
+      reportWorktreeStatus: async () => undefined,
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => undefined
+    }),
+    runCleanup: async () => undefined,
+    setInterval: (() => ({} as NodeJS.Timeout)) as typeof setInterval,
+    clearInterval: (() => undefined) as typeof clearInterval,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    processExit: (() => undefined as never) as (code: number) => never,
+    now: () => 0,
+    loadAuthPaths: () => [],
+    saveAuthPath: () => "/tmp/auth-paths.json",
+    powerSaveBlocker: blocker,
+    keepAlive: () => new Promise<void>((resolve) => {
+      keepAliveResolve = resolve;
+    })
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["acquire:daemon-polling"]);
+
+  const resolveKeepAlive = keepAliveResolve ?? (() => {
+    throw new Error("keepAlive resolver was not registered");
+  });
+  resolveKeepAlive();
+  await pollingPromise;
+
+  assert.deepEqual(events, ["acquire:daemon-polling", "release:daemon-polling"], "blocker should be released after keepAlive resolves");
 });

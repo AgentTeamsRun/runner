@@ -119,11 +119,13 @@ npm run dev
 | `LOG_LEVEL` | `info` | 로그 레벨: `debug`, `info`, `warn`, `error` |
 | `DAEMON_VERBOSE_RUNNER_LOGS` | `true` | `false`면 시작/종료/에러 로그만 출력 |
 | `DAEMON_PROMPT_LOG_MODE` | `preview` | 프롬프트 로그: `off`, `length`, `preview`, `full` |
-| `DAEMON_PREVENT_SLEEP` | `true` | macOS에서 러너 실행 중 시스템 절전 방지. `false`/`0`/`off`로 비활성화. 비 macOS는 자동 no-op |
+| `DAEMON_PREVENT_SLEEP` | `true` | macOS에서 daemon이 polling/대기/러너 실행 중 시스템 절전 방지. `false`/`0`/`off`로 비활성화. 비 macOS는 자동 no-op |
 
 기본 정책은 `idle timeout 중심 + 24시간 fail-safe`입니다. 즉, 정상 운영에서는 `IDLE_TIMEOUT_MS`가 멈춘 작업을 정리하고, `TIMEOUT_MS`는 작업 유실을 줄이기 위해 거의 걸리지 않는 최후 안전장치로만 유지합니다.
 
-> **절전 방지(`DAEMON_PREVENT_SLEEP`)**: macOS에서 러너가 트리거를 실행하는 동안 `/usr/bin/caffeinate`를 띄워 시스템 절전을 막습니다. **AC 전원에서만 동작**하며, 배터리 사용 중에는 시작하지 않고 실행 도중 배터리로 전환되면 자동으로 해제합니다(약 30초 주기로 전원 상태 재확인). 동시 트리거는 reference count로 공유해 한 트리거 종료가 다른 실행 중 트리거의 절전 방지를 끊지 않습니다. launchd 환경에서는 PATH가 비어 있을 수 있어 `caffeinate`/`pmset`을 절대 경로로 호출합니다. 관리자 권한은 필요 없으며, 비 macOS에서는 자동으로 no-op입니다.
+> **절전 방지(`DAEMON_PREVENT_SLEEP`)**: macOS에서 daemon이 살아 있는 동안(API polling/트리거 대기/러너 실행 전 구간) `/usr/bin/caffeinate`를 띄워 시스템 절전을 막습니다. 절전 방지 lifecycle은 daemon polling(`poller.ts`)이 소유하며, daemon 시작 시 한 번 acquire하고 SIGINT/SIGTERM 종료 시 해제합니다. 따라서 pending 트리거가 없는 대기 상태에서도 절전이 유지됩니다. **AC 전원에서만 동작**하며, 배터리 사용 중에는 시작하지 않고 실행 도중 배터리로 전환되면 자동으로 해제합니다(약 30초 주기로 전원 상태 재확인). launchd 환경에서는 PATH가 비어 있을 수 있어 `caffeinate`/`pmset`을 절대 경로로 호출합니다. 관리자 권한은 필요 없으며, 비 macOS에서는 자동으로 no-op입니다.
+>
+> 동작 확인: AC 전원에서 daemon 시작 후 pending 트리거가 없어도 `pgrep -alf caffeinate`와 `pmset -g assertions | grep -i caffeinate`로 `caffeinate`가 활성화되어 있는지 확인할 수 있습니다.
 
 > `CODEX_SANDBOX_LEVEL=off`는 `codex --dangerously-bypass-approvals-and-sandbox`를 사용합니다. Git 쓰기와 임의 명령 실행이 모두 가능해지므로 로컬 개발/검증 용도로만 사용하세요.
 >

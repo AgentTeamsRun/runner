@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import type { DaemonTrigger, RuntimeConfig } from "./types.js";
 import { maybeAutoUpdate } from "./utils/auto-update.js";
 import { executeRestartRequest } from "./daemon-control.js";
+import { createPowerSaveBlocker, type PowerSaveBlocker } from "./utils/power-save-blocker.js";
 
 
 type TriggerHandlerFactory = (onAuthPathDiscovered: (authPath: string) => void) => (trigger: DaemonTrigger) => Promise<void>;
@@ -30,6 +31,7 @@ type PollingDependencies = {
   keepAlive?: () => Promise<void>;
   loadAuthPaths?: () => string[];
   saveAuthPath?: (authPath: string) => string;
+  powerSaveBlocker?: PowerSaveBlocker;
 };
 
 export const startPolling = async (
@@ -53,6 +55,9 @@ export const startPolling = async (
   }));
   const loadPersistedAuthPaths = dependencies.loadAuthPaths ?? loadAuthPaths;
   const persistAuthPath = dependencies.saveAuthPath ?? saveAuthPath;
+  // 절전 방지는 daemon polling lifecycle이 소유한다. daemon이 살아 있는 동안(폴링/대기/실행)
+  // 절전을 막고, 종료 시 해제한다. (배터리/비 macOS는 유틸 내부에서 no-op)
+  const powerSaveBlocker = dependencies.powerSaveBlocker ?? createPowerSaveBlocker({ enabled: config.preventSleepWhileBusy });
   let isPolling = false;
 
   const knownAuthPaths = new Set<string>(loadPersistedAuthPaths());
@@ -265,6 +270,9 @@ export const startPolling = async (
     void pollOnce();
   }, config.pollingIntervalMs);
 
+  // daemon 시작과 함께 절전 방지를 한 번 acquire한다. polling cycle마다 반복하지 않는다.
+  const releasePowerSaveBlocker = powerSaveBlocker.acquire("daemon-polling");
+
   logger.info("Daemon polling started", {
     apiUrl: config.apiUrl,
     pollingIntervalMs: config.pollingIntervalMs,
@@ -275,6 +283,7 @@ export const startPolling = async (
   await pollOnce();
 
   const shutdown = () => {
+    releasePowerSaveBlocker();
     unregisterInterval(interval);
     logger.info("Daemon stopped");
     exitProcess(0);
@@ -284,4 +293,6 @@ export const startPolling = async (
   registerSignal("SIGTERM", shutdown);
 
   await keepAlive();
+  // keepAlive가 resolve되는 정상 종료 경로(주로 테스트)에서도 release를 보장한다. release는 idempotent하다.
+  releasePowerSaveBlocker();
 };
