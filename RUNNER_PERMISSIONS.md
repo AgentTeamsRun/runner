@@ -7,7 +7,6 @@
 | **Claude Code** | `claude` | `--dangerously-skip-permissions` | 전체 스킵 |
 | **AMP** | `ampcode` | `--dangerously-allow-all` | 전체 스킵 |
 | **Codex** | `codex` | `CODEX_SANDBOX_LEVEL` 환경변수 | `workspace-write` (기본) 또는 `off` |
-| **Gemini** | `gemini` | `-y` (auto-approve) | 없음 |
 | **OpenCode** | `opencode` | 없음 | 없음 |
 
 ## 워크트리 설정 (`healWorktreeConfig`)
@@ -23,7 +22,6 @@
 | **Claude Code** | stream-json (`--output-format stream-json`) | `createStreamJsonLineParser` → 구조화된 로그 | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
 | **AMP** | stream-json (`--stream-json-thinking`) | `createStreamJsonLineParser` → 구조화된 로그 | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
 | **Codex** | plain text | 없음 (raw output 그대로) | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록 |
-| **Gemini** | plain text | 없음 (raw output 그대로) | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록 |
 | **OpenCode** | plain text | 없음 (raw output 그대로) | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록 |
 
 ### stream-json 파서 (`stream-json-parser.ts`)
@@ -41,7 +39,7 @@ Claude Code와 AMP의 stdout은 JSON lines 형식이며, 파서가 다음 타입
 runner stdout ──┬── logStream (raw) ──→ .agentteams/runner/log/{triggerId}.log
                 │
                 ├── streamParser (Claude Code/AMP만) ──→ onStdoutChunk (파싱된 메시지)
-                │   또는 raw output (Codex/Gemini/OpenCode) ──→ onStdoutChunk
+                │   또는 raw output (Codex/OpenCode) ──→ onStdoutChunk
                 │
                 └── outputText (메모리, 최대 200KB) ──→ fallback history 용
                     └── extractResultTextFromStreamJson (stream-json인 경우 result 추출)

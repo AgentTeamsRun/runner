@@ -1,7 +1,6 @@
 import { OpenCodeRunner } from "./opencode.js";
 import { ClaudeCodeRunner } from "./claude-code.js";
 import { CodexRunner } from "./codex.js";
-import { GeminiRunner } from "./gemini.js";
 import { AmpCodeRunner } from "./amp.js";
 import { AntigravityRunner } from "./antigravity.js";
 import type { Runner } from "./types.js";
@@ -15,8 +14,6 @@ export const createRunnerFactory = (runnerCmd: string) => {
         return new ClaudeCodeRunner();
       case "CODEX":
         return new CodexRunner();
-      case "GEMINI":
-        return new GeminiRunner();
       case "ANTIGRAVITY":
         return new AntigravityRunner();
       case "AMP":
