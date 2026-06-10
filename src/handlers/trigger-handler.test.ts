@@ -137,6 +137,64 @@ test("createTriggerHandler runs the runner, reports history, and marks success",
   assert.deepEqual(clientCalls.at(-1)?.args, ["trigger-1", "DONE", undefined]);
 });
 
+test("createTriggerHandler preserves the local history file and still marks success when history upload fails", async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const writeHistoryCalls: Array<{ path: string; content: string }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: "updateTriggerHistory", args });
+      // 서버가 보고를 거부하는 상황(예: 공유 러너 404, 일시적 네트워크 오류)을 모사.
+      throw new Error("Failed to update trigger history (404)");
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: "updateTriggerStatus", args });
+    }
+  };
+
+  const handler = createTriggerHandler({
+    config: {
+      daemonToken: "daemon-token",
+      apiUrl: "https://api.example",
+      pollingIntervalMs: 5000,
+      timeoutMs: 1500,
+      idleTimeoutMs: 500,
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
+    },
+    client: client as never
+  }, {
+    createRunnerFactory: () => () => ({
+      run: async () => ({ exitCode: 0, outputText: "{\"type\":\"result\"}" } satisfies RunResult)
+    }),
+    createLogReporter: () => ({
+      start: () => undefined,
+      append: () => undefined,
+      stop: async () => undefined
+    }),
+    // 러너가 정상 히스토리 파일을 작성한 상태(Questions 섹션 포함 → 정규화 없음).
+    readHistoryFile: async () => "### Summary\n- done\n\n### Questions for User\nNone",
+    writeHistoryFile: async (path, content) => {
+      writeHistoryCalls.push({ path, content });
+    },
+    resolveRunnerHistoryPaths: () => ({
+      currentHistoryPath: "/auth/path/.agentteams/runner/history/trigger-1.md",
+      parentHistoryPath: null
+    })
+  });
+
+  await handler(trigger);
+
+  // 업로드는 1회 시도됐고(실패), 핵심: 좋은 히스토리 파일을 stdout 폴백으로 덮어쓰지 않는다.
+  assert.equal(clientCalls.filter((entry) => entry.method === "updateTriggerHistory").length, 1);
+  assert.deepEqual(writeHistoryCalls, []);
+  // 업로드 실패가 러너 성공을 뒤집지 않고 DONE으로 보고된다(FAILED 아님).
+  const statusCall = clientCalls.find((entry) => entry.method === "updateTriggerStatus");
+  assert.deepEqual(statusCall?.args, ["trigger-1", "DONE", undefined]);
+});
+
 test("createTriggerHandler strips a UTF-8 BOM before reporting history to the database", async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
   const logEntries: Array<{ level: string; message: string }> = [];

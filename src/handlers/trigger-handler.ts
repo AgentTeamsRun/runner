@@ -169,25 +169,43 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       .replaceAll(parentHistoryPathPlaceholder, parentPath ?? "(unavailable: authPath not configured)");
   };
 
-  const reportHistoryToDatabase = async (
-    triggerId: string,
-    historyPath: string | null,
-    reporter?: ReporterLike | null
-  ): Promise<boolean> => {
+  // 히스토리 파일을 읽어 사용할 마크다운을 돌려준다. 파일이 없거나 비어있으면 null.
+  // 읽기 실패와 "내용 없음"만 null로 합치고, 업로드(네트워크/권한)와는 분리한다 —
+  // 업로드 실패를 "파일 없음"으로 오인해 stdout 폴백으로 덮어쓰는 손상을 막기 위함.
+  const loadHistoryMarkdown = async (historyPath: string | null): Promise<string | null> => {
     if (!historyPath) {
-      return false;
+      return null;
     }
-
     try {
       const content = await readHistoryFile(historyPath, "utf8");
       const markdown = stripUtf8Bom(content).trim();
-      if (markdown.length === 0) {
-        return false;
-      }
-      const { markdown: normalizedMarkdown, normalized } = ensureQuestionsForUserSection(
-        markdown.slice(0, maxHistoryLength)
+      return markdown.length === 0 ? null : markdown;
+    } catch (error) {
+      logger.warn("Failed to read runner history file", {
+        historyPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  };
+
+  // 히스토리를 서버에 보고한다. 러너가 파일을 썼으면 그 파일을, 없으면(그리고 fallback이
+  // 주어지면) stdout 폴백을 생성·저장해 업로드한다. 업로드 실패는 러너 성공을 뒤집지 않고,
+  // 로컬 히스토리 파일도 보존한다(경고만 남김).
+  const reportHistory = async (
+    triggerId: string,
+    historyPath: string | null,
+    reporter: ReporterLike | null,
+    fallback?: { outputText: string; errorMessage?: string }
+  ): Promise<void> => {
+    const historyMarkdown = await loadHistoryMarkdown(historyPath);
+    let historyForUpload: string | null = null;
+
+    if (historyMarkdown !== null) {
+      const { markdown, normalized } = ensureQuestionsForUserSection(
+        historyMarkdown.slice(0, maxHistoryLength)
       );
-      await client.updateTriggerHistory(triggerId, normalizedMarkdown);
+      historyForUpload = markdown;
       if (normalized) {
         // 관측(1단계): 러너가 가이드 위임 후에도 필수 섹션을 누락하는 빈도를 결과 상세 로그 탭에서
         // 확인하기 위한 신호. 잦으면 프롬프트 인라인 강조 복구 또는 서버 집계(2단계)를 검토한다.
@@ -196,14 +214,36 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           "History file was missing the '### Questions for User' section; appended 'None' to preserve the user-question channel."
         );
       }
-      return true;
+    } else if (fallback && fallback.outputText.trim().length > 0) {
+      // 러너가 히스토리 파일을 안 쓴 경우에만 stdout 폴백으로 대체한다.
+      const parsedOutput = extractResultTextFromStreamJson(fallback.outputText);
+      historyForUpload = buildFallbackHistory(parsedOutput, fallback.errorMessage);
+      if (historyPath) {
+        await writeHistoryFile(historyPath, historyForUpload);
+      }
+      reporter?.append(
+        "WARN",
+        "Runner did not write a history file. Captured stdout was stored as fallback history."
+      );
+    }
+
+    if (historyForUpload === null) {
+      return;
+    }
+
+    try {
+      await client.updateTriggerHistory(triggerId, historyForUpload);
     } catch (error) {
-      logger.warn("Failed to load or update runner history", {
+      // 히스토리 업로드 실패는 러너 성공을 뒤집지 않는다. 로컬 파일을 보존하고 경고만 남긴다.
+      logger.warn("Failed to upload runner history; local history file preserved", {
         triggerId,
         historyPath,
         error: error instanceof Error ? error.message : String(error)
       });
-      return false;
+      reporter?.append(
+        "WARN",
+        "Failed to upload runner history to the server. The local history file is preserved."
+      );
     }
   };
 
@@ -406,16 +446,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         exitCode: runResult.exitCode
       });
       logReporter.append("INFO", `Runner finished with exitCode=${runResult.exitCode}.`);
-      const historyReported = await reportHistoryToDatabase(trigger.id, currentHistoryPath, logReporter);
-      if (!historyReported && runResult.outputText) {
-        const parsedOutput = extractResultTextFromStreamJson(runResult.outputText);
-        const fallbackHistory = buildFallbackHistory(parsedOutput, runResult.exitCode === 0 ? undefined : runResult.errorMessage);
-        if (currentHistoryPath) {
-          await writeHistoryFile(currentHistoryPath, fallbackHistory);
-        }
-        await client.updateTriggerHistory(trigger.id, fallbackHistory);
-        logReporter.append("WARN", "Runner did not write a history file. Captured stdout was stored as fallback history.");
-      }
+      await reportHistory(trigger.id, currentHistoryPath, logReporter, {
+        outputText: runResult.outputText ?? "",
+        errorMessage: runResult.exitCode === 0 ? undefined : runResult.errorMessage
+      });
 
       await logReporter.stop();
 
@@ -453,7 +487,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       try {
         logReporter?.append("ERROR", error instanceof Error ? error.message : String(error));
-        await reportHistoryToDatabase(trigger.id, currentHistoryPath, logReporter);
+        await reportHistory(trigger.id, currentHistoryPath, logReporter);
         if (logReporter) {
           await logReporter.stop();
         }
