@@ -180,7 +180,56 @@ test("createTriggerHandler strips a UTF-8 BOM before reporting history to the da
 
   await handler(trigger);
 
-  assert.deepEqual(clientCalls.at(0)?.args, ["trigger-1", "### Summary\n- done"]);
+  // BOM stripped, and the missing Questions for User section is appended by normalization
+  assert.deepEqual(clientCalls.at(0)?.args, ["trigger-1", "### Summary\n- done\n\n### Questions for User\nNone"]);
+});
+
+test("createTriggerHandler keeps history unchanged when the Questions for User section exists", async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: "updateTriggerHistory", args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: "updateTriggerStatus", args });
+    }
+  };
+
+  const historyWithQuestions = "### Summary\n- done\n\n### Questions for User\n- Should we ship this now?";
+
+  const handler = createTriggerHandler({
+    config: {
+      daemonToken: "daemon-token",
+      apiUrl: "https://api.example",
+      pollingIntervalMs: 5000,
+      timeoutMs: 1500,
+      idleTimeoutMs: 500,
+      runnerCmd: "opencode",
+      preventSleepWhileBusy: false
+    },
+    client: client as never
+  }, {
+    createRunnerFactory: () => () => ({
+      run: async () => ({ exitCode: 0 } satisfies RunResult)
+    }),
+    createLogReporter: () => ({
+      start: () => undefined,
+      append: () => undefined,
+      stop: async () => undefined
+    }),
+    readHistoryFile: async () => historyWithQuestions,
+    resolveRunnerHistoryPaths: () => ({
+      currentHistoryPath: "/auth/path/.agentteams/runner/history/trigger-1.md",
+      parentHistoryPath: "/auth/path/.agentteams/runner/history/parent-1.md"
+    })
+  });
+
+  await handler(trigger);
+
+  assert.deepEqual(clientCalls.at(0)?.args, ["trigger-1", historyWithQuestions]);
 });
 
 test("createTriggerHandler restores parent history from server-side coaction content", async () => {

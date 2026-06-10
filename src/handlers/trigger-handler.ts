@@ -71,6 +71,20 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const currentHistoryPathPlaceholder = "{{AGENTRUNNER_CURRENT_HISTORY_PATH}}";
   const parentHistoryPathPlaceholder = "{{AGENTRUNNER_PARENT_HISTORY_PATH}}";
 
+  // The web UI surfaces user-facing questions by parsing the `### Questions for User`
+  // heading out of the reported history (extractQuestionsForUser). A history file
+  // missing the section silently drops questions, so guarantee it at report time.
+  const questionsForUserHeadingPattern = /^###\s+Questions for User\s*$/im;
+  const questionsForUserFallbackSection = "\n\n### Questions for User\nNone";
+
+  const ensureQuestionsForUserSection = (markdown: string): string => {
+    if (questionsForUserHeadingPattern.test(markdown)) {
+      return markdown;
+    }
+    const truncated = markdown.slice(0, maxHistoryLength - questionsForUserFallbackSection.length);
+    return `${truncated}${questionsForUserFallbackSection}`;
+  };
+
   const sanitizeAttachmentFileName = (fileName: string): string => {
     const sanitized = fileName
       .normalize("NFKD")
@@ -169,7 +183,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       if (markdown.length === 0) {
         return false;
       }
-      await client.updateTriggerHistory(triggerId, markdown.slice(0, maxHistoryLength));
+      await client.updateTriggerHistory(
+        triggerId,
+        ensureQuestionsForUserSection(markdown.slice(0, maxHistoryLength))
+      );
       return true;
     } catch (error) {
       logger.warn("Failed to load or update runner history", {
