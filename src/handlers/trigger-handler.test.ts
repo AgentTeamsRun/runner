@@ -139,6 +139,7 @@ test("createTriggerHandler runs the runner, reports history, and marks success",
 
 test("createTriggerHandler strips a UTF-8 BOM before reporting history to the database", async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const logEntries: Array<{ level: string; message: string }> = [];
 
   const client = {
     fetchTriggerRuntime: async () => runtime,
@@ -168,7 +169,9 @@ test("createTriggerHandler strips a UTF-8 BOM before reporting history to the da
     }),
     createLogReporter: () => ({
       start: () => undefined,
-      append: () => undefined,
+      append: (level, message) => {
+        logEntries.push({ level, message });
+      },
       stop: async () => undefined
     }),
     readHistoryFile: async () => "\uFEFF### Summary\n- done\n",
@@ -182,10 +185,13 @@ test("createTriggerHandler strips a UTF-8 BOM before reporting history to the da
 
   // BOM stripped, and the missing Questions for User section is appended by normalization
   assert.deepEqual(clientCalls.at(0)?.args, ["trigger-1", "### Summary\n- done\n\n### Questions for User\nNone"]);
+  // observation signal: normalization is surfaced to the trigger log (web UI logs tab)
+  assert.ok(logEntries.some((entry) => entry.level === "WARN" && entry.message.includes("Questions for User")));
 });
 
 test("createTriggerHandler keeps history unchanged when the Questions for User section exists", async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const logEntries: Array<{ level: string; message: string }> = [];
 
   const client = {
     fetchTriggerRuntime: async () => runtime,
@@ -217,7 +223,9 @@ test("createTriggerHandler keeps history unchanged when the Questions for User s
     }),
     createLogReporter: () => ({
       start: () => undefined,
-      append: () => undefined,
+      append: (level, message) => {
+        logEntries.push({ level, message });
+      },
       stop: async () => undefined
     }),
     readHistoryFile: async () => historyWithQuestions,
@@ -230,6 +238,8 @@ test("createTriggerHandler keeps history unchanged when the Questions for User s
   await handler(trigger);
 
   assert.deepEqual(clientCalls.at(0)?.args, ["trigger-1", historyWithQuestions]);
+  // no normalization → no observation warning
+  assert.ok(!logEntries.some((entry) => entry.message.includes("Questions for User")));
 });
 
 test("createTriggerHandler restores parent history from server-side coaction content", async () => {

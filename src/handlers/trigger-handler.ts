@@ -77,12 +77,12 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const questionsForUserHeadingPattern = /^###\s+Questions for User\s*$/im;
   const questionsForUserFallbackSection = "\n\n### Questions for User\nNone";
 
-  const ensureQuestionsForUserSection = (markdown: string): string => {
+  const ensureQuestionsForUserSection = (markdown: string): { markdown: string; normalized: boolean } => {
     if (questionsForUserHeadingPattern.test(markdown)) {
-      return markdown;
+      return { markdown, normalized: false };
     }
     const truncated = markdown.slice(0, maxHistoryLength - questionsForUserFallbackSection.length);
-    return `${truncated}${questionsForUserFallbackSection}`;
+    return { markdown: `${truncated}${questionsForUserFallbackSection}`, normalized: true };
   };
 
   const sanitizeAttachmentFileName = (fileName: string): string => {
@@ -171,7 +171,8 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
   const reportHistoryToDatabase = async (
     triggerId: string,
-    historyPath: string | null
+    historyPath: string | null,
+    reporter?: ReporterLike | null
   ): Promise<boolean> => {
     if (!historyPath) {
       return false;
@@ -183,10 +184,18 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       if (markdown.length === 0) {
         return false;
       }
-      await client.updateTriggerHistory(
-        triggerId,
-        ensureQuestionsForUserSection(markdown.slice(0, maxHistoryLength))
+      const { markdown: normalizedMarkdown, normalized } = ensureQuestionsForUserSection(
+        markdown.slice(0, maxHistoryLength)
       );
+      await client.updateTriggerHistory(triggerId, normalizedMarkdown);
+      if (normalized) {
+        // 관측(1단계): 러너가 가이드 위임 후에도 필수 섹션을 누락하는 빈도를 결과 상세 로그 탭에서
+        // 확인하기 위한 신호. 잦으면 프롬프트 인라인 강조 복구 또는 서버 집계(2단계)를 검토한다.
+        reporter?.append(
+          "WARN",
+          "History file was missing the '### Questions for User' section; appended 'None' to preserve the user-question channel."
+        );
+      }
       return true;
     } catch (error) {
       logger.warn("Failed to load or update runner history", {
@@ -397,7 +406,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         exitCode: runResult.exitCode
       });
       logReporter.append("INFO", `Runner finished with exitCode=${runResult.exitCode}.`);
-      const historyReported = await reportHistoryToDatabase(trigger.id, currentHistoryPath);
+      const historyReported = await reportHistoryToDatabase(trigger.id, currentHistoryPath, logReporter);
       if (!historyReported && runResult.outputText) {
         const parsedOutput = extractResultTextFromStreamJson(runResult.outputText);
         const fallbackHistory = buildFallbackHistory(parsedOutput, runResult.exitCode === 0 ? undefined : runResult.errorMessage);
@@ -444,7 +453,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       try {
         logReporter?.append("ERROR", error instanceof Error ? error.message : String(error));
-        await reportHistoryToDatabase(trigger.id, currentHistoryPath);
+        await reportHistoryToDatabase(trigger.id, currentHistoryPath, logReporter);
         if (logReporter) {
           await logReporter.stop();
         }
