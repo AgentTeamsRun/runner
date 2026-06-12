@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import { isGitRepo, createWorktree, removeWorktree, resolveWorktreePath, normalizeClaudeSandboxPath, healWorktreeConfig } from "./git-worktree.js";
+import { isGitRepo, createWorktree, removeWorktree, resolveWorktreePath, normalizeClaudeSandboxPath } from "./git-worktree.js";
 
 const makeTempGitRepo = (): string => {
   const dir = mkdtempSync(join(tmpdir(), "git-worktree-test-"));

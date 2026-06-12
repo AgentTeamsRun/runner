@@ -6,7 +6,9 @@ const MAX_BATCH_SIZE = 50;
 const MAX_BUFFERED_LOGS = 500;
 const MAX_MESSAGE_LENGTH = 2000;
 const DEFAULT_FLUSH_INTERVAL_MS = 2000;
+// eslint-disable-next-line no-control-regex
 const ANSI_ESCAPE_PATTERN = /\u001B\[[0-9;?]*[ -/]*[@-~]/g;
+// eslint-disable-next-line no-control-regex
 const CONTROL_CHAR_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
 const CATEGORY_PREFIX_PATTERN = /^\[([^\]]+)\]/;

@@ -30,6 +30,7 @@ test("runConventionSync logs info on exit code 0", async () => {
   };
 
   await runConventionSync("/fake/path", {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     spawn: createFakeSpawn(0) as any,
     logger: fakeLogger,
   });
@@ -47,6 +48,7 @@ test("runConventionSync logs warn on non-zero exit code", async () => {
   };
 
   await runConventionSync("/fake/path", {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     spawn: createFakeSpawn(1) as any,
     logger: fakeLogger,
   });
@@ -64,6 +66,7 @@ test("runConventionSync logs warn on spawn error", async () => {
   };
 
   await runConventionSync("/fake/path", {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     spawn: createFakeSpawn(null, new Error("ENOENT")) as any,
     logger: fakeLogger,
   });
@@ -83,6 +86,7 @@ test("runConventionSync never throws", async () => {
 
   await assert.doesNotReject(
     runConventionSync("/fake/path", {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       spawn: throwingSpawn as any,
       logger: fakeLogger,
     })
