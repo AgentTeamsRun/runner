@@ -85,11 +85,11 @@ npm run dev
 
 ## init 옵션 전체
 
-| 옵션 | 필수 | 설명 |
-|---|---|---|
-| `--token <token>` | ✅ | 웹에서 발급한 데몬 토큰 |
-| `--api-url <url>` | | API 서버 URL (기본값: `https://api.agentteams.run`) |
-| `--no-autostart` | | 자동 시작 등록을 건너뜀 |
+| 옵션              | 필수 | 설명                                                |
+| ----------------- | ---- | --------------------------------------------------- |
+| `--token <token>` | ✅   | 웹에서 발급한 데몬 토큰                             |
+| `--api-url <url>` |      | API 서버 URL (기본값: `https://api.agentteams.run`) |
+| `--no-autostart`  |      | 자동 시작 등록을 건너뜀                             |
 
 > `--api-url`은 플랫폼 개발자 전용입니다. 일반 사용자 문서(readme.md)에는 노출하지 않습니다.
 
@@ -109,17 +109,17 @@ npm run dev
 
 ### 환경변수
 
-| 변수 | 기본값 | 설명 |
-|---|---|---|
-| `POLLING_INTERVAL_MS` | `30000` (30초) | 트리거 폴링 주기 |
-| `IDLE_TIMEOUT_MS` | `600000` (10분) | 기본 운영 타이머. stdout/stderr 출력이 일정 시간 없으면 러너를 종료 |
-| `TIMEOUT_MS` | `86400000` (24시간) | fail-safe 타이머. idle timeout으로 정리되지 않는 비정상 장기 실행만 최종 차단 |
-| `RUNNER_CMD` | `opencode` | 에이전트 실행 명령어 |
-| `CODEX_SANDBOX_LEVEL` | `off` | Codex 러너 샌드박스 레벨. `workspace-write` 또는 `off` 허용. 자동시작·수동 시작 모두 기본값 `off` |
-| `LOG_LEVEL` | `info` | 로그 레벨: `debug`, `info`, `warn`, `error` |
-| `DAEMON_VERBOSE_RUNNER_LOGS` | `true` | `false`면 시작/종료/에러 로그만 출력 |
-| `DAEMON_PROMPT_LOG_MODE` | `preview` | 프롬프트 로그: `off`, `length`, `preview`, `full` |
-| `DAEMON_PREVENT_SLEEP` | `true` | macOS에서 daemon이 polling/대기/러너 실행 중 시스템 절전 방지. `false`/`0`/`off`로 비활성화. 비 macOS는 자동 no-op |
+| 변수                         | 기본값              | 설명                                                                                                               |
+| ---------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `POLLING_INTERVAL_MS`        | `30000` (30초)      | 트리거 폴링 주기                                                                                                   |
+| `IDLE_TIMEOUT_MS`            | `600000` (10분)     | 기본 운영 타이머. stdout/stderr 출력이 일정 시간 없으면 러너를 종료                                                |
+| `TIMEOUT_MS`                 | `86400000` (24시간) | fail-safe 타이머. idle timeout으로 정리되지 않는 비정상 장기 실행만 최종 차단                                      |
+| `RUNNER_CMD`                 | `opencode`          | 에이전트 실행 명령어                                                                                               |
+| `CODEX_SANDBOX_LEVEL`        | `off`               | Codex 러너 샌드박스 레벨. `workspace-write` 또는 `off` 허용. 자동시작·수동 시작 모두 기본값 `off`                  |
+| `LOG_LEVEL`                  | `info`              | 로그 레벨: `debug`, `info`, `warn`, `error`                                                                        |
+| `DAEMON_VERBOSE_RUNNER_LOGS` | `true`              | `false`면 시작/종료/에러 로그만 출력                                                                               |
+| `DAEMON_PROMPT_LOG_MODE`     | `preview`           | 프롬프트 로그: `off`, `length`, `preview`, `full`                                                                  |
+| `DAEMON_PREVENT_SLEEP`       | `true`              | macOS에서 daemon이 polling/대기/러너 실행 중 시스템 절전 방지. `false`/`0`/`off`로 비활성화. 비 macOS는 자동 no-op |
 
 기본 정책은 `idle timeout 중심 + 24시간 fail-safe`입니다. 즉, 정상 운영에서는 `IDLE_TIMEOUT_MS`가 멈춘 작업을 정리하고, `TIMEOUT_MS`는 작업 유실을 줄이기 위해 거의 걸리지 않는 최후 안전장치로만 유지합니다.
 
@@ -166,10 +166,10 @@ daemon/
 
 `init` 실행 시 OS에 맞는 서비스를 등록합니다.
 
-| OS | 방식 | 서비스 파일 |
-|---|---|---|
-| macOS | launchd | `~/Library/LaunchAgents/run.agentteams.runner.plist` |
-| Linux | systemd (user) | `~/.config/systemd/user/agentrunner.service` |
+| OS      | 방식           | 서비스 파일                                                                             |
+| ------- | -------------- | --------------------------------------------------------------------------------------- |
+| macOS   | launchd        | `~/Library/LaunchAgents/run.agentteams.runner.plist`                                    |
+| Linux   | systemd (user) | `~/.config/systemd/user/agentrunner.service`                                            |
 | Windows | Startup folder | `~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/agentrunner-start.vbs` |
 
 ### 서비스 디버깅
@@ -240,6 +240,7 @@ npm run dev
 ### 새 커맨드 추가
 
 1. `src/commands/`에 커맨드 파일 생성:
+
    ```typescript
    // src/commands/my-command.ts
    export const runMyCommand = async (): Promise<void> => {
@@ -248,8 +249,9 @@ npm run dev
    ```
 
 2. `src/index.ts`에 라우팅 추가:
+
    ```typescript
-   if (command === "my-command") {
+   if (command === 'my-command') {
      await runMyCommand();
      return;
    }
@@ -317,13 +319,13 @@ cat ~/.agentteams/daemon.json
 
 ## 네이밍 규칙
 
-| 항목 | 값 | 비고 |
-|---|---|---|
-| npm 패키지 | `@agentteams/runner` | |
-| CLI 명령어 | `agentrunner` | |
-| 환경변수 접두사 | `AGENTTEAMS_DAEMON_` | 기존 호환 유지 |
-| API 엔드포인트 | `/daemon-*` | 기존 호환 유지 |
-| 내부 코드 | `daemon*` (변수/클래스명) | DaemonApiClient 등 |
-| launchd 라벨 | `run.agentteams.runner` | |
-| systemd 서비스 | `agentrunner.service` | |
-| Windows 태스크 | `AgentRunner` | |
+| 항목            | 값                        | 비고               |
+| --------------- | ------------------------- | ------------------ |
+| npm 패키지      | `@agentteams/runner`      |                    |
+| CLI 명령어      | `agentrunner`             |                    |
+| 환경변수 접두사 | `AGENTTEAMS_DAEMON_`      | 기존 호환 유지     |
+| API 엔드포인트  | `/daemon-*`               | 기존 호환 유지     |
+| 내부 코드       | `daemon*` (변수/클래스명) | DaemonApiClient 등 |
+| launchd 라벨    | `run.agentteams.runner`   |                    |
+| systemd 서비스  | `agentrunner.service`     |                    |
+| Windows 태스크  | `AgentRunner`             |                    |

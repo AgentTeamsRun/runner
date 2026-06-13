@@ -2,12 +2,12 @@
 
 ## Runner별 권한 설정
 
-| Runner | CLI | 권한 플래그 | 샌드박스 |
-|---|---|---|---|
-| **Claude Code** | `claude` | `--dangerously-skip-permissions` | 전체 스킵 |
-| **AMP** | `ampcode` | `--dangerously-allow-all` | 전체 스킵 |
-| **Codex** | `codex` | `CODEX_SANDBOX_LEVEL` 환경변수 | `workspace-write` (기본) 또는 `off` |
-| **OpenCode** | `opencode` | 없음 | 없음 |
+| Runner          | CLI        | 권한 플래그                      | 샌드박스                            |
+| --------------- | ---------- | -------------------------------- | ----------------------------------- |
+| **Claude Code** | `claude`   | `--dangerously-skip-permissions` | 전체 스킵                           |
+| **AMP**         | `ampcode`  | `--dangerously-allow-all`        | 전체 스킵                           |
+| **Codex**       | `codex`    | `CODEX_SANDBOX_LEVEL` 환경변수   | `workspace-write` (기본) 또는 `off` |
+| **OpenCode**    | `opencode` | 없음                             | 없음                                |
 
 ## 워크트리 설정 (`healWorktreeConfig`)
 
@@ -17,16 +17,17 @@
 
 ## 에이전트별 로그 수집 방식
 
-| Runner | stdout 포맷 | 파싱 | 로그 수집 방식 |
-|---|---|---|---|
+| Runner          | stdout 포맷                                 | 파싱                                         | 로그 수집 방식                                                 |
+| --------------- | ------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------- |
 | **Claude Code** | stream-json (`--output-format stream-json`) | `createStreamJsonLineParser` → 구조화된 로그 | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
-| **AMP** | stream-json (`--stream-json-thinking`) | `createStreamJsonLineParser` → 구조화된 로그 | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
-| **Codex** | plain text | 없음 (raw output 그대로) | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록 |
-| **OpenCode** | plain text | 없음 (raw output 그대로) | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록 |
+| **AMP**         | stream-json (`--stream-json-thinking`)      | `createStreamJsonLineParser` → 구조화된 로그 | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
+| **Codex**       | plain text                                  | 없음 (raw output 그대로)                     | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록          |
+| **OpenCode**    | plain text                                  | 없음 (raw output 그대로)                     | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록          |
 
 ### stream-json 파서 (`stream-json-parser.ts`)
 
 Claude Code와 AMP의 stdout은 JSON lines 형식이며, 파서가 다음 타입을 처리:
+
 - `system` — 세션 초기화 정보
 - `assistant` — thinking, text, tool_use, tool_result
 - `result` — 최종 완료 상태 (duration, turn count)
@@ -86,6 +87,7 @@ tail -f /tmp/agentrunner.log
 ### API 로그 리포터
 
 실시간으로 파싱된 로그가 API로 전송됩니다:
+
 - `POST /api/daemon-triggers/{triggerId}/logs` — 배치 전송 (50개씩, 2초 간격)
 - 웹 UI에서 트리거 상세 화면으로 확인 가능
 
@@ -96,6 +98,7 @@ tail -f /tmp/agentrunner.log
 워크트리에서 Claude Code 러너 실행 시 `.agentteams` 심볼릭 링크가 샌드박스 밖으로 resolve되어 파일 읽기/쓰기/CLI 실행이 차단되던 문제.
 
 **시도한 접근 (모두 불충분):**
+
 1. `sandbox.filesystem.allowWrite` → 쓰기만 허용, 읽기 차단
 2. `permissions.additionalDirectories` → 읽기 허용, 쓰기/bash 차단
 3. `permissions.allow: ["Bash(agentteams *)"]` → CLI만 허용, 파일 쓰기 차단

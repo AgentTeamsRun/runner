@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
-import { matchesGlob } from "node:path";
-import { logger } from "../logger.js";
-import type { ConventionMeta } from "../types.js";
+import { execFileSync } from 'node:child_process';
+import { matchesGlob } from 'node:path';
+import { logger } from '../logger.js';
+import type { ConventionMeta } from '../types.js';
 
 type EvaluationContext = {
   authPath: string;
@@ -9,54 +9,55 @@ type EvaluationContext = {
 };
 
 type ParsedCondition =
-  | { type: "file"; patterns: string[] }
-  | { type: "task"; taskTypes: string[] }
-  | { type: "composite"; filePatterns: string[]; taskTypes: string[] };
+  | { type: 'file'; patterns: string[] }
+  | { type: 'task'; taskTypes: string[] }
+  | { type: 'composite'; filePatterns: string[]; taskTypes: string[] };
 
 const parseConditionalTrigger = (trigger: string): ParsedCondition | null => {
-  const parts = trigger.split("|").map((p) => p.trim()).filter(Boolean);
+  const parts = trigger
+    .split('|')
+    .map((p) => p.trim())
+    .filter(Boolean);
   const filePatterns: string[] = [];
   const taskTypes: string[] = [];
 
   for (const part of parts) {
-    if (part.startsWith("file:")) {
+    if (part.startsWith('file:')) {
       const pattern = part.slice(5).trim();
       if (pattern.length > 0) filePatterns.push(pattern);
-    } else if (part.startsWith("task:")) {
+    } else if (part.startsWith('task:')) {
       const taskType = part.slice(5).trim().toUpperCase();
       if (taskType.length > 0) taskTypes.push(taskType);
     }
   }
 
   if (filePatterns.length > 0 && taskTypes.length > 0) {
-    return { type: "composite", filePatterns, taskTypes };
+    return { type: 'composite', filePatterns, taskTypes };
   }
-  if (filePatterns.length > 0) return { type: "file", patterns: filePatterns };
-  if (taskTypes.length > 0) return { type: "task", taskTypes };
+  if (filePatterns.length > 0) return { type: 'file', patterns: filePatterns };
+  if (taskTypes.length > 0) return { type: 'task', taskTypes };
   return null;
 };
 
 const getChangedFiles = (authPath: string): string[] => {
   try {
-    const output = execFileSync("git", ["diff", "--name-only", "HEAD"], {
+    const output = execFileSync('git', ['diff', '--name-only', 'HEAD'], {
       cwd: authPath,
-      encoding: "utf8",
+      encoding: 'utf8',
       timeout: 10_000,
     });
 
-    const statusOutput = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
+    const statusOutput = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
       cwd: authPath,
-      encoding: "utf8",
+      encoding: 'utf8',
       timeout: 10_000,
     });
 
-    const files = [...output.split("\n"), ...statusOutput.split("\n")]
-      .map((f) => f.trim())
-      .filter(Boolean);
+    const files = [...output.split('\n'), ...statusOutput.split('\n')].map((f) => f.trim()).filter(Boolean);
 
     return Array.from(new Set(files));
   } catch (error) {
-    logger.warn("Failed to get changed files for convention evaluation", {
+    logger.warn('Failed to get changed files for convention evaluation', {
       authPath,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -72,7 +73,7 @@ const matchesFilePatterns = (changedFiles: string[], patterns: string[]): boolea
       } catch {
         return false;
       }
-    })
+    }),
   );
 };
 
@@ -83,7 +84,7 @@ const matchesTaskType = (planType: string | null, taskTypes: string[]): boolean 
 
 export const evaluateConventionTriggers = (
   conventions: ConventionMeta[],
-  context: EvaluationContext
+  context: EvaluationContext,
 ): ConventionMeta[] => {
   if (conventions.length === 0) return [];
 
@@ -98,20 +99,20 @@ export const evaluateConventionTriggers = (
     if (!condition) continue;
 
     switch (condition.type) {
-      case "file": {
+      case 'file': {
         if (changedFiles === null) changedFiles = getChangedFiles(context.authPath);
         if (matchesFilePatterns(changedFiles, condition.patterns)) {
           matched.push(convention);
         }
         break;
       }
-      case "task": {
+      case 'task': {
         if (matchesTaskType(context.planType, condition.taskTypes)) {
           matched.push(convention);
         }
         break;
       }
-      case "composite": {
+      case 'composite': {
         if (changedFiles === null) changedFiles = getChangedFiles(context.authPath);
         if (
           matchesFilePatterns(changedFiles, condition.filePatterns) ||
@@ -125,7 +126,7 @@ export const evaluateConventionTriggers = (
   }
 
   if (matched.length > 0) {
-    logger.info("Convention triggers matched", {
+    logger.info('Convention triggers matched', {
       matched: matched.map((c) => c.title),
     });
   }

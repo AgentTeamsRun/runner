@@ -1,4 +1,4 @@
-export type OsType = "MACOS" | "LINUX" | "WINDOWS";
+export type OsType = 'MACOS' | 'LINUX' | 'WINDOWS';
 
 export type RuntimeConfig = {
   daemonToken: string;
@@ -64,7 +64,7 @@ export type PendingResponse = {
   meta?: PendingMeta;
 };
 
-export type TriggerFinalStatus = "DONE" | "CANCELLED" | "FAILED" | "REJECTED" | "NEEDS_REVIEW";
+export type TriggerFinalStatus = 'DONE' | 'CANCELLED' | 'FAILED' | 'REJECTED' | 'NEEDS_REVIEW';
 
 export type ClaimResult = {
   ok: boolean;
@@ -79,7 +79,7 @@ export type ConventionMeta = {
   description: string | null;
 };
 
-export type DaemonTriggerConventionSource = "AUTO_MATCH" | "PROMPT_REFERENCE" | "USER_CUSTOM";
+export type DaemonTriggerConventionSource = 'AUTO_MATCH' | 'PROMPT_REFERENCE' | 'USER_CUSTOM';
 
 export type InjectedConventionRecord = {
   conventionId: string;
@@ -113,7 +113,7 @@ export type TriggerRuntimeAttachment = {
   expiresInSeconds: number;
 };
 
-export type TriggerLogLevel = "INFO" | "WARN" | "ERROR";
+export type TriggerLogLevel = 'INFO' | 'WARN' | 'ERROR';
 
 export type TriggerLogInput = {
   level: TriggerLogLevel;

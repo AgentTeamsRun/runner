@@ -1,9 +1,9 @@
-import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync } from "node:fs";
-import { platform as getPlatform } from "node:os";
-import { join } from "node:path";
+import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { platform as getPlatform } from 'node:os';
+import { join } from 'node:path';
 
-const DEFAULT_WINDOWS_EXTENSIONS = [".com", ".exe", ".bat", ".cmd"];
+const DEFAULT_WINDOWS_EXTENSIONS = ['.com', '.exe', '.bat', '.cmd'];
 
 type ExecutableDeps = {
   env?: NodeJS.ProcessEnv;
@@ -29,23 +29,22 @@ const getFirstOutputLine = (output: string): string | null => {
   return firstLine ?? null;
 };
 
-const getWindowsCommandBaseName = (name: string): string =>
-  name.replace(/\.(?:cmd|exe|bat|com)$/iu, "").toLowerCase();
+const getWindowsCommandBaseName = (name: string): string => name.replace(/\.(?:cmd|exe|bat|com)$/iu, '').toLowerCase();
 
 const getWindowsPathFileName = (path: string): string => {
   const parts = path.split(/[\\/]/u);
-  return parts[parts.length - 1]?.toLowerCase() ?? "";
+  return parts[parts.length - 1]?.toLowerCase() ?? '';
 };
 
 const selectPathLookupResult = (name: string, output: string, os: NodeJS.Platform): string | null => {
-  if (os !== "win32") {
+  if (os !== 'win32') {
     return getFirstOutputLine(output);
   }
 
   const lines = getOutputLines(output);
   const commandBaseName = getWindowsCommandBaseName(name);
 
-  if (commandBaseName === "npm" || commandBaseName === "npx") {
+  if (commandBaseName === 'npm' || commandBaseName === 'npx') {
     const cmdShim = lines.find((line) => getWindowsPathFileName(line) === `${commandBaseName}.cmd`);
     if (cmdShim) {
       return cmdShim;
@@ -60,8 +59,7 @@ const getWindowsExecutableNames = (name: string, env: NodeJS.ProcessEnv): string
     return [name];
   }
 
-  const pathExt = env.PATHEXT
-    ?.split(";")
+  const pathExt = env.PATHEXT?.split(';')
     .map((entry) => entry.trim().toLowerCase())
     .filter((entry) => entry.length > 0);
   const extensions = pathExt && pathExt.length > 0 ? pathExt : DEFAULT_WINDOWS_EXTENSIONS;
@@ -73,7 +71,7 @@ const getNpmGlobalBinPath = (deps: ExecutableDeps): string | null => {
   const run = deps.execFileSync ?? execFileSync;
 
   try {
-    const output = run("npm", ["prefix", "-g"], { encoding: "utf8", windowsHide: true }).trim();
+    const output = run('npm', ['prefix', '-g'], { encoding: 'utf8', windowsHide: true }).trim();
     return output.length > 0 ? output : null;
   } catch {
     return null;
@@ -83,10 +81,10 @@ const getNpmGlobalBinPath = (deps: ExecutableDeps): string | null => {
 const resolveFromPathLookup = (name: string, deps: ExecutableDeps): string | null => {
   const os = (deps.platform ?? getPlatform)();
   const run = deps.execFileSync ?? execFileSync;
-  const lookupCommand = os === "win32" ? "where" : "which";
+  const lookupCommand = os === 'win32' ? 'where' : 'which';
 
   try {
-    const output = run(lookupCommand, [name], { encoding: "utf8", windowsHide: true });
+    const output = run(lookupCommand, [name], { encoding: 'utf8', windowsHide: true });
     return selectPathLookupResult(name, output, os);
   } catch {
     return null;
@@ -102,8 +100,7 @@ const resolveFromNpmGlobalBin = (name: string, deps: ExecutableDeps): string | n
     return null;
   }
 
-  const candidateNames =
-    os === "win32" ? getWindowsExecutableNames(name, deps.env ?? process.env) : [name];
+  const candidateNames = os === 'win32' ? getWindowsExecutableNames(name, deps.env ?? process.env) : [name];
 
   for (const candidateName of candidateNames) {
     const candidatePath = join(npmGlobalBinPath, candidateName);
@@ -117,18 +114,18 @@ const resolveFromNpmGlobalBin = (name: string, deps: ExecutableDeps): string | n
 
 const getKnownWindowsBinPaths = (name: string, deps: ExecutableDeps): string[] => {
   const env = deps.env ?? process.env;
-  const normalizedName = name.replace(/\.(?:cmd|exe|bat|com)$/iu, "");
+  const normalizedName = name.replace(/\.(?:cmd|exe|bat|com)$/iu, '');
 
-  if (normalizedName !== "agy") {
+  if (normalizedName !== 'agy') {
     return [];
   }
 
-  return env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, "agy", "bin")] : [];
+  return env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, 'agy', 'bin')] : [];
 };
 
 const resolveFromKnownWindowsBin = (name: string, deps: ExecutableDeps): string | null => {
   const os = (deps.platform ?? getPlatform)();
-  if (os !== "win32") {
+  if (os !== 'win32') {
     return null;
   }
 
@@ -151,36 +148,34 @@ const escapeForPowerShell = (value: string): string => `'${value.replaceAll("'",
 
 export const buildPowerShellCommand = (executablePath: string, args: string[]): string => {
   const serializedArgs = [escapeForPowerShell(executablePath), ...args.map(escapeForPowerShell)];
-  return `& ${serializedArgs.join(" ")}`;
+  return `& ${serializedArgs.join(' ')}`;
 };
 
 export const resolveExecutablePath = (name: string, deps: ExecutableDeps = {}): string => {
   const os = (deps.platform ?? getPlatform)();
 
   const resolvedPath =
-    resolveFromPathLookup(name, deps)
-    ?? resolveFromNpmGlobalBin(name, deps)
-    ?? resolveFromKnownWindowsBin(name, deps);
+    resolveFromPathLookup(name, deps) ?? resolveFromNpmGlobalBin(name, deps) ?? resolveFromKnownWindowsBin(name, deps);
   if (resolvedPath) {
     return resolvedPath;
   }
 
-  const checkedLocations = os === "win32" ? "PATH, npm global bin, and known app install paths" : "PATH";
+  const checkedLocations = os === 'win32' ? 'PATH, npm global bin, and known app install paths' : 'PATH';
   throw new Error(
-    `Cannot find '${name}' executable. Checked ${checkedLocations}. Ensure it is installed and available globally.`
+    `Cannot find '${name}' executable. Checked ${checkedLocations}. Ensure it is installed and available globally.`,
   );
 };
 
 export const resolveExecutablePathWithPreference = (
   name: string,
   preferredNames: string[],
-  deps: ExecutableDeps = {}
+  deps: ExecutableDeps = {},
 ): string => {
   for (const preferredName of preferredNames) {
     const resolvedPath =
-      resolveFromPathLookup(preferredName, deps)
-      ?? resolveFromNpmGlobalBin(preferredName, deps)
-      ?? resolveFromKnownWindowsBin(preferredName, deps);
+      resolveFromPathLookup(preferredName, deps) ??
+      resolveFromNpmGlobalBin(preferredName, deps) ??
+      resolveFromKnownWindowsBin(preferredName, deps);
     if (resolvedPath) {
       return resolvedPath;
     }
@@ -191,7 +186,7 @@ export const resolveExecutablePathWithPreference = (
 
 export const describeExecutableResolution = (
   name: string,
-  deps: ExecutableDeps = {}
+  deps: ExecutableDeps = {},
 ): {
   requestedCommand: string;
   resolvedExecutablePath: string;
@@ -204,75 +199,71 @@ export const describeExecutableResolution = (
     requestedCommand: name,
     resolvedExecutablePath: resolveExecutablePath(name, deps),
     platform: os,
-    shell: false
+    shell: false,
   };
 };
 
-export const spawnExecutable = (
-  name: string,
-  args: string[],
-  options: SpawnExecutableOptions
-): ChildProcess => {
+export const spawnExecutable = (name: string, args: string[], options: SpawnExecutableOptions): ChildProcess => {
   const os = (options.platform ?? getPlatform)();
   const executablePath = resolveExecutablePath(name, options);
 
-  if (os === "win32") {
+  if (os === 'win32') {
     return spawn(
-      "powershell.exe",
+      'powershell.exe',
       [
-        "-NoLogo",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        buildPowerShellCommand(executablePath, args)
+        '-NoLogo',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        buildPowerShellCommand(executablePath, args),
       ],
       {
         ...options,
         shell: false,
-        windowsHide: options.windowsHide ?? true
-      }
+        windowsHide: options.windowsHide ?? true,
+      },
     );
   }
 
   return spawn(executablePath, args, {
     ...options,
-    shell: false
+    shell: false,
   });
 };
 
-export const runExecutableSync = (
-  name: string,
-  args: string[],
-  options: RunExecutableSyncOptions = {}
-): string => {
+export const runExecutableSync = (name: string, args: string[], options: RunExecutableSyncOptions = {}): string => {
   const os = (options.platform ?? getPlatform)();
   const run = options.execFileSync ?? execFileSync;
   const executablePath = resolveExecutablePath(name, options);
 
-  if (os === "win32") {
-    return String(run(
-      "powershell.exe",
-      [
-        "-NoLogo",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        buildPowerShellCommand(executablePath, args)
-      ],
-      {
-        cwd: options.cwd,
-        env: options.env,
-        encoding: "utf8",
-        windowsHide: true
-      }
-    ));
+  if (os === 'win32') {
+    return String(
+      run(
+        'powershell.exe',
+        [
+          '-NoLogo',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          buildPowerShellCommand(executablePath, args),
+        ],
+        {
+          cwd: options.cwd,
+          env: options.env,
+          encoding: 'utf8',
+          windowsHide: true,
+        },
+      ),
+    );
   }
 
-  return String(run(executablePath, args, {
-    cwd: options.cwd,
-    env: options.env,
-    encoding: "utf8"
-  }));
+  return String(
+    run(executablePath, args, {
+      cwd: options.cwd,
+      env: options.env,
+      encoding: 'utf8',
+    }),
+  );
 };

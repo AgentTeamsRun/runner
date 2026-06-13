@@ -1,6 +1,6 @@
-import { logger } from "../logger.js";
-import { DaemonApiClient } from "../api-client.js";
-import type { TriggerLogInput, TriggerLogLevel } from "../types.js";
+import { logger } from '../logger.js';
+import { DaemonApiClient } from '../api-client.js';
+import type { TriggerLogInput, TriggerLogLevel } from '../types.js';
 
 const MAX_BATCH_SIZE = 50;
 const MAX_BUFFERED_LOGS = 500;
@@ -15,7 +15,7 @@ const CATEGORY_PREFIX_PATTERN = /^\[([^\]]+)\]/;
 
 const categoryOf = (message: string): string => {
   const match = message.match(CATEGORY_PREFIX_PATTERN);
-  return match ? match[1] : "";
+  return match ? match[1] : '';
 };
 
 export const mergeLogs = (logs: TriggerLogInput[]): TriggerLogInput[] => {
@@ -30,7 +30,7 @@ export const mergeLogs = (logs: TriggerLogInput[]): TriggerLogInput[] => {
   for (let i = 1; i < logs.length; i++) {
     const log = logs[i];
     const logCategory = categoryOf(log.message);
-    const combined = current.message + "\n" + log.message;
+    const combined = current.message + '\n' + log.message;
     const sameCategory = logCategory === currentCategory;
     if (log.level === current.level && sameCategory && combined.length <= MAX_MESSAGE_LENGTH) {
       current.message = combined;
@@ -46,10 +46,10 @@ export const mergeLogs = (logs: TriggerLogInput[]): TriggerLogInput[] => {
 };
 
 const normalizeMessage = (message: string): string => {
-  const withoutAnsi = message.replace(ANSI_ESCAPE_PATTERN, "");
-  const normalizedNewline = withoutAnsi.replace(/\r\n?/g, "\n");
-  const withoutControlChars = normalizedNewline.replace(CONTROL_CHAR_PATTERN, "");
-  const squashed = withoutControlChars.replace(/\n{3,}/g, "\n\n");
+  const withoutAnsi = message.replace(ANSI_ESCAPE_PATTERN, '');
+  const normalizedNewline = withoutAnsi.replace(/\r\n?/g, '\n');
+  const withoutControlChars = normalizedNewline.replace(CONTROL_CHAR_PATTERN, '');
+  const squashed = withoutControlChars.replace(/\n{3,}/g, '\n\n');
   const trimmed = squashed.trim();
   if (trimmed.length <= MAX_MESSAGE_LENGTH) {
     return trimmed;
@@ -67,7 +67,7 @@ export class TriggerLogReporter {
   constructor(
     private readonly client: DaemonApiClient,
     private readonly triggerId: string,
-    private readonly flushIntervalMs: number = DEFAULT_FLUSH_INTERVAL_MS
+    private readonly flushIntervalMs: number = DEFAULT_FLUSH_INTERVAL_MS,
   ) {}
 
   start(): void {
@@ -113,7 +113,7 @@ export class TriggerLogReporter {
     try {
       if (this.droppedCount > 0) {
         const droppedMessage = `Dropped ${this.droppedCount} log line(s) due to buffer limit (${MAX_BUFFERED_LOGS}).`;
-        this.queue.unshift({ level: "WARN", message: droppedMessage });
+        this.queue.unshift({ level: 'WARN', message: droppedMessage });
         this.droppedCount = 0;
       }
 
@@ -150,11 +150,11 @@ export class TriggerLogReporter {
     try {
       await this.client.appendTriggerLogs(this.triggerId, payload);
     } catch (error) {
-      logger.warn("Failed to report trigger logs", {
+      logger.warn('Failed to report trigger logs', {
         triggerId: this.triggerId,
         error: error instanceof Error ? error.message : String(error),
         payloadSize: payload.logs?.length ?? 0,
-        heartbeat: payload.heartbeat === true
+        heartbeat: payload.heartbeat === true,
       });
     }
   }

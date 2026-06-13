@@ -1,13 +1,13 @@
-import { chmodSync, promises as fs } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import type { DaemonConfigFile, RuntimeConfig } from "./types.js";
+import { chmodSync, promises as fs } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import type { DaemonConfigFile, RuntimeConfig } from './types.js';
 
 const DEFAULT_POLLING_INTERVAL_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_IDLE_TIMEOUT_MS = 600_000;
-const DEFAULT_RUNNER_CMD = "opencode";
-const DEFAULT_API_URL = "https://api.agentteams.run";
+const DEFAULT_RUNNER_CMD = 'opencode';
+const DEFAULT_API_URL = 'https://api.agentteams.run';
 
 const parseBoolean = (rawValue: string | undefined, fallback: boolean): boolean => {
   if (rawValue === undefined) {
@@ -15,17 +15,17 @@ const parseBoolean = (rawValue: string | undefined, fallback: boolean): boolean 
   }
 
   const normalized = rawValue.trim().toLowerCase();
-  if (["false", "0", "no", "off"].includes(normalized)) {
+  if (['false', '0', 'no', 'off'].includes(normalized)) {
     return false;
   }
-  if (["true", "1", "yes", "on"].includes(normalized)) {
+  if (['true', '1', 'yes', 'on'].includes(normalized)) {
     return true;
   }
   return fallback;
 };
 
 export const getDaemonConfigPath = (): string => {
-  return join(homedir(), ".agentteams", "daemon.json");
+  return join(homedir(), '.agentteams', 'daemon.json');
 };
 
 const parsePositiveInteger = (rawValue: string | undefined, fallback: number): number => {
@@ -45,7 +45,7 @@ export const readDaemonConfigFile = async (): Promise<DaemonConfigFile | null> =
   const path = getDaemonConfigPath();
 
   try {
-    const content = await fs.readFile(path, "utf8");
+    const content = await fs.readFile(path, 'utf8');
     const parsed = JSON.parse(content) as Partial<DaemonConfigFile>;
 
     if (!parsed.daemonToken || !parsed.apiUrl) {
@@ -54,7 +54,7 @@ export const readDaemonConfigFile = async (): Promise<DaemonConfigFile | null> =
 
     return {
       daemonToken: parsed.daemonToken,
-      apiUrl: parsed.apiUrl
+      apiUrl: parsed.apiUrl,
     };
   } catch {
     return null;
@@ -64,7 +64,7 @@ export const readDaemonConfigFile = async (): Promise<DaemonConfigFile | null> =
 export const writeDaemonConfigFile = async (config: DaemonConfigFile): Promise<string> => {
   const path = getDaemonConfigPath();
   await fs.mkdir(dirname(path), { recursive: true });
-  await fs.writeFile(path, JSON.stringify(config, null, 2), "utf8");
+  await fs.writeFile(path, JSON.stringify(config, null, 2), 'utf8');
   chmodSync(path, 0o600);
   return path;
 };
@@ -86,7 +86,7 @@ export const resolveRuntimeConfig = async (): Promise<RuntimeConfig> => {
     idleTimeoutMs: parsePositiveInteger(process.env.IDLE_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS),
     runnerCmd: process.env.RUNNER_CMD?.trim() || DEFAULT_RUNNER_CMD,
     // macOS에서는 기본 활성. 비 macOS는 유틸 레벨에서 no-op으로 처리된다.
-    preventSleepWhileBusy: parseBoolean(process.env.DAEMON_PREVENT_SLEEP, true)
+    preventSleepWhileBusy: parseBoolean(process.env.DAEMON_PREVENT_SLEEP, true),
   };
 };
 

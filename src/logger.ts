@@ -26,5 +26,5 @@ export const logger = {
     }
 
     console.error(`[${timestamp()}] ERROR ${message}`);
-  }
+  },
 };

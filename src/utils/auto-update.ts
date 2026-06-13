@@ -1,19 +1,19 @@
-import { createRequire } from "node:module";
-import { runExecutableSync } from "../executable.js";
-import { logger } from "../logger.js";
-import type { PendingMeta } from "../types.js";
+import { createRequire } from 'node:module';
+import { runExecutableSync } from '../executable.js';
+import { logger } from '../logger.js';
+import type { PendingMeta } from '../types.js';
 
 const require = createRequire(import.meta.url);
-const packageJson = require("../../package.json") as { version?: string };
+const packageJson = require('../../package.json') as { version?: string };
 
-const CLI_PACKAGE = "@agentteams/cli";
-const RUNNER_PACKAGE = "@agentteams/runner";
+const CLI_PACKAGE = '@agentteams/cli';
+const RUNNER_PACKAGE = '@agentteams/runner';
 
 const COOLDOWN_MS = 60 * 60 * 1000; // 1시간
 
 type AutoUpdateDeps = {
   runExecutableSync?: typeof runExecutableSync;
-  logger?: Pick<typeof logger, "info" | "warn" | "error">;
+  logger?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
   now?: () => number;
   onRunnerUpdated?: (version: string) => Promise<void>;
 };
@@ -23,11 +23,13 @@ let lastRunnerUpdateAttempt = 0;
 let lastSuccessfulRunnerVersion: string | null = null;
 let lastNotifiedRunnerVersion: string | null = null;
 
-const getCurrentRunnerVersion = (): string => packageJson.version ?? "0.0.0";
+const getCurrentRunnerVersion = (): string => packageJson.version ?? '0.0.0';
 
-const getInstalledCliVersion = (deps: Pick<Required<AutoUpdateDeps>, "runExecutableSync" | "logger">): string | null => {
+const getInstalledCliVersion = (
+  deps: Pick<Required<AutoUpdateDeps>, 'runExecutableSync' | 'logger'>,
+): string | null => {
   try {
-    const version = deps.runExecutableSync("npm", ["list", "-g", CLI_PACKAGE, "--depth=0", "--json"]);
+    const version = deps.runExecutableSync('npm', ['list', '-g', CLI_PACKAGE, '--depth=0', '--json']);
     const parsed = JSON.parse(version) as { dependencies?: Record<string, { version?: string }> };
     return parsed.dependencies?.[CLI_PACKAGE]?.version ?? null;
   } catch {
@@ -43,14 +45,14 @@ const needsUpdate = (currentVersion: string | null, latestVersion: string | null
 const installPackage = (
   packageName: string,
   version: string,
-  deps: Pick<Required<AutoUpdateDeps>, "runExecutableSync">
+  deps: Pick<Required<AutoUpdateDeps>, 'runExecutableSync'>,
 ): void => {
-  deps.runExecutableSync("npm", ["install", "-g", `${packageName}@${version}`]);
+  deps.runExecutableSync('npm', ['install', '-g', `${packageName}@${version}`]);
 };
 
 export const maybeAutoUpdate = async (
   meta: PendingMeta | undefined,
-  deps: AutoUpdateDeps = {}
+  deps: AutoUpdateDeps = {},
 ): Promise<{ cliUpdated: boolean; runnerUpdated: boolean }> => {
   if (!meta) return { cliUpdated: false, runnerUpdated: false };
 
@@ -66,25 +68,25 @@ export const maybeAutoUpdate = async (
     lastCliUpdateAttempt = now;
     const currentCliVersion = getInstalledCliVersion({
       runExecutableSync: resolvedRunExecutableSync,
-      logger: resolvedLogger
+      logger: resolvedLogger,
     });
 
     if (needsUpdate(currentCliVersion, meta.cliLatestVersion)) {
       try {
-        resolvedLogger.info("Auto-updating CLI", {
+        resolvedLogger.info('Auto-updating CLI', {
           currentVersion: currentCliVersion,
-          targetVersion: meta.cliLatestVersion
+          targetVersion: meta.cliLatestVersion,
         });
         installPackage(CLI_PACKAGE, meta.cliLatestVersion, {
-          runExecutableSync: resolvedRunExecutableSync
+          runExecutableSync: resolvedRunExecutableSync,
         });
         cliUpdated = true;
-        resolvedLogger.info("CLI auto-update completed", {
-          version: meta.cliLatestVersion
+        resolvedLogger.info('CLI auto-update completed', {
+          version: meta.cliLatestVersion,
         });
       } catch (error) {
-        resolvedLogger.error("CLI auto-update failed", {
-          error: error instanceof Error ? error.message : String(error)
+        resolvedLogger.error('CLI auto-update failed', {
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -99,36 +101,39 @@ export const maybeAutoUpdate = async (
 
     if (!isAlreadyInstalled && needsUpdate(currentRunnerVersion, meta.runnerLatestVersion)) {
       try {
-        resolvedLogger.info("Auto-updating Runner", {
+        resolvedLogger.info('Auto-updating Runner', {
           currentVersion: currentRunnerVersion,
-          targetVersion: meta.runnerLatestVersion
+          targetVersion: meta.runnerLatestVersion,
         });
         installPackage(RUNNER_PACKAGE, meta.runnerLatestVersion, {
-          runExecutableSync: resolvedRunExecutableSync
+          runExecutableSync: resolvedRunExecutableSync,
         });
         runnerUpdated = true;
         lastSuccessfulRunnerVersion = meta.runnerLatestVersion;
-        resolvedLogger.info("Runner auto-update completed — restart required", {
-          version: meta.runnerLatestVersion
+        resolvedLogger.info('Runner auto-update completed — restart required', {
+          version: meta.runnerLatestVersion,
         });
       } catch (error) {
-        resolvedLogger.error("Runner auto-update failed", {
-          error: error instanceof Error ? error.message : String(error)
+        resolvedLogger.error('Runner auto-update failed', {
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }
-
   }
 
   // Runner 알림: 설치 성공 후 알림 미완료 시 매 폴링마다 재시도
-  if (meta.runnerLatestVersion && lastSuccessfulRunnerVersion === meta.runnerLatestVersion
-    && lastNotifiedRunnerVersion !== meta.runnerLatestVersion && deps.onRunnerUpdated) {
+  if (
+    meta.runnerLatestVersion &&
+    lastSuccessfulRunnerVersion === meta.runnerLatestVersion &&
+    lastNotifiedRunnerVersion !== meta.runnerLatestVersion &&
+    deps.onRunnerUpdated
+  ) {
     try {
       await deps.onRunnerUpdated(meta.runnerLatestVersion);
       lastNotifiedRunnerVersion = meta.runnerLatestVersion;
     } catch (notifyError) {
-      resolvedLogger.error("Failed to notify runner update", {
-        error: notifyError instanceof Error ? notifyError.message : String(notifyError)
+      resolvedLogger.error('Failed to notify runner update', {
+        error: notifyError instanceof Error ? notifyError.message : String(notifyError),
       });
     }
   }
@@ -143,4 +148,3 @@ export const resetAutoUpdateState = (): void => {
   lastSuccessfulRunnerVersion = null;
   lastNotifiedRunnerVersion = null;
 };
-

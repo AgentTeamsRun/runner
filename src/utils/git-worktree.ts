@@ -1,16 +1,16 @@
-import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
-import path from "node:path";
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
+import path from 'node:path';
 
 // 모든 git 호출은 이 헬퍼를 통해 실행해야 한다. windowsHide 누락 시 Windows에서
 // 콘솔 미부착 부모(데몬) 프로세스가 git.exe를 띄울 때 콘솔 창이 잠깐 노출된다.
 function runGit(args: string[], cwd: string): Buffer {
-  return execFileSync("git", args, { cwd, stdio: "pipe", windowsHide: true });
+  return execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
 }
 
 export function isGitRepo(dirPath: string): boolean {
   try {
-    runGit(["rev-parse", "--is-inside-work-tree"], dirPath);
+    runGit(['rev-parse', '--is-inside-work-tree'], dirPath);
     return true;
   } catch {
     return false;
@@ -31,11 +31,11 @@ export function normalizeClaudeSandboxPath(authPath: string): string {
 
 export function healWorktreeConfig(authPath: string, worktreePath: string): void {
   // Ensure .agentteams/ symlink exists
-  const sourceAgentteams = path.join(authPath, ".agentteams");
-  const targetAgentteams = path.join(worktreePath, ".agentteams");
+  const sourceAgentteams = path.join(authPath, '.agentteams');
+  const targetAgentteams = path.join(worktreePath, '.agentteams');
   if (existsSync(sourceAgentteams) && !existsSync(targetAgentteams)) {
     try {
-      symlinkSync(sourceAgentteams, targetAgentteams, "dir");
+      symlinkSync(sourceAgentteams, targetAgentteams, 'dir');
     } catch {
       // Non-critical: agent can still work without conventions
     }
@@ -45,10 +45,13 @@ export function healWorktreeConfig(authPath: string, worktreePath: string): void
   // or permission settings are needed in settings.local.json.
 }
 
-export function createWorktree(authPath: string, options: {
-  worktreeId: string;
-  baseBranch?: string | null;
-}): string {
+export function createWorktree(
+  authPath: string,
+  options: {
+    worktreeId: string;
+    baseBranch?: string | null;
+  },
+): string {
   const { worktreeId, baseBranch } = options;
   const worktreePath = resolveWorktreePath(authPath, worktreeId);
   const branchName = `worktree/${worktreeId}`;
@@ -69,14 +72,14 @@ export function createWorktree(authPath: string, options: {
   }
 
   try {
-    const args = ["worktree", "add", "-b", branchName, worktreePath];
+    const args = ['worktree', 'add', '-b', branchName, worktreePath];
     if (baseBranch) {
       args.push(baseBranch);
     }
     runGit(args, authPath);
   } catch (error) {
     throw new Error(
-      `Failed to create git worktree for worktreeId ${worktreeId}: ${error instanceof Error ? error.message : String(error)}`
+      `Failed to create git worktree for worktreeId ${worktreeId}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
@@ -85,10 +88,10 @@ export function createWorktree(authPath: string, options: {
   // Copy gitignored .env* files (root + workspace subdirs)
   // Uses copy instead of symlink to avoid Prisma symlink resolution issues
   try {
-    const copyEnvFiles = (dir: string, prefix: string = "") => {
+    const copyEnvFiles = (dir: string, prefix: string = '') => {
       try {
         for (const entry of readdirSync(dir)) {
-          if (!entry.startsWith(".env")) continue;
+          if (!entry.startsWith('.env')) continue;
           const relPath = prefix ? path.join(prefix, entry) : entry;
           const absPath = path.join(authPath, relPath);
           const wtPath = path.join(worktreePath, relPath);
@@ -97,7 +100,9 @@ export function createWorktree(authPath: string, options: {
             copyFileSync(absPath, wtPath);
           }
         }
-      } catch { /* ignore read errors */ }
+      } catch {
+        /* ignore read errors */
+      }
     };
 
     // Root level
@@ -105,7 +110,7 @@ export function createWorktree(authPath: string, options: {
 
     // First-level subdirectories (workspace level)
     for (const entry of readdirSync(authPath, { withFileTypes: true })) {
-      if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") {
+      if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
         copyEnvFiles(path.join(authPath, entry.name), entry.name);
       }
     }
@@ -124,14 +129,14 @@ export function removeWorktree(authPath: string, worktreePath: string, worktreeI
   }
 
   try {
-    runGit(["worktree", "remove", worktreePath, "--force"], authPath);
+    runGit(['worktree', 'remove', worktreePath, '--force'], authPath);
   } catch {
     // If worktree removal via git fails, try to clean up manually
     if (existsSync(worktreePath)) {
       rmSync(worktreePath, { recursive: true, force: true });
     }
     try {
-      runGit(["worktree", "prune"], authPath);
+      runGit(['worktree', 'prune'], authPath);
     } catch {
       // Ignore prune errors
     }
@@ -142,14 +147,14 @@ export function removeWorktree(authPath: string, worktreePath: string, worktreeI
   }
 
   try {
-    runGit(["branch", "-D", branchName], authPath);
+    runGit(['branch', '-D', branchName], authPath);
   } catch {
     // Branch may not exist or already deleted; ignore
   }
 
   try {
-    runGit(["ls-remote", "--exit-code", "origin", `refs/heads/${branchName}`], authPath);
-    runGit(["push", "origin", "--delete", branchName], authPath);
+    runGit(['ls-remote', '--exit-code', 'origin', `refs/heads/${branchName}`], authPath);
+    runGit(['push', 'origin', '--delete', branchName], authPath);
   } catch {
     // Remote branch may not exist or deletion may fail; ignore
   }

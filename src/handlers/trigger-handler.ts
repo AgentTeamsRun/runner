@@ -1,15 +1,15 @@
-import type { DaemonTrigger, RuntimeConfig, TriggerRuntimeAttachment } from "../types.js";
-import { DaemonApiClient } from "../api-client.js";
-import { createRunnerFactory } from "../runners/index.js";
-import { TriggerLogReporter } from "../runners/log-reporter.js";
-import { logger } from "../logger.js";
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { homedir } from "node:os";
-import { resolveRunnerHistoryPaths } from "../utils/runner-history.js";
-import { isGitRepo, createWorktree } from "../utils/git-worktree.js";
-import { extractResultTextFromStreamJson } from "../runners/claude-code.js";
-import { runOriginIssueSafeguard } from "../utils/origin-issue-safeguard.js";
+import type { DaemonTrigger, RuntimeConfig, TriggerRuntimeAttachment } from '../types.js';
+import { DaemonApiClient } from '../api-client.js';
+import { createRunnerFactory } from '../runners/index.js';
+import { TriggerLogReporter } from '../runners/log-reporter.js';
+import { logger } from '../logger.js';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { homedir } from 'node:os';
+import { resolveRunnerHistoryPaths } from '../utils/runner-history.js';
+import { isGitRepo, createWorktree } from '../utils/git-worktree.js';
+import { extractResultTextFromStreamJson } from '../runners/claude-code.js';
+import { runOriginIssueSafeguard } from '../utils/origin-issue-safeguard.js';
 
 function sanitizeErrorMessage(msg: string): string {
   return msg.replaceAll(homedir(), '~');
@@ -21,7 +21,7 @@ type TriggerHandlerOptions = {
   onAuthPathDiscovered?: (authPath: string) => void;
 };
 
-type ReporterLike = Pick<TriggerLogReporter, "start" | "append" | "stop">;
+type ReporterLike = Pick<TriggerLogReporter, 'start' | 'append' | 'stop'>;
 type ReadHistoryFile = (path: string, encoding: BufferEncoding) => Promise<string>;
 type WriteHistoryFile = (path: string, content: string) => Promise<void>;
 type FetchAttachmentFile = (downloadUrl: string) => Promise<Uint8Array>;
@@ -43,39 +43,46 @@ type TriggerHandlerDependencies = {
 export const createTriggerHandler = (options: TriggerHandlerOptions, dependencies: TriggerHandlerDependencies = {}) => {
   const { config, client, onAuthPathDiscovered } = options;
   const createRunner = (dependencies.createRunnerFactory ?? createRunnerFactory)(config.runnerCmd);
-  const createLogReporter = dependencies.createLogReporter ?? ((apiClient: DaemonApiClient, triggerId: string): ReporterLike => (
-    new TriggerLogReporter(apiClient, triggerId)
-  ));
-  const readHistoryFile: ReadHistoryFile = dependencies.readHistoryFile ?? ((path, encoding) => readFile(path, encoding));
-  const writeHistoryFile: WriteHistoryFile = dependencies.writeHistoryFile ?? (async (path, content) => {
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, content, "utf8");
-  });
-  const fetchAttachmentFile: FetchAttachmentFile = dependencies.fetchAttachmentFile ?? (async (downloadUrl) => {
-    const response = await fetch(downloadUrl);
-    if (!response.ok) {
-      throw new Error(`Attachment download failed (${response.status})`);
-    }
-    return new Uint8Array(await response.arrayBuffer());
-  });
-  const removeAttachmentDirectory: RemoveAttachmentDirectory = dependencies.removeAttachmentDirectory ?? (async (path) => {
-    await rm(path, { recursive: true, force: true });
-  });
+  const createLogReporter =
+    dependencies.createLogReporter ??
+    ((apiClient: DaemonApiClient, triggerId: string): ReporterLike => new TriggerLogReporter(apiClient, triggerId));
+  const readHistoryFile: ReadHistoryFile =
+    dependencies.readHistoryFile ?? ((path, encoding) => readFile(path, encoding));
+  const writeHistoryFile: WriteHistoryFile =
+    dependencies.writeHistoryFile ??
+    (async (path, content) => {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, content, 'utf8');
+    });
+  const fetchAttachmentFile: FetchAttachmentFile =
+    dependencies.fetchAttachmentFile ??
+    (async (downloadUrl) => {
+      const response = await fetch(downloadUrl);
+      if (!response.ok) {
+        throw new Error(`Attachment download failed (${response.status})`);
+      }
+      return new Uint8Array(await response.arrayBuffer());
+    });
+  const removeAttachmentDirectory: RemoveAttachmentDirectory =
+    dependencies.removeAttachmentDirectory ??
+    (async (path) => {
+      await rm(path, { recursive: true, force: true });
+    });
   const resolveHistoryPaths = dependencies.resolveRunnerHistoryPaths ?? resolveRunnerHistoryPaths;
   const maxHistoryLength = 200000;
   const fallbackOutputMaxLength = 8000;
   const setIntervalFn = dependencies.setIntervalFn ?? global.setInterval;
   const clearIntervalFn = dependencies.clearIntervalFn ?? global.clearInterval;
   const cancelPollIntervalMs = dependencies.cancelPollIntervalMs ?? 2000;
-  const stripUtf8Bom = (content: string): string => content.replace(/^\uFEFF/, "");
-  const currentHistoryPathPlaceholder = "{{AGENTRUNNER_CURRENT_HISTORY_PATH}}";
-  const parentHistoryPathPlaceholder = "{{AGENTRUNNER_PARENT_HISTORY_PATH}}";
+  const stripUtf8Bom = (content: string): string => content.replace(/^\uFEFF/, '');
+  const currentHistoryPathPlaceholder = '{{AGENTRUNNER_CURRENT_HISTORY_PATH}}';
+  const parentHistoryPathPlaceholder = '{{AGENTRUNNER_PARENT_HISTORY_PATH}}';
 
   // The web UI surfaces user-facing questions by parsing the `### Questions for User`
   // heading out of the reported history (extractQuestionsForUser). A history file
   // missing the section silently drops questions, so guarantee it at report time.
   const questionsForUserHeadingPattern = /^###\s+Questions for User\s*$/im;
-  const questionsForUserFallbackSection = "\n\n### Questions for User\nNone";
+  const questionsForUserFallbackSection = '\n\n### Questions for User\nNone';
 
   const ensureQuestionsForUserSection = (markdown: string): { markdown: string; normalized: boolean } => {
     if (questionsForUserHeadingPattern.test(markdown)) {
@@ -87,18 +94,21 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
   const sanitizeAttachmentFileName = (fileName: string): string => {
     const sanitized = fileName
-      .normalize("NFKD")
-      .replace(/[^\w.\-]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^[.\-]+/g, "")
-      .replace(/-$/g, "")
+      .normalize('NFKD')
+      .replace(/[^\w.\-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^[.\-]+/g, '')
+      .replace(/-$/g, '')
       .slice(0, 120);
-    return sanitized.length > 0 ? sanitized : "attachment";
+    return sanitized.length > 0 ? sanitized : 'attachment';
   };
 
   const assertInsideWorkspace = (workspaceRoot: string, targetPath: string): void => {
     const relativePath = relative(resolve(workspaceRoot), resolve(targetPath));
-    if (relativePath === "" || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))) {
+    if (
+      relativePath === '' ||
+      (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
+    ) {
       return;
     }
     throw new Error(`Attachment path escaped runner workspace: ${targetPath}`);
@@ -107,23 +117,23 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const downloadRuntimeAttachments = async (
     attachments: TriggerRuntimeAttachment[] | undefined,
     workspaceRoot: string | null,
-    triggerId: string
+    triggerId: string,
   ): Promise<Array<TriggerRuntimeAttachment & { localPath: string }>> => {
     if (!attachments || attachments.length === 0) {
       return [];
     }
 
     if (!workspaceRoot) {
-      throw new Error("Cannot deliver attachments because runner workspace path is not configured.");
+      throw new Error('Cannot deliver attachments because runner workspace path is not configured.');
     }
 
-    const attachmentDir = join(workspaceRoot, ".agentteams", "runner", "attachments", triggerId);
+    const attachmentDir = join(workspaceRoot, '.agentteams', 'runner', 'attachments', triggerId);
     assertInsideWorkspace(workspaceRoot, attachmentDir);
     await mkdir(attachmentDir, { recursive: true });
 
     const downloaded: Array<TriggerRuntimeAttachment & { localPath: string }> = [];
     for (const [index, attachment] of attachments.entries()) {
-      const fileName = `${String(index + 1).padStart(2, "0")}-${attachment.id.slice(0, 8)}-${sanitizeAttachmentFileName(attachment.originalName)}`;
+      const fileName = `${String(index + 1).padStart(2, '0')}-${attachment.id.slice(0, 8)}-${sanitizeAttachmentFileName(attachment.originalName)}`;
       const localPath = join(attachmentDir, fileName);
       assertInsideWorkspace(workspaceRoot, localPath);
       const bytes = await fetchAttachmentFile(attachment.downloadUrl);
@@ -139,15 +149,15 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
   const appendAttachmentSection = (
     runnerPrompt: string,
-    attachments: Array<TriggerRuntimeAttachment & { localPath: string }>
+    attachments: Array<TriggerRuntimeAttachment & { localPath: string }>,
   ): string => {
     if (attachments.length === 0) {
       return runnerPrompt;
     }
 
     const lines = [
-      "## Attached Files",
-      "The user attached the following files. Read them from these local paths when they are relevant to the request.",
+      '## Attached Files',
+      'The user attached the following files. Read them from these local paths when they are relevant to the request.',
       ...attachments.flatMap((attachment, index) => [
         `${index + 1}. ${attachment.originalName}`,
         `   - MIME type: ${attachment.mimeType}`,
@@ -156,17 +166,13 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       ]),
     ];
 
-    return `${runnerPrompt.trimEnd()}\n\n${lines.join("\n")}`;
+    return `${runnerPrompt.trimEnd()}\n\n${lines.join('\n')}`;
   };
 
-  const resolveRunnerPrompt = (
-    runnerPrompt: string,
-    currentPath: string | null,
-    parentPath: string | null
-  ): string => {
+  const resolveRunnerPrompt = (runnerPrompt: string, currentPath: string | null, parentPath: string | null): string => {
     return runnerPrompt
-      .replaceAll(currentHistoryPathPlaceholder, currentPath ?? "(unavailable: authPath not configured)")
-      .replaceAll(parentHistoryPathPlaceholder, parentPath ?? "(unavailable: authPath not configured)");
+      .replaceAll(currentHistoryPathPlaceholder, currentPath ?? '(unavailable: authPath not configured)')
+      .replaceAll(parentHistoryPathPlaceholder, parentPath ?? '(unavailable: authPath not configured)');
   };
 
   // 히스토리 파일을 읽어 사용할 마크다운을 돌려준다. 파일이 없거나 비어있으면 null.
@@ -177,13 +183,13 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       return null;
     }
     try {
-      const content = await readHistoryFile(historyPath, "utf8");
+      const content = await readHistoryFile(historyPath, 'utf8');
       const markdown = stripUtf8Bom(content).trim();
       return markdown.length === 0 ? null : markdown;
     } catch (error) {
-      logger.warn("Failed to read runner history file", {
+      logger.warn('Failed to read runner history file', {
         historyPath,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
       return null;
     }
@@ -196,22 +202,20 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     triggerId: string,
     historyPath: string | null,
     reporter: ReporterLike | null,
-    fallback?: { outputText: string; errorMessage?: string }
+    fallback?: { outputText: string; errorMessage?: string },
   ): Promise<void> => {
     const historyMarkdown = await loadHistoryMarkdown(historyPath);
     let historyForUpload: string | null = null;
 
     if (historyMarkdown !== null) {
-      const { markdown, normalized } = ensureQuestionsForUserSection(
-        historyMarkdown.slice(0, maxHistoryLength)
-      );
+      const { markdown, normalized } = ensureQuestionsForUserSection(historyMarkdown.slice(0, maxHistoryLength));
       historyForUpload = markdown;
       if (normalized) {
         // 관측(1단계): 러너가 가이드 위임 후에도 필수 섹션을 누락하는 빈도를 결과 상세 로그 탭에서
         // 확인하기 위한 신호. 잦으면 프롬프트 인라인 강조 복구 또는 서버 집계(2단계)를 검토한다.
         reporter?.append(
-          "WARN",
-          "History file was missing the '### Questions for User' section; appended 'None' to preserve the user-question channel."
+          'WARN',
+          "History file was missing the '### Questions for User' section; appended 'None' to preserve the user-question channel.",
         );
       }
     } else if (fallback && fallback.outputText.trim().length > 0) {
@@ -221,10 +225,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       if (historyPath) {
         await writeHistoryFile(historyPath, historyForUpload);
       }
-      reporter?.append(
-        "WARN",
-        "Runner did not write a history file. Captured stdout was stored as fallback history."
-      );
+      reporter?.append('WARN', 'Runner did not write a history file. Captured stdout was stored as fallback history.');
     }
 
     if (historyForUpload === null) {
@@ -235,55 +236,46 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       await client.updateTriggerHistory(triggerId, historyForUpload);
     } catch (error) {
       // 히스토리 업로드 실패는 러너 성공을 뒤집지 않는다. 로컬 파일을 보존하고 경고만 남긴다.
-      logger.warn("Failed to upload runner history; local history file preserved", {
+      logger.warn('Failed to upload runner history; local history file preserved', {
         triggerId,
         historyPath,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
-      reporter?.append(
-        "WARN",
-        "Failed to upload runner history to the server. The local history file is preserved."
-      );
+      reporter?.append('WARN', 'Failed to upload runner history to the server. The local history file is preserved.');
     }
   };
 
   const buildFallbackHistory = (outputText: string, errorMessage?: string): string => {
     const summaryLine = errorMessage
       ? `- Runner terminated with error: ${errorMessage}`
-      : "- Runner completed successfully but did not write the requested history file.";
+      : '- Runner completed successfully but did not write the requested history file.';
     const trimmed = outputText.trim();
     if (trimmed.length === 0) {
-      return [
-        "### Summary",
-        summaryLine,
-        "- No stdout captured.",
-        "",
-        "### Questions for User",
-        "None"
-      ].join("\n");
+      return ['### Summary', summaryLine, '- No stdout captured.', '', '### Questions for User', 'None'].join('\n');
     }
 
-    const truncated = trimmed.length > fallbackOutputMaxLength
-      ? trimmed.slice(0, fallbackOutputMaxLength) + "\n- *(truncated)*"
-      : trimmed;
+    const truncated =
+      trimmed.length > fallbackOutputMaxLength
+        ? trimmed.slice(0, fallbackOutputMaxLength) + '\n- *(truncated)*'
+        : trimmed;
 
     return [
-      "### Summary",
+      '### Summary',
       summaryLine,
-      "- Agent output (history file not written):",
-      "",
+      '- Agent output (history file not written):',
+      '',
       truncated,
-      "",
-      "### Questions for User",
-      "None"
-    ].join("\n");
+      '',
+      '### Questions for User',
+      'None',
+    ].join('\n');
   };
 
   const restoreParentHistoryFromServer = async (
     parentHistoryPath: string | null,
-    parentHistoryMarkdown: string | null
+    parentHistoryMarkdown: string | null,
   ): Promise<void> => {
-    const normalizedMarkdown = stripUtf8Bom(parentHistoryMarkdown ?? "").trim();
+    const normalizedMarkdown = stripUtf8Bom(parentHistoryMarkdown ?? '').trim();
 
     if (!parentHistoryPath || normalizedMarkdown.length === 0) {
       return;
@@ -303,27 +295,27 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         throw new Error('Invalid parentTriggerId: path traversal characters detected');
       }
 
-      logger.info("Trigger execution started", {
+      logger.info('Trigger execution started', {
         triggerId: trigger.id,
-        runnerType: trigger.runnerType
+        runnerType: trigger.runnerType,
       });
 
       const runtime = await client.fetchTriggerRuntime(trigger.id);
       logReporter = createLogReporter(client, trigger.id);
       const activeLogReporter = logReporter;
       activeLogReporter.start();
-      activeLogReporter.append("INFO", `Trigger started with runner ${trigger.runnerType}.`);
+      activeLogReporter.append('INFO', `Trigger started with runner ${trigger.runnerType}.`);
 
       if (runtime.authPath && onAuthPathDiscovered) {
         onAuthPathDiscovered(runtime.authPath);
       }
 
-      logger.info("Trigger runtime fetched", {
+      logger.info('Trigger runtime fetched', {
         triggerId: trigger.id,
         agentConfigId: runtime.agentConfigId,
-        hasAuthPath: Boolean(runtime.authPath)
+        hasAuthPath: Boolean(runtime.authPath),
       });
-      activeLogReporter.append("INFO", `Runtime fetched (agentConfigId=${runtime.agentConfigId}).`);
+      activeLogReporter.append('INFO', `Runtime fetched (agentConfigId=${runtime.agentConfigId}).`);
 
       let effectiveAuthPath = runtime.authPath;
 
@@ -332,30 +324,36 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           if (isGitRepo(runtime.authPath)) {
             const worktreePath = createWorktree(runtime.authPath, {
               worktreeId: runtime.worktreeId ?? trigger.id,
-              baseBranch: runtime.baseBranch
+              baseBranch: runtime.baseBranch,
             });
             effectiveAuthPath = worktreePath;
-            await client.reportWorktreeStatus(trigger.id, "ACTIVE");
-            activeLogReporter.append("INFO", `Worktree created at ${worktreePath}.`);
-            logger.info("Worktree created for trigger", {
+            await client.reportWorktreeStatus(trigger.id, 'ACTIVE');
+            activeLogReporter.append('INFO', `Worktree created at ${worktreePath}.`);
+            logger.info('Worktree created for trigger', {
               triggerId: trigger.id,
-              worktreePath
+              worktreePath,
             });
           } else {
-            logger.warn("Worktree requested but authPath is not a git repo, falling back to authPath", {
+            logger.warn('Worktree requested but authPath is not a git repo, falling back to authPath', {
               triggerId: trigger.id,
-              authPath: runtime.authPath
+              authPath: runtime.authPath,
             });
-            activeLogReporter.append("WARN", "Worktree requested but authPath is not a git repo. Falling back to authPath.");
+            activeLogReporter.append(
+              'WARN',
+              'Worktree requested but authPath is not a git repo. Falling back to authPath.',
+            );
           }
         } catch (err) {
-          logger.warn("Failed to create worktree, falling back to authPath", {
+          logger.warn('Failed to create worktree, falling back to authPath', {
             triggerId: trigger.id,
-            error: err instanceof Error ? err.message : String(err)
+            error: err instanceof Error ? err.message : String(err),
           });
-          activeLogReporter.append("WARN", `Worktree creation failed: ${err instanceof Error ? err.message : String(err)}. Falling back to authPath.`);
+          activeLogReporter.append(
+            'WARN',
+            `Worktree creation failed: ${err instanceof Error ? err.message : String(err)}. Falling back to authPath.`,
+          );
           try {
-            await client.reportWorktreeStatus(trigger.id, "FAILED");
+            await client.reportWorktreeStatus(trigger.id, 'FAILED');
           } catch {
             // Ignore status report failure
           }
@@ -366,15 +364,19 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       currentHistoryPath = historyPaths.currentHistoryPath;
       await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
       if (effectiveAuthPath && runtime.attachments && runtime.attachments.length > 0) {
-        attachmentDir = join(effectiveAuthPath, ".agentteams", "runner", "attachments", trigger.id);
+        attachmentDir = join(effectiveAuthPath, '.agentteams', 'runner', 'attachments', trigger.id);
       }
-      const downloadedAttachments = await downloadRuntimeAttachments(runtime.attachments, effectiveAuthPath, trigger.id);
+      const downloadedAttachments = await downloadRuntimeAttachments(
+        runtime.attachments,
+        effectiveAuthPath,
+        trigger.id,
+      );
       if (downloadedAttachments.length > 0) {
-        activeLogReporter.append("INFO", `Downloaded ${downloadedAttachments.length} attachment(s) for runner access.`);
+        activeLogReporter.append('INFO', `Downloaded ${downloadedAttachments.length} attachment(s) for runner access.`);
       }
       const runnerPrompt = appendAttachmentSection(
         resolveRunnerPrompt(runtime.runnerPrompt, historyPaths.currentHistoryPath, historyPaths.parentHistoryPath),
-        downloadedAttachments
+        downloadedAttachments,
       );
 
       const runner = createRunner(trigger.runnerType);
@@ -391,13 +393,13 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           const requested = await client.isTriggerCancelRequested(trigger.id);
           if (requested) {
             cancelRequested = true;
-            activeLogReporter.append("WARN", "Cancellation requested by user. Stopping runner.");
+            activeLogReporter.append('WARN', 'Cancellation requested by user. Stopping runner.');
             cancelController.abort();
           }
         } catch (error) {
-          logger.warn("Failed to fetch trigger cancel status", {
+          logger.warn('Failed to fetch trigger cancel status', {
             triggerId: trigger.id,
-            error: error instanceof Error ? error.message : String(error)
+            error: error instanceof Error ? error.message : String(error),
           });
         } finally {
           cancelCheckInFlight = false;
@@ -407,15 +409,14 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       cancelInterval = setIntervalFn(() => {
         void checkCancelRequested();
       }, cancelPollIntervalMs);
-      const runnerFastMode = (trigger.runnerType === "CODEX" || trigger.runnerType === "CLAUDE_CODE")
-        ? trigger.fastMode
-        : false;
+      const runnerFastMode =
+        trigger.runnerType === 'CODEX' || trigger.runnerType === 'CLAUDE_CODE' ? trigger.fastMode : false;
       if (trigger.fastMode && !runnerFastMode) {
-        logger.warn("Fast mode requested for unsupported runner; ignoring", {
+        logger.warn('Fast mode requested for unsupported runner; ignoring', {
           triggerId: trigger.id,
-          runnerType: trigger.runnerType
+          runnerType: trigger.runnerType,
         });
-        activeLogReporter.append("WARN", `Fast mode is not supported for runner ${trigger.runnerType}; ignoring.`);
+        activeLogReporter.append('WARN', `Fast mode is not supported for runner ${trigger.runnerType}; ignoring.`);
       }
       // 절전 방지는 daemon polling lifecycle(poller)이 daemon-level로 소유하므로 trigger 실행 중에도 유지된다.
       const runResult = await runner.run({
@@ -433,22 +434,22 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         fastMode: runnerFastMode,
         signal: cancelController.signal,
         onStdoutChunk: (chunk) => {
-          activeLogReporter.append("INFO", chunk);
+          activeLogReporter.append('INFO', chunk);
         },
         onStderrChunk: (chunk) => {
-          activeLogReporter.append("WARN", chunk);
-        }
+          activeLogReporter.append('WARN', chunk);
+        },
       });
       clearIntervalFn(cancelInterval);
       cancelInterval = null;
-      logger.info("Trigger runner finished", {
+      logger.info('Trigger runner finished', {
         triggerId: trigger.id,
-        exitCode: runResult.exitCode
+        exitCode: runResult.exitCode,
       });
-      logReporter.append("INFO", `Runner finished with exitCode=${runResult.exitCode}.`);
+      logReporter.append('INFO', `Runner finished with exitCode=${runResult.exitCode}.`);
       await reportHistory(trigger.id, currentHistoryPath, logReporter, {
-        outputText: runResult.outputText ?? "",
-        errorMessage: runResult.exitCode === 0 ? undefined : runResult.errorMessage
+        outputText: runResult.outputText ?? '',
+        errorMessage: runResult.exitCode === 0 ? undefined : runResult.errorMessage,
       });
 
       await logReporter.stop();
@@ -458,49 +459,44 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         // Safeguard failure should never block trigger completion
       });
 
-      const status = runResult.cancelled
-        ? "CANCELLED"
-        : runResult.exitCode === 0 ? "DONE" : "FAILED";
-      const errorMessage = status === "FAILED"
-        ? (runResult.errorMessage || runResult.lastOutput || `Runner exited with code ${runResult.exitCode}`)
-        : status === "CANCELLED"
-          ? (runResult.errorMessage || "Runner cancelled by user")
-        : undefined;
+      const status = runResult.cancelled ? 'CANCELLED' : runResult.exitCode === 0 ? 'DONE' : 'FAILED';
+      const errorMessage =
+        status === 'FAILED'
+          ? runResult.errorMessage || runResult.lastOutput || `Runner exited with code ${runResult.exitCode}`
+          : status === 'CANCELLED'
+            ? runResult.errorMessage || 'Runner cancelled by user'
+            : undefined;
       await client.updateTriggerStatus(
         trigger.id,
         status,
-        errorMessage ? sanitizeErrorMessage(errorMessage) : undefined
+        errorMessage ? sanitizeErrorMessage(errorMessage) : undefined,
       );
-      logger.info("Trigger completed", {
+      logger.info('Trigger completed', {
         triggerId: trigger.id,
-        status
+        status,
       });
     } catch (error) {
       if (cancelInterval) {
         clearIntervalFn(cancelInterval);
         cancelInterval = null;
       }
-      logger.error("Trigger handling failed", {
+      logger.error('Trigger handling failed', {
         triggerId: trigger.id,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
 
       try {
-        logReporter?.append("ERROR", error instanceof Error ? error.message : String(error));
+        logReporter?.append('ERROR', error instanceof Error ? error.message : String(error));
         await reportHistory(trigger.id, currentHistoryPath, logReporter);
         if (logReporter) {
           await logReporter.stop();
         }
         const rawErrorMsg = error instanceof Error ? error.message : String(error);
-        await client.updateTriggerStatus(
-          trigger.id,
-          "FAILED",
-          sanitizeErrorMessage(rawErrorMsg)
-        );
+        await client.updateTriggerStatus(trigger.id, 'FAILED', sanitizeErrorMessage(rawErrorMsg));
       } catch (statusError) {
-        logger.error("Failed to report trigger as FAILED", {
+        logger.error('Failed to report trigger as FAILED', {
           triggerId: trigger.id,
-          error: statusError instanceof Error ? statusError.message : String(statusError)
+          error: statusError instanceof Error ? statusError.message : String(statusError),
         });
       }
     } finally {
@@ -508,10 +504,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         try {
           await removeAttachmentDirectory(attachmentDir);
         } catch (cleanupError) {
-          logger.warn("Failed to remove runner attachment directory", {
+          logger.warn('Failed to remove runner attachment directory', {
             triggerId: trigger.id,
             attachmentDir,
-            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
           });
         }
       }

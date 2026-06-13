@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 type AuthPathStore = {
   authPaths: string[];
@@ -11,11 +11,11 @@ const normalizeAuthPaths = (value: unknown): string[] => {
     return [];
   }
 
-  return [...new Set(value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0))];
+  return [...new Set(value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0))];
 };
 
 export const getAuthPathStorePath = (): string => {
-  return join(homedir(), ".agentteams", "auth-paths.json");
+  return join(homedir(), '.agentteams', 'auth-paths.json');
 };
 
 export const loadAuthPaths = (filePath: string = getAuthPathStorePath()): string[] => {
@@ -24,7 +24,7 @@ export const loadAuthPaths = (filePath: string = getAuthPathStorePath()): string
   }
 
   try {
-    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as AuthPathStore | string[];
+    const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as AuthPathStore | string[];
     if (Array.isArray(parsed)) {
       return normalizeAuthPaths(parsed);
     }
@@ -42,6 +42,6 @@ export const saveAuthPath = (authPath: string, filePath: string = getAuthPathSto
   }
 
   mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, JSON.stringify({ authPaths: [...authPaths, authPath] }, null, 2), "utf8");
+  writeFileSync(filePath, JSON.stringify({ authPaths: [...authPaths, authPath] }, null, 2), 'utf8');
   return filePath;
 };

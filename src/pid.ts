@@ -1,18 +1,18 @@
-import { chmodSync, promises as fs } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { chmodSync, promises as fs } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
-const PID_FILE_PATH = join(homedir(), ".agentteams", "daemon.pid");
+const PID_FILE_PATH = join(homedir(), '.agentteams', 'daemon.pid');
 
 export const writePidFile = async (): Promise<void> => {
   await fs.mkdir(dirname(PID_FILE_PATH), { recursive: true });
-  await fs.writeFile(PID_FILE_PATH, String(process.pid), "utf8");
+  await fs.writeFile(PID_FILE_PATH, String(process.pid), 'utf8');
   chmodSync(PID_FILE_PATH, 0o600);
 };
 
 export const readPidFile = async (): Promise<number | null> => {
   try {
-    const content = await fs.readFile(PID_FILE_PATH, "utf8");
+    const content = await fs.readFile(PID_FILE_PATH, 'utf8');
     const pid = Number(content.trim());
     return Number.isFinite(pid) && pid > 0 ? pid : null;
   } catch {
