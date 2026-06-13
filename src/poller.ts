@@ -15,7 +15,7 @@ type TriggerHandlerFactory = (
 ) => (trigger: DaemonTrigger) => Promise<void>;
 
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const CONVENTION_SYNC_INTERVAL_MS = 60 * 60 * 1000;
+const CONVENTION_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 type PollingDependencies = {
   createClient?: (
