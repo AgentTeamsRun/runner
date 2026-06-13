@@ -1,23 +1,36 @@
-import { logger } from "./logger.js";
-import { DaemonApiClient } from "./api-client.js";
-import { runCleanup } from "./utils/runner-cleanup.js";
-import { runConventionSync } from "./utils/convention-sync.js";
-import { loadAuthPaths, saveAuthPath } from "./utils/auth-path-store.js";
-import { removeWorktree, resolveWorktreePath } from "./utils/git-worktree.js";
-import { existsSync } from "node:fs";
-import type { DaemonTrigger, RuntimeConfig } from "./types.js";
-import { maybeAutoUpdate } from "./utils/auto-update.js";
-import { executeRestartRequest } from "./daemon-control.js";
-import { createPowerSaveBlocker, type PowerSaveBlocker } from "./utils/power-save-blocker.js";
+import { logger } from './logger.js';
+import { DaemonApiClient } from './api-client.js';
+import { runCleanup } from './utils/runner-cleanup.js';
+import { runConventionSync } from './utils/convention-sync.js';
+import { loadAuthPaths, saveAuthPath } from './utils/auth-path-store.js';
+import { removeWorktree, resolveWorktreePath } from './utils/git-worktree.js';
+import { existsSync } from 'node:fs';
+import type { DaemonTrigger, RuntimeConfig } from './types.js';
+import { maybeAutoUpdate } from './utils/auto-update.js';
+import { executeRestartRequest } from './daemon-control.js';
+import { createPowerSaveBlocker, type PowerSaveBlocker } from './utils/power-save-blocker.js';
 
-
-type TriggerHandlerFactory = (onAuthPathDiscovered: (authPath: string) => void) => (trigger: DaemonTrigger) => Promise<void>;
+type TriggerHandlerFactory = (
+  onAuthPathDiscovered: (authPath: string) => void,
+) => (trigger: DaemonTrigger) => Promise<void>;
 
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CONVENTION_SYNC_INTERVAL_MS = 60 * 60 * 1000;
 
 type PollingDependencies = {
-  createClient?: (config: RuntimeConfig) => Pick<DaemonApiClient, "fetchPendingTrigger" | "claimTrigger" | "fetchOrphanedCancelRequested" | "updateTriggerStatus" | "fetchPendingWorktreeRemovals" | "reportWorktreeStatus" | "notifyUpdate" | "ackRestartRequest">;
+  createClient?: (
+    config: RuntimeConfig,
+  ) => Pick<
+    DaemonApiClient,
+    | 'fetchPendingTrigger'
+    | 'claimTrigger'
+    | 'fetchOrphanedCancelRequested'
+    | 'updateTriggerStatus'
+    | 'fetchPendingWorktreeRemovals'
+    | 'reportWorktreeStatus'
+    | 'notifyUpdate'
+    | 'ackRestartRequest'
+  >;
   runCleanup?: (authPath: string) => Promise<void>;
   runConventionSync?: (authPath: string) => Promise<void>;
   removeWorktree?: typeof removeWorktree;
@@ -37,7 +50,7 @@ type PollingDependencies = {
 export const startPolling = async (
   config: RuntimeConfig,
   createHandler: TriggerHandlerFactory,
-  dependencies: PollingDependencies = {}
+  dependencies: PollingDependencies = {},
 ): Promise<void> => {
   const client = dependencies.createClient?.(config) ?? new DaemonApiClient(config.apiUrl, config.daemonToken);
   const cleanupRunner = dependencies.runCleanup ?? runCleanup;
@@ -50,14 +63,18 @@ export const startPolling = async (
   const unregisterInterval = dependencies.clearInterval ?? global.clearInterval;
   const registerSignal = dependencies.processOn ?? ((event, listener) => process.on(event, listener));
   const exitProcess = dependencies.processExit ?? ((code) => process.exit(code));
-  const keepAlive = dependencies.keepAlive ?? (() => new Promise<void>(() => {
-    // Keep process alive until shutdown signal.
-  }));
+  const keepAlive =
+    dependencies.keepAlive ??
+    (() =>
+      new Promise<void>(() => {
+        // Keep process alive until shutdown signal.
+      }));
   const loadPersistedAuthPaths = dependencies.loadAuthPaths ?? loadAuthPaths;
   const persistAuthPath = dependencies.saveAuthPath ?? saveAuthPath;
   // 절전 방지는 daemon polling lifecycle이 소유한다. daemon이 살아 있는 동안(폴링/대기/실행)
   // 절전을 막고, 종료 시 해제한다. (배터리/비 macOS는 유틸 내부에서 no-op)
-  const powerSaveBlocker = dependencies.powerSaveBlocker ?? createPowerSaveBlocker({ enabled: config.preventSleepWhileBusy });
+  const powerSaveBlocker =
+    dependencies.powerSaveBlocker ?? createPowerSaveBlocker({ enabled: config.preventSleepWhileBusy });
   let isPolling = false;
 
   const knownAuthPaths = new Set<string>(loadPersistedAuthPaths());
@@ -73,9 +90,9 @@ export const startPolling = async (
     try {
       persistAuthPath(authPath);
     } catch (error) {
-      logger.warn("Failed to persist auth path", {
+      logger.warn('Failed to persist auth path', {
         authPath,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   };
@@ -91,9 +108,9 @@ export const startPolling = async (
 
     for (const authPath of knownAuthPaths) {
       void cleanupRunner(authPath).catch((error) => {
-        logger.warn("Scheduled cleanup failed", {
+        logger.warn('Scheduled cleanup failed', {
           authPath,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
       });
     }
@@ -108,7 +125,7 @@ export const startPolling = async (
       }
       lastConventionSyncAt.set(authPath, currentTime);
       void conventionSync(authPath).catch((error) => {
-        logger.warn("Scheduled convention sync failed", {
+        logger.warn('Scheduled convention sync failed', {
           authPath,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -121,18 +138,22 @@ export const startPolling = async (
       const triggerIds = await client.fetchOrphanedCancelRequested();
       for (const triggerId of triggerIds) {
         try {
-          await client.updateTriggerStatus(triggerId, "CANCELLED", "Automatically cancelled: runner is no longer active");
-          logger.info("Auto-cancelled orphaned trigger", { triggerId });
-        } catch (error) {
-          logger.warn("Failed to auto-cancel orphaned trigger", {
+          await client.updateTriggerStatus(
             triggerId,
-            error: error instanceof Error ? error.message : String(error)
+            'CANCELLED',
+            'Automatically cancelled: runner is no longer active',
+          );
+          logger.info('Auto-cancelled orphaned trigger', { triggerId });
+        } catch (error) {
+          logger.warn('Failed to auto-cancel orphaned trigger', {
+            triggerId,
+            error: error instanceof Error ? error.message : String(error),
           });
         }
       }
     } catch (error) {
-      logger.warn("Failed to fetch orphaned cancel-requested triggers", {
-        error: error instanceof Error ? error.message : String(error)
+      logger.warn('Failed to fetch orphaned cancel-requested triggers', {
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   };
@@ -155,41 +176,41 @@ export const startPolling = async (
             try {
               removeWorktreeFn(authPath, worktreePath, effectiveWorktreeId);
               removeSucceeded = true;
-              logger.info("Worktree removed for trigger", { triggerId: trigger.id, worktreePath });
+              logger.info('Worktree removed for trigger', { triggerId: trigger.id, worktreePath });
               break;
             } catch (error) {
               const worktreeError = error instanceof Error ? error.message : String(error);
-              logger.warn("Failed to remove worktree for trigger", {
+              logger.warn('Failed to remove worktree for trigger', {
                 triggerId: trigger.id,
                 authPath,
                 worktreePath,
-                error: worktreeError
+                error: worktreeError,
               });
-              await client.reportWorktreeStatus(trigger.id, "FAILED", worktreeError);
+              await client.reportWorktreeStatus(trigger.id, 'FAILED', worktreeError);
               break;
             }
           }
 
           if (removeSucceeded) {
-            await client.reportWorktreeStatus(trigger.id, "REMOVED");
+            await client.reportWorktreeStatus(trigger.id, 'REMOVED');
           } else if (!matchedAuthPath) {
             const worktreeError = `Failed to remove RunnerBox: worktree path was not found for ${effectiveWorktreeId}`;
-            logger.warn("Could not find authPath for worktree removal", {
+            logger.warn('Could not find authPath for worktree removal', {
               triggerId: trigger.id,
-              worktreeId: effectiveWorktreeId
+              worktreeId: effectiveWorktreeId,
             });
-            await client.reportWorktreeStatus(trigger.id, "FAILED", worktreeError);
+            await client.reportWorktreeStatus(trigger.id, 'FAILED', worktreeError);
           }
         } catch (error) {
-          logger.warn("Failed to remove worktree for trigger", {
+          logger.warn('Failed to remove worktree for trigger', {
             triggerId: trigger.id,
-            error: error instanceof Error ? error.message : String(error)
+            error: error instanceof Error ? error.message : String(error),
           });
         }
       }
     } catch (error) {
-      logger.warn("Failed to fetch pending worktree removals", {
-        error: error instanceof Error ? error.message : String(error)
+      logger.warn('Failed to fetch pending worktree removals', {
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   };
@@ -216,8 +237,8 @@ export const startPolling = async (
         try {
           await client.ackRestartRequest();
         } catch (error) {
-          logger.warn("Failed to ack restart request — will retry on next poll", {
-            error: error instanceof Error ? error.message : String(error)
+          logger.warn('Failed to ack restart request — will retry on next poll', {
+            error: error instanceof Error ? error.message : String(error),
           });
           return;
         }
@@ -230,11 +251,11 @@ export const startPolling = async (
         // idle 상태에서 자동 업데이트 시도
         try {
           await autoUpdate(pendingResponse.meta, {
-            onRunnerUpdated: (version) => client.notifyUpdate(version, "runner")
+            onRunnerUpdated: (version) => client.notifyUpdate(version, 'runner'),
           });
         } catch (error) {
-          logger.error("Auto-update check failed", {
-            error: error instanceof Error ? error.message : String(error)
+          logger.error('Auto-update check failed', {
+            error: error instanceof Error ? error.message : String(error),
           });
         }
         return;
@@ -242,24 +263,24 @@ export const startPolling = async (
 
       const claim = await client.claimTrigger(trigger.id);
       if (claim.conflict) {
-        logger.info("Trigger already claimed by another daemon", { triggerId: trigger.id });
+        logger.info('Trigger already claimed by another daemon', { triggerId: trigger.id });
         return;
       }
 
       if (!claim.ok) {
-        logger.warn("Claim was rejected", { triggerId: trigger.id });
+        logger.warn('Claim was rejected', { triggerId: trigger.id });
         return;
       }
 
       void onTrigger(trigger).catch((error) => {
-        logger.error("Trigger handler execution failed", {
+        logger.error('Trigger handler execution failed', {
           triggerId: trigger.id,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
       });
     } catch (error) {
-      logger.error("Polling cycle failed", {
-        error: error instanceof Error ? error.message : String(error)
+      logger.error('Polling cycle failed', {
+        error: error instanceof Error ? error.message : String(error),
       });
     } finally {
       isPolling = false;
@@ -271,13 +292,13 @@ export const startPolling = async (
   }, config.pollingIntervalMs);
 
   // daemon 시작과 함께 절전 방지를 한 번 acquire한다. polling cycle마다 반복하지 않는다.
-  const releasePowerSaveBlocker = powerSaveBlocker.acquire("daemon-polling");
+  const releasePowerSaveBlocker = powerSaveBlocker.acquire('daemon-polling');
 
-  logger.info("Daemon polling started", {
+  logger.info('Daemon polling started', {
     apiUrl: config.apiUrl,
     pollingIntervalMs: config.pollingIntervalMs,
     timeoutMs: config.timeoutMs,
-    runnerCmd: config.runnerCmd
+    runnerCmd: config.runnerCmd,
   });
 
   await pollOnce();
@@ -285,12 +306,12 @@ export const startPolling = async (
   const shutdown = () => {
     releasePowerSaveBlocker();
     unregisterInterval(interval);
-    logger.info("Daemon stopped");
+    logger.info('Daemon stopped');
     exitProcess(0);
   };
 
-  registerSignal("SIGINT", shutdown);
-  registerSignal("SIGTERM", shutdown);
+  registerSignal('SIGINT', shutdown);
+  registerSignal('SIGTERM', shutdown);
 
   await keepAlive();
   // keepAlive가 resolve되는 정상 종료 경로(주로 테스트)에서도 release를 보장한다. release는 idempotent하다.

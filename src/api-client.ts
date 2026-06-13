@@ -1,4 +1,4 @@
-import { createRequire } from "node:module";
+import { createRequire } from 'node:module';
 import type {
   ClaimResult,
   DaemonInfo,
@@ -8,13 +8,13 @@ import type {
   PendingResponse,
   TriggerFinalStatus,
   TriggerLogInput,
-  TriggerRuntime
-} from "./types.js";
-import { logger } from "./logger.js";
+  TriggerRuntime,
+} from './types.js';
+import { logger } from './logger.js';
 
 const require = createRequire(import.meta.url);
-const packageJson = require("../package.json") as { version?: string };
-const runnerVersion = packageJson.version ?? "0.0.0";
+const packageJson = require('../package.json') as { version?: string };
+const runnerVersion = packageJson.version ?? '0.0.0';
 
 const MAX_NETWORK_RETRIES = 3;
 const BASE_BACKOFF_MS = 1000;
@@ -26,16 +26,16 @@ const isNetworkError = (error: unknown): boolean => {
 };
 
 const detectOsType = (): OsType | undefined => {
-  if (process.platform === "darwin") {
-    return "MACOS";
+  if (process.platform === 'darwin') {
+    return 'MACOS';
   }
 
-  if (process.platform === "linux") {
-    return "LINUX";
+  if (process.platform === 'linux') {
+    return 'LINUX';
   }
 
-  if (process.platform === "win32") {
-    return "WINDOWS";
+  if (process.platform === 'win32') {
+    return 'WINDOWS';
   }
 
   return undefined;
@@ -44,19 +44,19 @@ const detectOsType = (): OsType | undefined => {
 export class DaemonApiClient {
   constructor(
     private readonly apiUrl: string,
-    private readonly daemonToken: string
+    private readonly daemonToken: string,
   ) {}
 
   private daemonHeaders(options?: { includeOsType?: boolean }): Record<string, string> {
     const headers: Record<string, string> = {
-      "x-daemon-token": this.daemonToken,
-      "x-runner-version": runnerVersion
+      'x-daemon-token': this.daemonToken,
+      'x-runner-version': runnerVersion,
     };
 
     if (options?.includeOsType) {
       const osType = detectOsType();
       if (osType) {
-        headers["x-os-type"] = osType;
+        headers['x-os-type'] = osType;
       }
     }
 
@@ -75,51 +75,51 @@ export class DaemonApiClient {
         }
 
         const retryNumber = attempt + 1;
-        const delayMs = BASE_BACKOFF_MS * (2 ** attempt);
+        const delayMs = BASE_BACKOFF_MS * 2 ** attempt;
         logger.warn(`Retry ${retryNumber}/${MAX_NETWORK_RETRIES}: network error while requesting daemon API`, {
           path,
           delayMs,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
         await wait(delayMs);
       }
     }
 
-    throw new Error("Unexpected retry loop exit");
+    throw new Error('Unexpected retry loop exit');
   }
 
   async validateDaemonToken(): Promise<DaemonInfo> {
-    const response = await this.requestWithRetry("/api/daemons/me", {
-      method: "GET",
-      headers: this.daemonHeaders({ includeOsType: true })
+    const response = await this.requestWithRetry('/api/daemons/me', {
+      method: 'GET',
+      headers: this.daemonHeaders({ includeOsType: true }),
     });
 
     if (!response.ok) {
       throw new Error(`Daemon token validation failed (${response.status})`);
     }
 
-    const payload = await response.json() as { data: DaemonInfo };
+    const payload = (await response.json()) as { data: DaemonInfo };
     return payload.data;
   }
 
   async fetchPendingTrigger(): Promise<PendingResponse> {
-    const response = await this.requestWithRetry("/api/daemon-triggers/pending", {
-      method: "GET",
-      headers: this.daemonHeaders()
+    const response = await this.requestWithRetry('/api/daemon-triggers/pending', {
+      method: 'GET',
+      headers: this.daemonHeaders(),
     });
 
     if (!response.ok) {
       throw new Error(`Failed to fetch pending trigger (${response.status})`);
     }
 
-    const payload = await response.json() as PendingResponse;
+    const payload = (await response.json()) as PendingResponse;
     return payload;
   }
 
   async claimTrigger(triggerId: string): Promise<ClaimResult> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/claim`, {
-      method: "PATCH",
-      headers: this.daemonHeaders()
+      method: 'PATCH',
+      headers: this.daemonHeaders(),
     });
 
     if (response.status === 409) {
@@ -133,21 +133,17 @@ export class DaemonApiClient {
     return { ok: true, conflict: false };
   }
 
-  async updateTriggerStatus(
-    triggerId: string,
-    status: TriggerFinalStatus,
-    errorMessage?: string
-  ): Promise<void> {
+  async updateTriggerStatus(triggerId: string, status: TriggerFinalStatus, errorMessage?: string): Promise<void> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/status`, {
-      method: "PATCH",
+      method: 'PATCH',
       headers: {
         ...this.daemonHeaders(),
-        "Content-Type": "application/json"
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         status,
-        ...(errorMessage ? { errorMessage } : {})
-      })
+        ...(errorMessage ? { errorMessage } : {}),
+      }),
     });
 
     if (!response.ok) {
@@ -155,19 +151,16 @@ export class DaemonApiClient {
     }
   }
 
-  async updateTriggerHistory(
-    triggerId: string,
-    historyMarkdown: string
-  ): Promise<void> {
+  async updateTriggerHistory(triggerId: string, historyMarkdown: string): Promise<void> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/history`, {
-      method: "PATCH",
+      method: 'PATCH',
       headers: {
         ...this.daemonHeaders(),
-        "Content-Type": "application/json"
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        historyMarkdown
-      })
+        historyMarkdown,
+      }),
     });
 
     if (!response.ok) {
@@ -176,58 +169,58 @@ export class DaemonApiClient {
   }
 
   async fetchOrphanedCancelRequested(): Promise<string[]> {
-    const response = await this.requestWithRetry("/api/daemon-triggers/orphaned-cancel-requested", {
-      method: "GET",
-      headers: this.daemonHeaders()
+    const response = await this.requestWithRetry('/api/daemon-triggers/orphaned-cancel-requested', {
+      method: 'GET',
+      headers: this.daemonHeaders(),
     });
 
     if (!response.ok) {
       throw new Error(`Failed to fetch orphaned cancel-requested triggers (${response.status})`);
     }
 
-    const payload = await response.json() as { data: string[] };
+    const payload = (await response.json()) as { data: string[] };
     return payload.data;
   }
 
   async isTriggerCancelRequested(triggerId: string): Promise<boolean> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/cancel-status/${triggerId}`, {
-      method: "GET",
-      headers: this.daemonHeaders()
+      method: 'GET',
+      headers: this.daemonHeaders(),
     });
 
     if (!response.ok) {
       throw new Error(`Failed to fetch trigger cancel status (${response.status})`);
     }
 
-    const payload = await response.json() as { data: { cancelRequested: boolean } };
+    const payload = (await response.json()) as { data: { cancelRequested: boolean } };
     return payload.data.cancelRequested;
   }
 
   async fetchTriggerRuntime(triggerId: string): Promise<TriggerRuntime> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/runtime`, {
-      method: "GET",
-      headers: this.daemonHeaders()
+      method: 'GET',
+      headers: this.daemonHeaders(),
     });
 
     if (!response.ok) {
       throw new Error(`Failed to fetch trigger runtime (${response.status})`);
     }
 
-    const payload = await response.json() as { data: TriggerRuntime };
+    const payload = (await response.json()) as { data: TriggerRuntime };
     return payload.data;
   }
 
   async reportWorktreeStatus(triggerId: string, status: string, worktreeError?: string): Promise<void> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/worktree/status`, {
-      method: "PATCH",
+      method: 'PATCH',
       headers: {
         ...this.daemonHeaders(),
-        "Content-Type": "application/json"
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         worktreeStatus: status,
-        ...(worktreeError ? { worktreeError } : {})
-      })
+        ...(worktreeError ? { worktreeError } : {}),
+      }),
     });
 
     if (!response.ok) {
@@ -236,27 +229,27 @@ export class DaemonApiClient {
   }
 
   async fetchPendingWorktreeRemovals(): Promise<DaemonTrigger[]> {
-    const response = await this.requestWithRetry("/api/daemon-triggers/worktree/pending-removal", {
-      method: "GET",
-      headers: this.daemonHeaders()
+    const response = await this.requestWithRetry('/api/daemon-triggers/worktree/pending-removal', {
+      method: 'GET',
+      headers: this.daemonHeaders(),
     });
 
     if (!response.ok) {
       throw new Error(`Failed to fetch pending worktree removals (${response.status})`);
     }
 
-    const payload = await response.json() as { data: DaemonTrigger[] };
+    const payload = (await response.json()) as { data: DaemonTrigger[] };
     return payload.data;
   }
 
   async appendTriggerLogs(triggerId: string, input: { logs?: TriggerLogInput[]; heartbeat?: boolean }): Promise<void> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/logs`, {
-      method: "POST",
+      method: 'POST',
       headers: {
         ...this.daemonHeaders(),
-        "Content-Type": "application/json"
+        'Content-Type': 'application/json',
       },
-      body: JSON.stringify(input)
+      body: JSON.stringify(input),
     });
 
     if (!response.ok) {
@@ -264,19 +257,16 @@ export class DaemonApiClient {
     }
   }
 
-  async recordInjectedConventions(
-    triggerId: string,
-    items: InjectedConventionRecord[]
-  ): Promise<void> {
+  async recordInjectedConventions(triggerId: string, items: InjectedConventionRecord[]): Promise<void> {
     if (items.length === 0) return;
 
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/conventions`, {
-      method: "POST",
+      method: 'POST',
       headers: {
         ...this.daemonHeaders(),
-        "Content-Type": "application/json"
+        'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ items })
+      body: JSON.stringify({ items }),
     });
 
     if (!response.ok) {
@@ -285,9 +275,9 @@ export class DaemonApiClient {
   }
 
   async ackRestartRequest(): Promise<void> {
-    const response = await this.requestWithRetry("/api/daemons/restart-ack", {
-      method: "POST",
-      headers: this.daemonHeaders()
+    const response = await this.requestWithRetry('/api/daemons/restart-ack', {
+      method: 'POST',
+      headers: this.daemonHeaders(),
     });
 
     if (!response.ok) {
@@ -295,14 +285,14 @@ export class DaemonApiClient {
     }
   }
 
-  async notifyUpdate(version: string, pkg: "cli" | "runner" = "runner"): Promise<void> {
-    const response = await this.requestWithRetry("/api/daemons/notify-update", {
-      method: "POST",
+  async notifyUpdate(version: string, pkg: 'cli' | 'runner' = 'runner'): Promise<void> {
+    const response = await this.requestWithRetry('/api/daemons/notify-update', {
+      method: 'POST',
       headers: {
         ...this.daemonHeaders(),
-        "Content-Type": "application/json"
+        'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ version, package: pkg })
+      body: JSON.stringify({ version, package: pkg }),
     });
 
     if (!response.ok) {

@@ -1,18 +1,18 @@
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { platform as osPlatform } from "node:os";
-import { logger } from "../logger.js";
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { platform as osPlatform } from 'node:os';
+import { logger } from '../logger.js';
 
 // launchd 환경에서는 PATH가 비어 있을 수 있으므로 macOS 시스템 바이너리는 절대 경로로 호출한다.
-const CAFFEINATE_PATH = "/usr/bin/caffeinate";
-const PMSET_PATH = "/usr/bin/pmset";
+const CAFFEINATE_PATH = '/usr/bin/caffeinate';
+const PMSET_PATH = '/usr/bin/pmset';
 
 // -i: 시스템 idle 절전 방지, -m: 디스크 idle 절전 방지, -s: 시스템 절전 방지(AC 전원에서만 유효)
-const DEFAULT_CAFFEINATE_ARGS = ["-i", "-m", "-s"];
+const DEFAULT_CAFFEINATE_ARGS = ['-i', '-m', '-s'];
 
 // 실행 도중 배터리로 전환되는 경우를 감지하기 위한 전원 상태 재확인 주기
 const DEFAULT_POWER_RECHECK_INTERVAL_MS = 30_000;
 
-export type PowerSource = "AC" | "BATTERY" | "UNKNOWN";
+export type PowerSource = 'AC' | 'BATTERY' | 'UNKNOWN';
 
 export type PowerSaveBlocker = {
   // 절전 방지 세션을 획득한다. 반환된 release는 여러 번 호출해도 안전(idempotent)하다.
@@ -23,7 +23,7 @@ type PowerSaveBlockerDeps = {
   platform?: () => NodeJS.Platform;
   spawn?: typeof spawn;
   execFileSync?: typeof execFileSync;
-  logger?: Pick<typeof logger, "info" | "warn">;
+  logger?: Pick<typeof logger, 'info' | 'warn'>;
   setInterval?: typeof global.setInterval;
   clearInterval?: typeof global.clearInterval;
   recheckIntervalMs?: number;
@@ -35,17 +35,17 @@ type PowerSaveBlockerDeps = {
 export const parsePowerSource = (output: string): PowerSource => {
   const match = output.match(/Now drawing from '([^']+)'/i);
   if (!match) {
-    return "UNKNOWN";
+    return 'UNKNOWN';
   }
 
   const source = match[1].toLowerCase();
-  if (source.includes("ac")) {
-    return "AC";
+  if (source.includes('ac')) {
+    return 'AC';
   }
-  if (source.includes("battery")) {
-    return "BATTERY";
+  if (source.includes('battery')) {
+    return 'BATTERY';
   }
-  return "UNKNOWN";
+  return 'UNKNOWN';
 };
 
 const noopRelease = (): void => {};
@@ -61,7 +61,7 @@ export const createPowerSaveBlocker = (deps: PowerSaveBlockerDeps = {}): PowerSa
   const caffeinateArgs = deps.caffeinateArgs ?? DEFAULT_CAFFEINATE_ARGS;
 
   // 기능 토글이 꺼져 있거나 macOS가 아니면 전부 no-op으로 동작한다.
-  const supported = (deps.enabled ?? true) && platform() === "darwin";
+  const supported = (deps.enabled ?? true) && platform() === 'darwin';
 
   let activeSessions = 0;
   let caffeinate: ChildProcess | null = null;
@@ -69,13 +69,13 @@ export const createPowerSaveBlocker = (deps: PowerSaveBlockerDeps = {}): PowerSa
 
   const readPowerSource = (): PowerSource => {
     try {
-      const output = String(execFileSyncFn(PMSET_PATH, ["-g", "batt"], { encoding: "utf8" }));
+      const output = String(execFileSyncFn(PMSET_PATH, ['-g', 'batt'], { encoding: 'utf8' }));
       return parsePowerSource(output);
     } catch (error) {
-      log.warn("Failed to read power source via pmset", {
-        error: error instanceof Error ? error.message : String(error)
+      log.warn('Failed to read power source via pmset', {
+        error: error instanceof Error ? error.message : String(error),
       });
-      return "UNKNOWN";
+      return 'UNKNOWN';
     }
   };
 
@@ -85,25 +85,25 @@ export const createPowerSaveBlocker = (deps: PowerSaveBlockerDeps = {}): PowerSa
     }
 
     try {
-      const child = spawnFn(CAFFEINATE_PATH, caffeinateArgs, { stdio: "ignore" });
-      child.on("error", (error) => {
-        log.warn("caffeinate process failed", {
-          error: error instanceof Error ? error.message : String(error)
+      const child = spawnFn(CAFFEINATE_PATH, caffeinateArgs, { stdio: 'ignore' });
+      child.on('error', (error) => {
+        log.warn('caffeinate process failed', {
+          error: error instanceof Error ? error.message : String(error),
         });
         if (caffeinate === child) {
           caffeinate = null;
         }
       });
-      child.on("exit", () => {
+      child.on('exit', () => {
         if (caffeinate === child) {
           caffeinate = null;
         }
       });
       caffeinate = child;
-      log.info("Sleep prevention started", { pid: child.pid ?? null, args: caffeinateArgs });
+      log.info('Sleep prevention started', { pid: child.pid ?? null, args: caffeinateArgs });
     } catch (error) {
-      log.warn("Failed to start caffeinate", {
-        error: error instanceof Error ? error.message : String(error)
+      log.warn('Failed to start caffeinate', {
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   };
@@ -116,11 +116,11 @@ export const createPowerSaveBlocker = (deps: PowerSaveBlockerDeps = {}): PowerSa
     const child = caffeinate;
     caffeinate = null;
     try {
-      child.kill("SIGTERM");
+      child.kill('SIGTERM');
     } catch {
       // 이미 종료되었거나 종료할 수 없는 경우 무시한다.
     }
-    log.info("Sleep prevention stopped", { reason });
+    log.info('Sleep prevention stopped', { reason });
   };
 
   // 의도한 상태(세션 존재 && AC 전원)와 실제 caffeinate 실행 여부를 일치시킨다.
@@ -130,15 +130,15 @@ export const createPowerSaveBlocker = (deps: PowerSaveBlockerDeps = {}): PowerSa
     }
 
     if (activeSessions <= 0) {
-      stopCaffeinate("no-active-sessions");
+      stopCaffeinate('no-active-sessions');
       return;
     }
 
     const source = readPowerSource();
-    if (source === "AC") {
+    if (source === 'AC') {
       startCaffeinate();
     } else {
-      stopCaffeinate(source === "BATTERY" ? "on-battery" : "power-source-unknown");
+      stopCaffeinate(source === 'BATTERY' ? 'on-battery' : 'power-source-unknown');
     }
   };
 
@@ -148,7 +148,7 @@ export const createPowerSaveBlocker = (deps: PowerSaveBlockerDeps = {}): PowerSa
     }
     monitorInterval = setIntervalFn(() => reconcile(), recheckIntervalMs);
     // 절전 방지 모니터가 데몬 종료를 막지 않도록 unref 처리한다.
-    if (typeof monitorInterval.unref === "function") {
+    if (typeof monitorInterval.unref === 'function') {
       monitorInterval.unref();
     }
   };
@@ -168,8 +168,8 @@ export const createPowerSaveBlocker = (deps: PowerSaveBlockerDeps = {}): PowerSa
 
     activeSessions += 1;
     const source = readPowerSource();
-    if (source !== "AC") {
-      log.info("Sleep prevention skipped while on battery or unknown power", { source, label: label ?? null });
+    if (source !== 'AC') {
+      log.info('Sleep prevention skipped while on battery or unknown power', { source, label: label ?? null });
     }
     reconcile();
     startMonitor();

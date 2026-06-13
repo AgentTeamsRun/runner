@@ -1,7 +1,7 @@
-import { DaemonApiClient } from "../api-client.js";
-import { logger } from "../logger.js";
-import { resolveApiUrlForInit, writeDaemonConfigFile } from "../config.js";
-import { registerAutostart } from "../autostart.js";
+import { DaemonApiClient } from '../api-client.js';
+import { logger } from '../logger.js';
+import { resolveApiUrlForInit, writeDaemonConfigFile } from '../config.js';
+import { registerAutostart } from '../autostart.js';
 
 type InitOptions = {
   token?: string;
@@ -15,19 +15,19 @@ const parseInitArgs = (argv: string[]): InitOptions => {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
 
-    if (arg === "--token") {
+    if (arg === '--token') {
       options.token = argv[i + 1];
       i += 1;
       continue;
     }
 
-    if (arg === "--api-url") {
+    if (arg === '--api-url') {
       options.apiUrl = argv[i + 1];
       i += 1;
       continue;
     }
 
-    if (arg === "--no-autostart") {
+    if (arg === '--no-autostart') {
       options.noAutostart = true;
     }
   }
@@ -39,7 +39,7 @@ export const runInitCommand = async (argv: string[]): Promise<void> => {
   const options = parseInitArgs(argv);
 
   if (!options.token || options.token.trim().length === 0) {
-    throw new Error("Missing token. Usage: agentrunner init --token <token> [--api-url <url>] [--no-autostart]");
+    throw new Error('Missing token. Usage: agentrunner init --token <token> [--api-url <url>] [--no-autostart]');
   }
 
   const apiUrl = await resolveApiUrlForInit(options.apiUrl);
@@ -50,26 +50,26 @@ export const runInitCommand = async (argv: string[]): Promise<void> => {
 
   const configPath = await writeDaemonConfigFile({
     daemonToken,
-    apiUrl
+    apiUrl,
   });
 
-  logger.info("Daemon init completed", {
+  logger.info('Daemon init completed', {
     daemonId: daemon.id,
     memberId: daemon.memberId,
     osType: daemon.osType,
-    configPath
+    configPath,
   });
 
   if (!options.noAutostart) {
     const result = await registerAutostart({ token: daemonToken, apiUrl });
 
     if (result.registered) {
-      logger.info("Autostart registered", {
+      logger.info('Autostart registered', {
         platform: result.platform,
-        servicePath: result.servicePath
+        servicePath: result.servicePath,
       });
     }
   } else {
-    logger.info("Autostart skipped (--no-autostart)");
+    logger.info('Autostart skipped (--no-autostart)');
   }
 };

@@ -1,56 +1,51 @@
-import { execSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, promises as fs, writeFileSync } from "node:fs";
-import { homedir, platform } from "node:os";
-import { dirname, join } from "node:path";
-import { resolveExecutablePath } from "./executable.js";
-import { logger } from "./logger.js";
+import { execSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, promises as fs, writeFileSync } from 'node:fs';
+import { homedir, platform } from 'node:os';
+import { dirname, join } from 'node:path';
+import { resolveExecutablePath } from './executable.js';
+import { logger } from './logger.js';
 
-const SERVICE_LABEL = "run.agentteams.runner";
-const TASK_NAME = "AgentRunner";
+const SERVICE_LABEL = 'run.agentteams.runner';
+const TASK_NAME = 'AgentRunner';
 
 // --- Path helpers ---
 
-const getLaunchdPlistPath = (): string =>
-  join(homedir(), "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
+const getLaunchdPlistPath = (): string => join(homedir(), 'Library', 'LaunchAgents', `${SERVICE_LABEL}.plist`);
 
-const getSystemdServicePath = (): string =>
-  join(homedir(), ".config", "systemd", "user", "agentrunner.service");
+const getSystemdServicePath = (): string => join(homedir(), '.config', 'systemd', 'user', 'agentrunner.service');
 
-const getWindowsBatPath = (): string =>
-  join(homedir(), ".agentteams", "agentrunner-start.bat");
+const getWindowsBatPath = (): string => join(homedir(), '.agentteams', 'agentrunner-start.bat');
 
-const getWindowsVbsPath = (): string =>
-  join(homedir(), ".agentteams", "agentrunner-start.vbs");
+const getWindowsVbsPath = (): string => join(homedir(), '.agentteams', 'agentrunner-start.vbs');
 
-const getWindowsRestartVbsPath = (): string =>
-  join(homedir(), ".agentteams", "agentrunner-restart.vbs");
+const getWindowsRestartVbsPath = (): string => join(homedir(), '.agentteams', 'agentrunner-restart.vbs');
 
 const getWindowsStartupVbsPath = (): string =>
   join(
     homedir(),
-    "AppData",
-    "Roaming",
-    "Microsoft",
-    "Windows",
-    "Start Menu",
-    "Programs",
-    "Startup",
-    "agentrunner-start.vbs"
+    'AppData',
+    'Roaming',
+    'Microsoft',
+    'Windows',
+    'Start Menu',
+    'Programs',
+    'Startup',
+    'agentrunner-start.vbs',
   );
 
 // --- plist (macOS) ---
 
 export const buildPlistContent = (config: AutostartConfig): string => {
-  const nodePath = resolveExecutablePath("node");
-  const daemonPath = resolveExecutablePath("agentrunner");
+  const nodePath = resolveExecutablePath('node');
+  const daemonPath = resolveExecutablePath('agentrunner');
 
-  const currentPath = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
+  const currentPath = process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin';
   const envEntries = [
     `    <key>PATH</key>\n    <string>${currentPath}</string>`,
     `    <key>AGENTTEAMS_DAEMON_TOKEN</key>\n    <string>${config.token}</string>`,
     `    <key>AGENTTEAMS_API_URL</key>\n    <string>${config.apiUrl}</string>`,
     `    <key>CODEX_SANDBOX_LEVEL</key>\n    <string>off</string>`,
-  ].join("\n");
+  ].join('\n');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -96,7 +91,7 @@ ${envEntries}
 // --- systemd (Linux) ---
 
 export const buildSystemdContent = (config: AutostartConfig): string => {
-  const daemonPath = resolveExecutablePath("agentrunner");
+  const daemonPath = resolveExecutablePath('agentrunner');
 
   return `[Unit]
 Description=AgentRunner
@@ -106,7 +101,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=${daemonPath} start
-Environment="PATH=${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}"
+Environment="PATH=${process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin'}"
 Environment="AGENTTEAMS_DAEMON_TOKEN=${config.token}"
 Environment="AGENTTEAMS_API_URL=${config.apiUrl}"
 Environment="CODEX_SANDBOX_LEVEL=off"
@@ -120,23 +115,23 @@ SyslogIdentifier=agentrunner
 WantedBy=default.target`;
 };
 
-const escapeForVbsString = (value: string): string => value.replaceAll("\"", "\"\"");
+const escapeForVbsString = (value: string): string => value.replaceAll('"', '""');
 
 // --- Windows hidden launcher ---
 
 export const buildWindowsVbsContent = (
   config: AutostartConfig,
-  daemonPath: string = resolveExecutablePath("agentrunner")
+  daemonPath: string = resolveExecutablePath('agentrunner'),
 ): string => {
   return [
-    "Set shell = CreateObject(\"WScript.Shell\")",
-    "Set env = shell.Environment(\"PROCESS\")",
-    `env("PATH") = "${escapeForVbsString(process.env.PATH ?? "")}"`,
+    'Set shell = CreateObject("WScript.Shell")',
+    'Set env = shell.Environment("PROCESS")',
+    `env("PATH") = "${escapeForVbsString(process.env.PATH ?? '')}"`,
     `env("AGENTTEAMS_DAEMON_TOKEN") = "${escapeForVbsString(config.token)}"`,
     `env("AGENTTEAMS_API_URL") = "${escapeForVbsString(config.apiUrl)}"`,
     `env("CODEX_SANDBOX_LEVEL") = "off"`,
-    `shell.Run """${escapeForVbsString(daemonPath)}"" start", 0, False`
-  ].join("\r\n");
+    `shell.Run """${escapeForVbsString(daemonPath)}"" start", 0, False`,
+  ].join('\r\n');
 };
 
 // --- Public API ---
@@ -164,36 +159,36 @@ const getAutostartConfigFromEnv = (): AutostartConfig | null => {
 export const registerAutostart = async (config: AutostartConfig): Promise<AutostartResult> => {
   const os = platform();
 
-  if (os === "darwin") {
+  if (os === 'darwin') {
     return registerLaunchd(config);
   }
 
-  if (os === "linux") {
+  if (os === 'linux') {
     return registerSystemd(config);
   }
 
-  if (os === "win32") {
+  if (os === 'win32') {
     return registerWindowsTask(config);
   }
 
   logger.warn(`Autostart is not supported on '${os}'. Skipping service registration.`);
-  return { registered: false, servicePath: "", platform: os };
+  return { registered: false, servicePath: '', platform: os };
 };
 
 export const unregisterAutostart = async (): Promise<void> => {
   const os = platform();
 
-  if (os === "darwin") {
+  if (os === 'darwin') {
     await unregisterLaunchd();
     return;
   }
 
-  if (os === "linux") {
+  if (os === 'linux') {
     await unregisterSystemd();
     return;
   }
 
-  if (os === "win32") {
+  if (os === 'win32') {
     await unregisterWindowsTask();
     return;
   }
@@ -205,17 +200,17 @@ export const restartAutostartService = async (): Promise<void> => {
   const os = platform();
   const config = getAutostartConfigFromEnv();
 
-  if (os === "darwin") {
+  if (os === 'darwin') {
     await restartLaunchd(config);
     return;
   }
 
-  if (os === "linux") {
+  if (os === 'linux') {
     await restartSystemd(config);
     return;
   }
 
-  if (os === "win32") {
+  if (os === 'win32') {
     await restartWindowsStartup(config);
     return;
   }
@@ -226,32 +221,32 @@ export const restartAutostartService = async (): Promise<void> => {
 export const getAutostartStatus = (): { registered: boolean; platform: string } => {
   const os = platform();
 
-  if (os === "darwin") {
+  if (os === 'darwin') {
     try {
       const output = execSync(`launchctl list ${SERVICE_LABEL} 2>/dev/null`, {
-        encoding: "utf8",
+        encoding: 'utf8',
       });
-      return { registered: output.includes(SERVICE_LABEL), platform: "launchd" };
+      return { registered: output.includes(SERVICE_LABEL), platform: 'launchd' };
     } catch {
-      return { registered: false, platform: "launchd" };
+      return { registered: false, platform: 'launchd' };
     }
   }
 
-  if (os === "linux") {
+  if (os === 'linux') {
     try {
-      const output = execSync("systemctl --user is-enabled agentrunner 2>/dev/null", {
-        encoding: "utf8",
+      const output = execSync('systemctl --user is-enabled agentrunner 2>/dev/null', {
+        encoding: 'utf8',
       });
-      return { registered: output.trim() === "enabled", platform: "systemd" };
+      return { registered: output.trim() === 'enabled', platform: 'systemd' };
     } catch {
-      return { registered: false, platform: "systemd" };
+      return { registered: false, platform: 'systemd' };
     }
   }
 
-  if (os === "win32") {
+  if (os === 'win32') {
     return {
       registered: existsSync(getWindowsStartupVbsPath()),
-      platform: "startup-folder",
+      platform: 'startup-folder',
     };
   }
 
@@ -271,14 +266,14 @@ const registerLaunchd = async (config: AutostartConfig): Promise<AutostartResult
   }
 
   const content = buildPlistContent(config);
-  await fs.mkdir(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
-  await fs.writeFile(plistPath, content, "utf8");
+  await fs.mkdir(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
+  await fs.writeFile(plistPath, content, 'utf8');
   chmodSync(plistPath, 0o600);
 
   execSync(`launchctl load "${plistPath}"`);
 
-  logger.info("Registered launchd service", { plistPath });
-  return { registered: true, servicePath: plistPath, platform: "launchd" };
+  logger.info('Registered launchd service', { plistPath });
+  return { registered: true, servicePath: plistPath, platform: 'launchd' };
 };
 
 const unregisterLaunchd = async (): Promise<void> => {
@@ -292,7 +287,7 @@ const unregisterLaunchd = async (): Promise<void> => {
 
   try {
     await fs.unlink(plistPath);
-    logger.info("Removed launchd plist", { plistPath });
+    logger.info('Removed launchd plist', { plistPath });
   } catch {
     // File may not exist.
   }
@@ -302,7 +297,7 @@ const restartLaunchd = async (config: AutostartConfig | null): Promise<void> => 
   const plistPath = getLaunchdPlistPath();
 
   if (!existsSync(plistPath)) {
-    throw new Error("launchd plist is not registered.");
+    throw new Error('launchd plist is not registered.');
   }
 
   try {
@@ -313,9 +308,9 @@ const restartLaunchd = async (config: AutostartConfig | null): Promise<void> => 
 
   if (config) {
     const content = buildPlistContent(config);
-    await fs.writeFile(plistPath, content, "utf8");
+    await fs.writeFile(plistPath, content, 'utf8');
     chmodSync(plistPath, 0o600);
-    logger.info("Regenerated launchd plist before restart", { plistPath });
+    logger.info('Regenerated launchd plist before restart', { plistPath });
   }
 
   execSync(`launchctl load "${plistPath}"`);
@@ -327,38 +322,38 @@ const registerSystemd = async (config: AutostartConfig): Promise<AutostartResult
   const servicePath = getSystemdServicePath();
 
   const content = buildSystemdContent(config);
-  await fs.mkdir(join(homedir(), ".config", "systemd", "user"), { recursive: true });
-  await fs.writeFile(servicePath, content, "utf8");
+  await fs.mkdir(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
+  await fs.writeFile(servicePath, content, 'utf8');
   chmodSync(servicePath, 0o600);
 
-  execSync("systemctl --user daemon-reload");
-  execSync("systemctl --user enable agentrunner");
-  execSync("systemctl --user start agentrunner");
+  execSync('systemctl --user daemon-reload');
+  execSync('systemctl --user enable agentrunner');
+  execSync('systemctl --user start agentrunner');
 
-  logger.info("Registered systemd user service", { servicePath });
-  return { registered: true, servicePath, platform: "systemd" };
+  logger.info('Registered systemd user service', { servicePath });
+  return { registered: true, servicePath, platform: 'systemd' };
 };
 
 const unregisterSystemd = async (): Promise<void> => {
   const servicePath = getSystemdServicePath();
 
   try {
-    execSync("systemctl --user stop agentrunner 2>/dev/null");
+    execSync('systemctl --user stop agentrunner 2>/dev/null');
   } catch {
     // Not running — that's fine.
   }
 
   try {
-    execSync("systemctl --user disable agentrunner 2>/dev/null");
+    execSync('systemctl --user disable agentrunner 2>/dev/null');
   } catch {
     // Not enabled — that's fine.
   }
 
-  execSync("systemctl --user daemon-reload");
+  execSync('systemctl --user daemon-reload');
 
   try {
     await fs.unlink(servicePath);
-    logger.info("Removed systemd service file", { servicePath });
+    logger.info('Removed systemd service file', { servicePath });
   } catch {
     // File may not exist.
   }
@@ -368,13 +363,13 @@ const restartSystemd = async (config: AutostartConfig | null): Promise<void> => 
   if (config) {
     const servicePath = getSystemdServicePath();
     const content = buildSystemdContent(config);
-    await fs.writeFile(servicePath, content, "utf8");
+    await fs.writeFile(servicePath, content, 'utf8');
     chmodSync(servicePath, 0o600);
-    execSync("systemctl --user daemon-reload");
-    logger.info("Regenerated systemd service before restart", { servicePath });
+    execSync('systemctl --user daemon-reload');
+    logger.info('Regenerated systemd service before restart', { servicePath });
   }
 
-  execSync("systemctl --user restart agentrunner");
+  execSync('systemctl --user restart agentrunner');
 };
 
 // --- Windows Task Scheduler ---
@@ -392,7 +387,7 @@ const registerWindowsTask = async (config: AutostartConfig): Promise<AutostartRe
   }
 
   const content = buildWindowsVbsContent(config);
-  await fs.writeFile(startupVbsPath, content, "utf8");
+  await fs.writeFile(startupVbsPath, content, 'utf8');
   chmodSync(startupVbsPath, 0o600);
 
   // Clean up legacy files.
@@ -408,11 +403,11 @@ const registerWindowsTask = async (config: AutostartConfig): Promise<AutostartRe
   try {
     execSync(`wscript.exe "${startupVbsPath}"`, { windowsHide: true });
   } catch {
-    logger.warn("Autostart registered but immediate start failed. It will start at next logon.");
+    logger.warn('Autostart registered but immediate start failed. It will start at next logon.');
   }
 
-  logger.info("Registered Windows Startup folder autostart", { startupVbsPath });
-  return { registered: true, servicePath: startupVbsPath, platform: "startup-folder" };
+  logger.info('Registered Windows Startup folder autostart', { startupVbsPath });
+  return { registered: true, servicePath: startupVbsPath, platform: 'startup-folder' };
 };
 
 const unregisterWindowsTask = async (): Promise<void> => {
@@ -431,7 +426,7 @@ const unregisterWindowsTask = async (): Promise<void> => {
   for (const filePath of [startupVbsPath, legacyVbsPath, legacyBatPath]) {
     try {
       await fs.unlink(filePath);
-      logger.info("Removed autostart file", { filePath });
+      logger.info('Removed autostart file', { filePath });
     } catch {
       // File may not exist.
     }
@@ -442,14 +437,14 @@ const restartWindowsStartup = async (config: AutostartConfig | null): Promise<vo
   const startupVbsPath = getWindowsStartupVbsPath();
 
   if (!existsSync(startupVbsPath)) {
-    throw new Error("Windows startup script is not registered.");
+    throw new Error('Windows startup script is not registered.');
   }
 
   if (config) {
     const content = buildWindowsVbsContent(config);
-    await fs.writeFile(startupVbsPath, content, "utf8");
+    await fs.writeFile(startupVbsPath, content, 'utf8');
     chmodSync(startupVbsPath, 0o600);
-    logger.info("Regenerated Windows startup script before restart", { startupVbsPath });
+    logger.info('Regenerated Windows startup script before restart', { startupVbsPath });
   }
 
   execSync(`wscript.exe "${startupVbsPath}"`, { windowsHide: true });
@@ -483,11 +478,11 @@ export const launchWindowsHiddenDaemon = (deps: LaunchWindowsHiddenDeps = {}): v
 
   const config = resolvedGetConfig();
   if (!config) {
-    throw new Error("Cannot launch Windows daemon hidden: AGENTTEAMS_DAEMON_TOKEN/AGENTTEAMS_API_URL are missing.");
+    throw new Error('Cannot launch Windows daemon hidden: AGENTTEAMS_DAEMON_TOKEN/AGENTTEAMS_API_URL are missing.');
   }
 
   const restartVbsPath = getWindowsRestartVbsPath();
   resolvedMkdir(dirname(restartVbsPath), { recursive: true });
-  resolvedWrite(restartVbsPath, buildWindowsVbsContent(config), "utf8");
+  resolvedWrite(restartVbsPath, buildWindowsVbsContent(config), 'utf8');
   resolvedExec(`wscript.exe "${restartVbsPath}"`, { windowsHide: true });
 };

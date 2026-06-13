@@ -17,6 +17,8 @@
     "dev": "tsx watch src/index.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "lint": "eslint 'src/**/*.ts'",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "start": "node dist/index.js",
     "init": "node dist/index.js init",
     "prepublishOnly": "npm run build"
@@ -47,6 +49,7 @@
     "@eslint/js": "^9.39.4",
     "@types/node": "^25.9.1",
     "eslint": "^9.39.4",
+    "prettier": "^3.8.4",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.61.0"

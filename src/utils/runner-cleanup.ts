@@ -1,6 +1,6 @@
-import { readdir, stat, unlink } from "node:fs/promises";
-import { join } from "node:path";
-import { logger } from "../logger.js";
+import { readdir, stat, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { logger } from '../logger.js';
 
 const LOG_TTL_MS = 6 * 60 * 60 * 1000;
 const HISTORY_TTL_MS = 3 * 24 * 60 * 60 * 1000;
@@ -9,13 +9,13 @@ type CleanupDeps = {
   readdir?: typeof readdir;
   stat?: typeof stat;
   unlink?: typeof unlink;
-  logger?: Pick<typeof logger, "info" | "warn">;
+  logger?: Pick<typeof logger, 'info' | 'warn'>;
 };
 
 const purgeExpiredFiles = async (
   directory: string,
   ttlMs: number,
-  deps: Required<Pick<CleanupDeps, "readdir" | "stat" | "unlink" | "logger">>
+  deps: Required<Pick<CleanupDeps, 'readdir' | 'stat' | 'unlink' | 'logger'>>,
 ): Promise<number> => {
   let deleted = 0;
   let entries: string[];
@@ -23,7 +23,7 @@ const purgeExpiredFiles = async (
   try {
     entries = await deps.readdir(directory);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return 0;
     }
     throw error;
@@ -40,12 +40,12 @@ const purgeExpiredFiles = async (
         deleted++;
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         continue;
       }
-      deps.logger.warn("Failed to delete expired file", {
+      deps.logger.warn('Failed to delete expired file', {
         filePath,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }
@@ -58,19 +58,19 @@ export const runCleanup = async (authPath: string, deps: CleanupDeps = {}): Prom
     readdir: deps.readdir ?? readdir,
     stat: deps.stat ?? stat,
     unlink: deps.unlink ?? unlink,
-    logger: deps.logger ?? logger
+    logger: deps.logger ?? logger,
   };
-  const logDir = join(authPath, ".agentteams", "runner", "log");
-  const historyDir = join(authPath, ".agentteams", "runner", "history");
+  const logDir = join(authPath, '.agentteams', 'runner', 'log');
+  const historyDir = join(authPath, '.agentteams', 'runner', 'history');
 
   const [logDeleted, historyDeleted] = await Promise.all([
     purgeExpiredFiles(logDir, LOG_TTL_MS, resolvedDeps),
-    purgeExpiredFiles(historyDir, HISTORY_TTL_MS, resolvedDeps)
+    purgeExpiredFiles(historyDir, HISTORY_TTL_MS, resolvedDeps),
   ]);
 
-  resolvedDeps.logger.info("Runner cleanup completed", {
+  resolvedDeps.logger.info('Runner cleanup completed', {
     authPath,
     logDeleted,
-    historyDeleted
+    historyDeleted,
   });
 };
