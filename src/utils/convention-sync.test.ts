@@ -4,14 +4,34 @@ import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { runConventionSync } from './convention-sync.js';
 
-const createFakeSpawn = (exitCode: number | null, error?: Error) => {
-  return (_cmd: string, _args: string[], _opts: object): ChildProcess => {
+type FakeSpawnCall = {
+  cmd: string;
+  args: string[];
+  opts: object;
+};
+
+type FakeSpawnResponse = {
+  exitCode: number | null;
+  stdout?: string;
+  stderr?: string;
+  error?: Error;
+};
+
+const createFakeSpawn = (responses: FakeSpawnResponse[], calls: FakeSpawnCall[] = []) => {
+  return (cmd: string, args: string[], opts: object): ChildProcess => {
+    calls.push({ cmd, args, opts });
+    const response = responses.shift() ?? { exitCode: 0 };
     const child = new EventEmitter() as ChildProcess;
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    Object.assign(child, { stdout, stderr });
     process.nextTick(() => {
-      if (error) {
-        child.emit('error', error);
+      if (response.error) {
+        child.emit('error', response.error);
       } else {
-        child.emit('close', exitCode);
+        if (response.stdout) stdout.emit('data', response.stdout);
+        if (response.stderr) stderr.emit('data', response.stderr);
+        child.emit('close', response.exitCode);
       }
     });
     return child;
@@ -22,8 +42,9 @@ test.afterEach(() => {
   mock.restoreAll();
 });
 
-test('runConventionSync logs info on exit code 0', async () => {
+test('runConventionSync skips download when status reports no update', async () => {
   const logs: Array<{ level: string; message: string; meta?: object }> = [];
+  const calls: FakeSpawnCall[] = [];
   const fakeLogger = {
     info: (message: string, meta?: object) => {
       logs.push({ level: 'info', message, meta });
@@ -35,16 +56,80 @@ test('runConventionSync logs info on exit code 0', async () => {
 
   await runConventionSync('/fake/path', {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    spawn: createFakeSpawn(0) as any,
+    spawn: createFakeSpawn([{ exitCode: 0, stdout: JSON.stringify({ updateAvailable: false }) }], calls) as any,
     logger: fakeLogger,
   });
 
+  assert.deepEqual(
+    calls.map((call) => call.args),
+    [['convention', 'status']],
+  );
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]!.level, 'info');
+  assert.match(logs[0]!.message, /up to date/i);
+});
+
+test('runConventionSync downloads when status reports an update', async () => {
+  const logs: Array<{ level: string; message: string; meta?: object }> = [];
+  const calls: FakeSpawnCall[] = [];
+  const fakeLogger = {
+    info: (message: string, meta?: object) => {
+      logs.push({ level: 'info', message, meta });
+    },
+    warn: (message: string, meta?: object) => {
+      logs.push({ level: 'warn', message, meta });
+    },
+  };
+
+  await runConventionSync('/fake/path', {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    spawn: createFakeSpawn(
+      [{ exitCode: 0, stdout: JSON.stringify({ updateAvailable: true }) }, { exitCode: 0 }],
+      calls,
+    ) as any,
+    logger: fakeLogger,
+  });
+
+  assert.deepEqual(
+    calls.map((call) => call.args),
+    [
+      ['convention', 'status'],
+      ['convention', 'download'],
+    ],
+  );
   assert.equal(logs.length, 1);
   assert.equal(logs[0]!.level, 'info');
   assert.match(logs[0]!.message, /completed/i);
 });
 
-test('runConventionSync logs warn on non-zero exit code', async () => {
+test('runConventionSync logs warn when status exits non-zero', async () => {
+  const logs: Array<{ level: string; message: string; meta?: object }> = [];
+  const calls: FakeSpawnCall[] = [];
+  const fakeLogger = {
+    info: (message: string, meta?: object) => {
+      logs.push({ level: 'info', message, meta });
+    },
+    warn: (message: string, meta?: object) => {
+      logs.push({ level: 'warn', message, meta });
+    },
+  };
+
+  await runConventionSync('/fake/path', {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    spawn: createFakeSpawn([{ exitCode: 1, stderr: 'not configured' }], calls) as any,
+    logger: fakeLogger,
+  });
+
+  assert.deepEqual(
+    calls.map((call) => call.args),
+    [['convention', 'status']],
+  );
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]!.level, 'warn');
+  assert.match(logs[0]!.message, /status.*non-zero/i);
+});
+
+test('runConventionSync logs warn when status returns invalid JSON', async () => {
   const logs: Array<{ level: string; message: string; meta?: object }> = [];
   const fakeLogger = {
     info: (message: string, meta?: object) => {
@@ -57,7 +142,32 @@ test('runConventionSync logs warn on non-zero exit code', async () => {
 
   await runConventionSync('/fake/path', {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    spawn: createFakeSpawn(1) as any,
+    spawn: createFakeSpawn([{ exitCode: 0, stdout: 'not-json' }]) as any,
+    logger: fakeLogger,
+  });
+
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]!.level, 'warn');
+  assert.match(logs[0]!.message, /invalid JSON/i);
+});
+
+test('runConventionSync logs warn when download exits non-zero', async () => {
+  const logs: Array<{ level: string; message: string; meta?: object }> = [];
+  const fakeLogger = {
+    info: (message: string, meta?: object) => {
+      logs.push({ level: 'info', message, meta });
+    },
+    warn: (message: string, meta?: object) => {
+      logs.push({ level: 'warn', message, meta });
+    },
+  };
+
+  await runConventionSync('/fake/path', {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    spawn: createFakeSpawn([
+      { exitCode: 0, stdout: JSON.stringify({ updateAvailable: true }) },
+      { exitCode: 1, stderr: 'download failed' },
+    ]) as any,
     logger: fakeLogger,
   });
 
@@ -79,7 +189,7 @@ test('runConventionSync logs warn on spawn error', async () => {
 
   await runConventionSync('/fake/path', {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    spawn: createFakeSpawn(null, new Error('ENOENT')) as any,
+    spawn: createFakeSpawn([{ exitCode: null, error: new Error('ENOENT') }]) as any,
     logger: fakeLogger,
   });
 

@@ -100,6 +100,7 @@ test('startPolling handles a claimed trigger, registers auth paths, and runs sch
     runCleanup: async (authPath: string) => {
       cleanupCalls.push(authPath);
     },
+    runConventionSync: async () => undefined,
     setInterval: ((callback: () => void) => {
       intervalCallbacks.push(callback);
       return { ref() {}, unref() {} } as unknown as NodeJS.Timeout;
@@ -140,6 +141,69 @@ test('startPolling handles a claimed trigger, registers auth paths, and runs sch
     infos.some((entry) => entry.message === 'Daemon polling started'),
     true,
   );
+
+  const resolveKeepAlive =
+    keepAliveResolve ??
+    (() => {
+      throw new Error('keepAlive resolver was not registered');
+    });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
+test('startPolling runs convention sync per auth path every 6 hours', async () => {
+  const intervalCallbacks: Array<() => void> = [];
+  const conventionSyncCalls: string[] = [];
+  let nowValue = 6 * 60 * 60 * 1000 + 1;
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => ({
+      fetchPendingTrigger: async () => ({ data: null }),
+      claimTrigger: async () => ({ ok: true, conflict: false }),
+      fetchOrphanedCancelRequested: async () => [] as string[],
+      updateTriggerStatus: async () => undefined,
+      fetchPendingWorktreeRemovals: async () => [],
+      reportWorktreeStatus: async () => undefined,
+      notifyUpdate: async () => undefined,
+      ackRestartRequest: async () => undefined,
+    }),
+    runCleanup: async () => undefined,
+    runConventionSync: async (authPath: string) => {
+      conventionSyncCalls.push(authPath);
+    },
+    maybeAutoUpdate: async () => ({ cliUpdated: false, runnerUpdated: false }),
+    setInterval: ((callback: () => void) => {
+      intervalCallbacks.push(callback);
+      return { ref() {}, unref() {} } as unknown as NodeJS.Timeout;
+    }) as typeof setInterval,
+    clearInterval: (() => undefined) as typeof clearInterval,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    processExit: (() => {
+      throw new Error('should not exit');
+    }) as (code: number) => never,
+    now: () => nowValue,
+    loadAuthPaths: () => ['/auth/path'],
+    saveAuthPath: () => '/tmp/auth-paths.json',
+    keepAlive: () =>
+      new Promise<void>((resolve) => {
+        keepAliveResolve = resolve;
+      }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(conventionSyncCalls, ['/auth/path']);
+  assert.equal(intervalCallbacks.length, 1);
+
+  nowValue += 6 * 60 * 60 * 1000 - 1;
+  await intervalCallbacks[0]?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(conventionSyncCalls, ['/auth/path']);
+
+  nowValue += 1;
+  await intervalCallbacks[0]?.();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(conventionSyncCalls, ['/auth/path', '/auth/path']);
 
   const resolveKeepAlive =
     keepAliveResolve ??
