@@ -60,11 +60,13 @@ test('validateDaemonToken sends daemon header and returns payload data', async (
     calls[0]?.options?.headers,
     expectedOsType
       ? {
+          'X-AgentTeams-Client': 'daemon',
           'x-daemon-token': 'daemon-token',
           'x-runner-version': runnerVersion,
           'x-os-type': expectedOsType,
         }
       : {
+          'X-AgentTeams-Client': 'daemon',
           'x-daemon-token': 'daemon-token',
           'x-runner-version': runnerVersion,
         },
@@ -86,6 +88,7 @@ test('claimTrigger returns conflict=false/ok=true on success and conflict=true o
   const client = new DaemonApiClient('https://api.example', 'daemon-token');
   assert.deepEqual(await client.claimTrigger('t1'), { ok: true, conflict: false });
   assert.deepEqual(await client.claimTrigger('t2'), { ok: false, conflict: true });
+  assert.equal((calls[0]?.headers as Record<string, string>)['X-AgentTeams-Client'], 'daemon');
   assert.equal((calls[0]?.headers as Record<string, string>)['x-runner-version'], runnerVersion);
 });
 
