@@ -4,6 +4,22 @@ import { DaemonApiClient } from '../api-client.js';
 import { createTriggerHandler } from '../handlers/trigger-handler.js';
 import { writePidFile, removePidFile } from '../pid.js';
 import { logger } from '../logger.js';
+import { refreshWindowsPathFromRegistry } from '../windows-path.js';
+
+/**
+ * The Windows autostart launcher (Startup-folder VBS) injects a PATH snapshot
+ * frozen at registration time, so runner CLIs installed afterwards become
+ * unresolvable. Re-read the live registry PATH at startup to stay agnostic to
+ * how each CLI was installed (npm, scoop, choco, native installers, ...).
+ */
+const refreshExecutablePath = (): void => {
+  const addedEntries = refreshWindowsPathFromRegistry();
+  if (addedEntries.length > 0) {
+    logger.info('Merged live registry PATH entries missing from the autostart snapshot', {
+      addedEntries,
+    });
+  }
+};
 
 /**
  * Default CODEX_SANDBOX_LEVEL to "off" when not explicitly set.
@@ -19,6 +35,7 @@ const ensureCodexSandboxDefault = (): void => {
 };
 
 export const runStartCommand = async (): Promise<void> => {
+  refreshExecutablePath();
   ensureCodexSandboxDefault();
   await writePidFile();
 
