@@ -203,8 +203,11 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     historyPath: string | null,
     reporter: ReporterLike | null,
     fallback?: { outputText: string; errorMessage?: string },
-  ): Promise<void> => {
+  ): Promise<{ uploadedHistoryFile: boolean }> => {
     const historyMarkdown = await loadHistoryMarkdown(historyPath);
+    // 러너가 직접 쓴 온전한 히스토리 "파일"이 서버까지 업로드됐는지. stdout 폴백은 작업 완료를
+    // 보장하지 못하므로 제외한다. idle 타임아웃을 NEEDS_REVIEW로 강등할지 판단하는 근거가 된다.
+    const hasHistoryFile = historyMarkdown !== null;
     let historyForUpload: string | null = null;
 
     if (historyMarkdown !== null) {
@@ -229,11 +232,12 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     }
 
     if (historyForUpload === null) {
-      return;
+      return { uploadedHistoryFile: false };
     }
 
     try {
       await client.updateTriggerHistory(triggerId, historyForUpload);
+      return { uploadedHistoryFile: hasHistoryFile };
     } catch (error) {
       // 히스토리 업로드 실패는 러너 성공을 뒤집지 않는다. 로컬 파일을 보존하고 경고만 남긴다.
       logger.warn('Failed to upload runner history; local history file preserved', {
@@ -242,6 +246,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         error: error instanceof Error ? error.message : String(error),
       });
       reporter?.append('WARN', 'Failed to upload runner history to the server. The local history file is preserved.');
+      return { uploadedHistoryFile: false };
     }
   };
 
@@ -447,10 +452,22 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         exitCode: runResult.exitCode,
       });
       logReporter.append('INFO', `Runner finished with exitCode=${runResult.exitCode}.`);
-      await reportHistory(trigger.id, currentHistoryPath, logReporter, {
+      const { uploadedHistoryFile } = await reportHistory(trigger.id, currentHistoryPath, logReporter, {
         outputText: runResult.outputText ?? '',
         errorMessage: runResult.exitCode === 0 ? undefined : runResult.errorMessage,
       });
+
+      // idle 워치독에 의해 종료됐지만 러너가 온전한 히스토리 파일을 남겼다면, 작업은 사실상
+      // 완료됐는데 종료 시퀀스에서 행이 걸린 경우다(예: Antigravity print 모드 finalize 행).
+      // hard-FAIL 대신 NEEDS_REVIEW로 강등해 사람이 산출물을 보고 승인/거부하도록 한다.
+      const idleTimedOutWithHistory = runResult.idleTimedOut === true && uploadedHistoryFile && !runResult.cancelled;
+      if (idleTimedOutWithHistory) {
+        // 사유는 빨간 Error 탭이 아니라 INFO 로그로 남긴다(소프트 상태라 에러 스타일은 부적절).
+        logReporter.append(
+          'INFO',
+          'Runner idle-timed-out during shutdown but a complete history file was produced; flagged for human review (approve to mark DONE, reject to mark FAILED).',
+        );
+      }
 
       await logReporter.stop();
 
@@ -459,7 +476,13 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         // Safeguard failure should never block trigger completion
       });
 
-      const status = runResult.cancelled ? 'CANCELLED' : runResult.exitCode === 0 ? 'DONE' : 'FAILED';
+      const status = runResult.cancelled
+        ? 'CANCELLED'
+        : runResult.exitCode === 0
+          ? 'DONE'
+          : idleTimedOutWithHistory
+            ? 'NEEDS_REVIEW'
+            : 'FAILED';
       const errorMessage =
         status === 'FAILED'
           ? runResult.errorMessage || runResult.lastOutput || `Runner exited with code ${runResult.exitCode}`

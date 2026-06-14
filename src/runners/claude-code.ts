@@ -336,6 +336,7 @@ export class ClaudeCodeRunner implements Runner {
               : trimmedOutputText || undefined;
           resolve({
             exitCode: 1,
+            idleTimedOut,
             lastOutput,
             outputText: resolvedOutputText,
             errorMessage: idleTimedOut
