@@ -49,6 +49,7 @@ export class DaemonApiClient {
 
   private daemonHeaders(options?: { includeOsType?: boolean }): Record<string, string> {
     const headers: Record<string, string> = {
+      'X-AgentTeams-Client': 'daemon',
       'x-daemon-token': this.daemonToken,
       'x-runner-version': runnerVersion,
     };
