@@ -351,6 +351,7 @@ export class CodexRunner implements Runner {
         if (timedOut) {
           resolve({
             exitCode: 1,
+            idleTimedOut,
             lastOutput,
             outputText: outputText.trim() || undefined,
             errorMessage: idleTimedOut

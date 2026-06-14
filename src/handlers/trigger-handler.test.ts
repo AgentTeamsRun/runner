@@ -544,6 +544,119 @@ test('createTriggerHandler reports runner failures and falls back to last output
   assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'last output']);
 });
 
+test('createTriggerHandler downgrades an idle-timeout to NEEDS_REVIEW when a history file was uploaded', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      createRunnerFactory: () => () => ({
+        run: async () =>
+          ({
+            exitCode: 1,
+            idleTimedOut: true,
+            lastOutput: 'idle',
+            errorMessage: 'Runner idle timed out after 10m of no output',
+          }) satisfies RunResult,
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '### Summary\n- done\n\n### Questions for User\nNone',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  // 히스토리 파일이 업로드됐으므로 hard-FAIL이 아니라 NEEDS_REVIEW로 강등되고, 빨간 Error 배너가
+  // 뜨지 않도록 errorMessage는 비운다.
+  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'NEEDS_REVIEW', undefined]);
+});
+
+test('createTriggerHandler keeps an idle-timeout as FAILED when no history file was produced', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      createRunnerFactory: () => () => ({
+        // idle 타임아웃이지만 히스토리 파일도, stdout 폴백도 없으면 작업 완료를 보장할 수 없어 FAILED 유지.
+        run: async () =>
+          ({
+            exitCode: 1,
+            idleTimedOut: true,
+            lastOutput: 'idle',
+            errorMessage: 'Runner idle timed out after 10m of no output',
+          }) satisfies RunResult,
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'Runner idle timed out after 10m of no output']);
+});
+
 test('createTriggerHandler stores stdout as fallback history when the runner omits the history file', async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
   const writtenFiles: Array<{ path: string; content: string }> = [];
