@@ -47,6 +47,105 @@ const toOutputPreview = (chunk: unknown): string => {
   return `${text.slice(0, OUTPUT_PREVIEW_MAX)}...`;
 };
 
+// OpenCode `run`은 의미 있는 에이전트 출력을 stderr로 흘려보낸다(stdout은 비는 경우가 많다).
+// 그래서 stdout만 누적하면 러너가 히스토리 파일을 안 썼을 때 stdout 폴백이 빈 값이 되어
+// "DONE인데 히스토리가 빈" 레코드가 만들어진다(trigger-handler.reportHistory). 폴백이 작동하도록
+// stderr도 outputText에 누적하되, Windows PowerShell이 진행 스트림을 stderr로 직렬화한
+// CLIXML 노이즈(`#< CLIXML`, `<Objs ...>`)는 히스토리를 오염시키므로 제외한다.
+export const isPowerShellClixmlNoise = (chunk: string): boolean => {
+  const text = chunk.trimStart();
+  return text.startsWith('#< CLIXML') || text.startsWith('<Objs ');
+};
+
+export type PowerShellClixmlFilterState = {
+  isDiscardingClixml: boolean;
+};
+
+const CLIXML_END_MARKER = '</Objs>';
+
+const findClixmlMarkerIndex = (chunk: string): number => {
+  const markers = ['#< CLIXML', '<Objs '];
+  let markerIndex = -1;
+
+  for (const marker of markers) {
+    let searchIndex = 0;
+    while (searchIndex < chunk.length) {
+      const candidateIndex = chunk.indexOf(marker, searchIndex);
+      if (candidateIndex === -1) {
+        break;
+      }
+
+      const lineStartIndex =
+        Math.max(chunk.lastIndexOf('\n', candidateIndex - 1), chunk.lastIndexOf('\r', candidateIndex - 1)) + 1;
+      const linePrefix = chunk.slice(lineStartIndex, candidateIndex);
+      if (linePrefix.trim().length > 0) {
+        searchIndex = candidateIndex + marker.length;
+        continue;
+      }
+
+      markerIndex = markerIndex === -1 ? candidateIndex : Math.min(markerIndex, candidateIndex);
+      break;
+    }
+  }
+
+  return markerIndex;
+};
+
+export const filterPowerShellClixmlNoise = (chunk: string, state: PowerShellClixmlFilterState): string => {
+  let remaining = chunk;
+  let output = '';
+
+  while (remaining.length > 0) {
+    if (state.isDiscardingClixml) {
+      const endIndex = remaining.indexOf(CLIXML_END_MARKER);
+      if (endIndex === -1) {
+        return output;
+      }
+
+      remaining = remaining.slice(endIndex + CLIXML_END_MARKER.length);
+      state.isDiscardingClixml = false;
+      continue;
+    }
+
+    const markerIndex = findClixmlMarkerIndex(remaining);
+    if (markerIndex === -1) {
+      output += remaining;
+      break;
+    }
+
+    output += remaining.slice(0, markerIndex);
+    remaining = remaining.slice(markerIndex);
+    state.isDiscardingClixml = true;
+  }
+
+  return output;
+};
+
+export const createOpenCodeOutputCapture = () => {
+  let outputText = '';
+  const clixmlState: PowerShellClixmlFilterState = { isDiscardingClixml: false };
+
+  const appendOutputText = (chunk: string) => {
+    if (outputText.length >= OUTPUT_CAPTURE_MAX || chunk.length === 0) {
+      return;
+    }
+
+    outputText += chunk.slice(0, OUTPUT_CAPTURE_MAX - outputText.length);
+  };
+
+  return {
+    appendStdout(chunk: string): void {
+      appendOutputText(chunk);
+    },
+    appendStderr(chunk: string): void {
+      appendOutputText(filterPowerShellClixmlNoise(chunk, clixmlState));
+    },
+    toResultOutputText(): string | undefined {
+      return outputText.trim() || undefined;
+    },
+  };
+};
+
 export class OpenCodeRunner implements Runner {
   constructor(private readonly runnerCmd: string = 'opencode') {}
 
@@ -128,20 +227,12 @@ export class OpenCodeRunner implements Runner {
     child.stderr?.pipe(logStream);
     let lastOutput = '';
     let lastErrorOutput = '';
-    let outputText = '';
-
-    const appendOutputText = (chunk: string) => {
-      if (outputText.length >= OUTPUT_CAPTURE_MAX) {
-        return;
-      }
-
-      outputText += chunk.slice(0, OUTPUT_CAPTURE_MAX - outputText.length);
-    };
+    const outputCapture = createOpenCodeOutputCapture();
 
     const idleTimer = { reset: (): void => {} };
     child.stdout?.on('data', (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
-      appendOutputText(rawOutput);
+      outputCapture.appendStdout(rawOutput);
       const output = toOutputPreview(rawOutput);
       if (output.length > 0) {
         lastOutput = output;
@@ -155,7 +246,9 @@ export class OpenCodeRunner implements Runner {
       }
     });
     child.stderr?.on('data', (chunk) => {
-      const output = toOutputPreview(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      outputCapture.appendStderr(rawOutput);
+      const output = toOutputPreview(rawOutput);
       if (output.length > 0) {
         lastOutput = output;
         lastErrorOutput = output;
@@ -247,7 +340,7 @@ export class OpenCodeRunner implements Runner {
         resolve({
           exitCode: 1,
           lastOutput,
-          outputText: outputText.trim() || undefined,
+          outputText: outputCapture.toResultOutputText(),
           errorMessage: error.message,
         });
       });
@@ -270,7 +363,7 @@ export class OpenCodeRunner implements Runner {
             exitCode: 1,
             idleTimedOut,
             lastOutput,
-            outputText: outputText.trim() || undefined,
+            outputText: outputCapture.toResultOutputText(),
             errorMessage: idleTimedOut
               ? `Runner idle timed out after ${Math.round(opts.idleTimeoutMs / 60_000)}m of no output`
               : `Runner fail-safe timed out after ${Math.round(opts.timeoutMs / 3_600_000)}h`,
@@ -283,7 +376,7 @@ export class OpenCodeRunner implements Runner {
             exitCode: 1,
             cancelled: true,
             lastOutput,
-            outputText: outputText.trim() || undefined,
+            outputText: outputCapture.toResultOutputText(),
             errorMessage: 'Runner cancelled by user',
           });
           return;
@@ -292,7 +385,7 @@ export class OpenCodeRunner implements Runner {
         resolve({
           exitCode: code ?? 1,
           lastOutput,
-          outputText: outputText.trim() || undefined,
+          outputText: outputCapture.toResultOutputText(),
           errorMessage:
             code === 0 ? undefined : lastErrorOutput || lastOutput || `Runner exited with code ${code ?? 1}`,
         });

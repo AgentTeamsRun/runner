@@ -59,8 +59,16 @@ export type PendingMeta = {
   restartRequested?: boolean;
 };
 
-export type PendingResponse = {
-  data: DaemonTrigger | null;
+// 한 polling cycle에 필요한 세 read 결과(고아 취소 대상 / 워크트리 제거 대상 / pending)를
+// 한 번에 담는 통합 snapshot. meta는 기존 /pending 응답과 동일하다.
+export type PollState = {
+  orphanedCancelRequestedTriggerIds: string[];
+  pendingWorktreeRemovals: DaemonTrigger[];
+  pendingTrigger: DaemonTrigger | null;
+};
+
+export type PollStateResponse = {
+  data: PollState;
   meta?: PendingMeta;
 };
 

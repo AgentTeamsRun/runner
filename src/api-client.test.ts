@@ -76,6 +76,46 @@ test('validateDaemonToken sends daemon header and returns payload data', async (
   assert.deepEqual(result.supportedEngines, ['CODEX']);
 });
 
+test('fetchPollState GETs the unified poll-state endpoint and returns the payload', async () => {
+  const calls: Array<{ url: string; options?: RequestInit }> = [];
+  globalThis.fetch = (async (url, options) => {
+    calls.push({ url: String(url), options });
+    return new Response(
+      JSON.stringify({
+        data: {
+          orphanedCancelRequestedTriggerIds: ['o1'],
+          pendingWorktreeRemovals: [{ id: 'w1' }],
+          pendingTrigger: { id: 'p1' },
+        },
+        meta: { cliLatestVersion: '1.2.3', runnerLatestVersion: '4.5.6', restartRequested: true },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
+  }) as typeof fetch;
+
+  const client = new DaemonApiClient('https://api.example', 'daemon-token');
+  const result = await client.fetchPollState();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.url, 'https://api.example/api/daemon-triggers/poll-state');
+  assert.equal((calls[0]?.options as RequestInit).method, 'GET');
+  assert.equal((calls[0]?.options?.headers as Record<string, string>)['x-daemon-token'], 'daemon-token');
+  assert.deepEqual(result.data.orphanedCancelRequestedTriggerIds, ['o1']);
+  assert.equal(result.data.pendingWorktreeRemovals[0]?.id, 'w1');
+  assert.equal(result.data.pendingTrigger?.id, 'p1');
+  assert.equal(result.meta?.restartRequested, true);
+});
+
+test('fetchPollState throws an endpoint-specific error on non-2xx responses', async () => {
+  globalThis.fetch = (async () => new Response(null, { status: 503 })) as typeof fetch;
+
+  const client = new DaemonApiClient('https://api.example', 'daemon-token');
+  await assert.rejects(() => client.fetchPollState(), /Failed to fetch poll state \(503\)/);
+});
+
 test('claimTrigger returns conflict=false/ok=true on success and conflict=true on 409', async () => {
   const calls: Array<RequestInit | undefined> = [];
   const responses = [new Response(null, { status: 200 }), new Response(null, { status: 409 })];
@@ -157,16 +197,28 @@ test('requestWithRetry retries network failures with exponential backoff and war
       throw new Error(`network-${attempt}`);
     }
 
-    return new Response(JSON.stringify({ data: null }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({
+        data: {
+          orphanedCancelRequestedTriggerIds: [],
+          pendingWorktreeRemovals: [],
+          pendingTrigger: null,
+        },
+        meta: { cliLatestVersion: null, runnerLatestVersion: null },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
   }) as typeof fetch;
 
   const client = new DaemonApiClient('https://api.example', 'daemon-token');
-  const result = await client.fetchPendingTrigger();
+  const result = await client.fetchPollState();
 
-  assert.deepEqual(result, { data: null });
+  assert.deepEqual(result.data.orphanedCancelRequestedTriggerIds, []);
+  assert.deepEqual(result.data.pendingWorktreeRemovals, []);
+  assert.equal(result.data.pendingTrigger, null);
   assert.deepEqual(delays, [1000, 2000]);
   assert.equal(warnings.length, 2);
   assert.match(warnings[0]?.message ?? '', /Retry 1\/3/);
