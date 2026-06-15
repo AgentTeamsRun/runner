@@ -226,7 +226,7 @@ test('startPolling processes orphaned cancel, worktree removal, and pending clai
       createClient: () => client,
       runCleanup: async () => undefined,
       runConventionSync: async () => undefined,
-      // 워크트리 경로가 매칭되지 않도록 존재하지 않는 authPath를 사용 → reportWorktreeStatus FAILED 경로.
+      // 워크트리 경로가 매칭되지 않도록 존재하지 않는 authPath를 사용 → 멱등 제거 완료 경로.
       loadAuthPaths: () => ['/nonexistent/auth/path'],
       saveAuthPath: () => '/tmp/auth-paths.json',
       setInterval: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as typeof setInterval,
@@ -248,7 +248,7 @@ test('startPolling processes orphaned cancel, worktree removal, and pending clai
   // 한 cycle에서 read는 통합 snapshot 1회로 줄어든다.
   assert.equal(pollStateCalls, 1, 'a single polling cycle should fetch poll-state exactly once');
   // 처리 순서는 기존과 동일: 고아 취소 → 워크트리 제거 → pending claim.
-  assert.deepEqual(order, ['cancel:orphan-1', 'worktree:trigger-worktree:FAILED', 'claim:trigger-1']);
+  assert.deepEqual(order, ['cancel:orphan-1', 'worktree:trigger-worktree:REMOVED', 'claim:trigger-1']);
   assert.deepEqual(handledTriggers, ['trigger-1']);
 
   const resolveKeepAlive =
@@ -540,7 +540,7 @@ test('startPolling restores persisted auth paths for worktree removals after res
   fsModule.rmSync(tempRoot, { recursive: true, force: true });
 });
 
-test('startPolling reports FAILED when no persisted auth path matches the worktree', async () => {
+test('startPolling reports REMOVED when no persisted auth path matches the worktree', async () => {
   const reportedStatuses: Array<{ triggerId: string; status: string; worktreeError?: string }> = [];
   const worktreeRemovalTrigger: DaemonTrigger = {
     ...trigger,
@@ -583,8 +583,8 @@ test('startPolling reports FAILED when no persisted auth path matches the worktr
   assert.deepEqual(reportedStatuses, [
     {
       triggerId: 'trigger-remove-missing',
-      status: 'FAILED',
-      worktreeError: 'Failed to remove RunnerBox: worktree path was not found for worktree-missing',
+      status: 'REMOVED',
+      worktreeError: undefined,
     },
   ]);
 

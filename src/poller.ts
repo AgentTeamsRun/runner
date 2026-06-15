@@ -181,12 +181,11 @@ export const startPolling = async (
         if (removeSucceeded) {
           await client.reportWorktreeStatus(trigger.id, 'REMOVED');
         } else if (!matchedAuthPath) {
-          const worktreeError = `Failed to remove RunnerBox: worktree path was not found for ${effectiveWorktreeId}`;
           logger.warn('Could not find authPath for worktree removal', {
             triggerId: trigger.id,
             worktreeId: effectiveWorktreeId,
           });
-          await client.reportWorktreeStatus(trigger.id, 'FAILED', worktreeError);
+          await client.reportWorktreeStatus(trigger.id, 'REMOVED');
         }
       } catch (error) {
         logger.warn('Failed to remove worktree for trigger', {
