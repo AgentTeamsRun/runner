@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isPowerShellClixmlNoise } from './opencode.js';
+import { createOpenCodeOutputCapture, filterPowerShellClixmlNoise, isPowerShellClixmlNoise } from './opencode.js';
 
 test('isPowerShellClixmlNoise flags PowerShell CLIXML preamble', () => {
   assert.equal(isPowerShellClixmlNoise('#< CLIXML'), true);
@@ -27,4 +27,33 @@ test('isPowerShellClixmlNoise keeps meaningful agent output', () => {
   assert.equal(isPowerShellClixmlNoise('✗ Read .env failed'), false);
   assert.equal(isPowerShellClixmlNoise('Here is how to set up the dev environment...'), false);
   assert.equal(isPowerShellClixmlNoise(''), false);
+});
+
+test('filterPowerShellClixmlNoise drops split CLIXML documents across chunks', () => {
+  const state = { isDiscardingClixml: false };
+
+  assert.equal(filterPowerShellClixmlNoise('#< CLIXML\r\n<Objs Version="1.1.0.1"', state), '');
+  assert.equal(
+    filterPowerShellClixmlNoise('><Obj S="progress" /></Objs>\nMeaningful stderr', state),
+    '\nMeaningful stderr',
+  );
+});
+
+test('createOpenCodeOutputCapture keeps stdout and meaningful stderr fallback output', () => {
+  const capture = createOpenCodeOutputCapture();
+
+  capture.appendStdout('stdout text\n');
+  capture.appendStderr('stderr agent text\n');
+
+  assert.equal(capture.toResultOutputText(), 'stdout text\nstderr agent text');
+});
+
+test('createOpenCodeOutputCapture excludes CLIXML stderr from fallback output', () => {
+  const capture = createOpenCodeOutputCapture();
+
+  capture.appendStderr('#< CLIXML\r\n<Objs Version="1.1.0.1"');
+  capture.appendStderr('><Obj S="progress" /></Objs>');
+  capture.appendStderr('\nactual agent output');
+
+  assert.equal(capture.toResultOutputText(), 'actual agent output');
 });
