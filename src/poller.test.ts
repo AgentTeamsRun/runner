@@ -5,7 +5,7 @@ import path from 'node:path';
 import test, { mock } from 'node:test';
 import { logger } from './logger.js';
 import { startPolling } from './poller.js';
-import type { DaemonTrigger, RuntimeConfig } from './types.js';
+import type { DaemonTrigger, PollStateResponse, RuntimeConfig } from './types.js';
 
 const config: RuntimeConfig = {
   daemonToken: 'daemon-token',
@@ -47,6 +47,39 @@ test.afterEach(() => {
   mock.restoreAll();
 });
 
+// 통합 snapshot 응답을 만든다. 개별 항목은 override로 지정한다.
+const pollState = (
+  overrides: Partial<PollStateResponse['data']> = {},
+  meta?: PollStateResponse['meta'],
+): PollStateResponse => ({
+  data: {
+    orphanedCancelRequestedTriggerIds: [],
+    pendingWorktreeRemovals: [],
+    pendingTrigger: null,
+    ...overrides,
+  },
+  ...(meta ? { meta } : {}),
+});
+
+type PollClientOverrides = {
+  fetchPollState?: () => Promise<PollStateResponse>;
+  claimTrigger?: (triggerId: string) => Promise<{ ok: boolean; conflict: boolean }>;
+  updateTriggerStatus?: (triggerId: string, status: string, errorMessage?: string) => Promise<void>;
+  reportWorktreeStatus?: (triggerId: string, status: string, worktreeError?: string) => Promise<void>;
+  notifyUpdate?: () => Promise<void>;
+  ackRestartRequest?: () => Promise<void>;
+};
+
+// 기본은 idle(아무 작업 없음) 러너 클라이언트. 필요한 동작만 override한다.
+const makeClient = (overrides: PollClientOverrides = {}) => ({
+  fetchPollState: overrides.fetchPollState ?? (async () => pollState()),
+  claimTrigger: overrides.claimTrigger ?? (async () => ({ ok: true, conflict: false })),
+  updateTriggerStatus: overrides.updateTriggerStatus ?? (async () => undefined),
+  reportWorktreeStatus: overrides.reportWorktreeStatus ?? (async () => undefined),
+  notifyUpdate: overrides.notifyUpdate ?? (async () => undefined),
+  ackRestartRequest: overrides.ackRestartRequest ?? (async () => undefined),
+});
+
 type BlockerEvents = { events: string[]; blocker: { acquire: (label?: string) => () => void } };
 
 const createRecordingBlocker = (): BlockerEvents => {
@@ -76,16 +109,9 @@ test('startPolling handles a claimed trigger, registers auth paths, and runs sch
   let nowValue = 0;
 
   const pending = [trigger, null];
-  const client = {
-    fetchPendingTrigger: async () => ({ data: pending.shift() ?? null }),
-    claimTrigger: async () => ({ ok: true, conflict: false }),
-    fetchOrphanedCancelRequested: async () => [] as string[],
-    updateTriggerStatus: async () => undefined,
-    fetchPendingWorktreeRemovals: async () => [],
-    reportWorktreeStatus: async () => undefined,
-    notifyUpdate: async () => undefined,
-    ackRestartRequest: async () => undefined,
-  };
+  const client = makeClient({
+    fetchPollState: async () => pollState({ pendingTrigger: pending.shift() ?? null }),
+  });
 
   const createHandler = (onAuthPathDiscovered: (authPath: string) => void) => {
     onAuthPathDiscovered('/auth/path');
@@ -151,6 +177,89 @@ test('startPolling handles a claimed trigger, registers auth paths, and runs sch
   await pollingPromise;
 });
 
+test('startPolling processes orphaned cancel, worktree removal, and pending claim from a single poll-state fetch', async () => {
+  const order: string[] = [];
+  let pollStateCalls = 0;
+  const handledTriggers: string[] = [];
+
+  const worktreeRemovalTrigger: DaemonTrigger = {
+    ...trigger,
+    id: 'trigger-worktree',
+    useWorktree: true,
+    worktreeId: 'worktree-unmatched',
+    worktreeStatus: 'REMOVE_REQUESTED',
+  };
+
+  const pending = [
+    pollState({
+      orphanedCancelRequestedTriggerIds: ['orphan-1'],
+      pendingWorktreeRemovals: [worktreeRemovalTrigger],
+      pendingTrigger: trigger,
+    }),
+    pollState(),
+  ];
+
+  const client = makeClient({
+    fetchPollState: async () => {
+      pollStateCalls += 1;
+      return pending.shift() ?? pollState();
+    },
+    updateTriggerStatus: async (triggerId: string) => {
+      order.push(`cancel:${triggerId}`);
+    },
+    reportWorktreeStatus: async (triggerId: string, status: string) => {
+      order.push(`worktree:${triggerId}:${status}`);
+    },
+    claimTrigger: async (triggerId: string) => {
+      order.push(`claim:${triggerId}`);
+      return { ok: true, conflict: false };
+    },
+  });
+
+  let keepAliveResolve: (() => void) | null = null;
+  const pollingPromise = startPolling(
+    config,
+    () => async (value: DaemonTrigger) => {
+      handledTriggers.push(value.id);
+    },
+    {
+      createClient: () => client,
+      runCleanup: async () => undefined,
+      runConventionSync: async () => undefined,
+      // 워크트리 경로가 매칭되지 않도록 존재하지 않는 authPath를 사용 → reportWorktreeStatus FAILED 경로.
+      loadAuthPaths: () => ['/nonexistent/auth/path'],
+      saveAuthPath: () => '/tmp/auth-paths.json',
+      setInterval: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as typeof setInterval,
+      clearInterval: (() => undefined) as typeof clearInterval,
+      processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+      processExit: (() => {
+        throw new Error('should not exit');
+      }) as (code: number) => never,
+      now: () => 0,
+      keepAlive: () =>
+        new Promise<void>((resolve) => {
+          keepAliveResolve = resolve;
+        }),
+    },
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // 한 cycle에서 read는 통합 snapshot 1회로 줄어든다.
+  assert.equal(pollStateCalls, 1, 'a single polling cycle should fetch poll-state exactly once');
+  // 처리 순서는 기존과 동일: 고아 취소 → 워크트리 제거 → pending claim.
+  assert.deepEqual(order, ['cancel:orphan-1', 'worktree:trigger-worktree:FAILED', 'claim:trigger-1']);
+  assert.deepEqual(handledTriggers, ['trigger-1']);
+
+  const resolveKeepAlive =
+    keepAliveResolve ??
+    (() => {
+      throw new Error('keepAlive resolver was not registered');
+    });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
 test('startPolling runs convention sync per auth path every 6 hours', async () => {
   const intervalCallbacks: Array<() => void> = [];
   const conventionSyncCalls: string[] = [];
@@ -158,16 +267,7 @@ test('startPolling runs convention sync per auth path every 6 hours', async () =
   let keepAliveResolve: (() => void) | null = null;
 
   const pollingPromise = startPolling(config, () => async () => undefined, {
-    createClient: () => ({
-      fetchPendingTrigger: async () => ({ data: null }),
-      claimTrigger: async () => ({ ok: true, conflict: false }),
-      fetchOrphanedCancelRequested: async () => [] as string[],
-      updateTriggerStatus: async () => undefined,
-      fetchPendingWorktreeRemovals: async () => [],
-      reportWorktreeStatus: async () => undefined,
-      notifyUpdate: async () => undefined,
-      ackRestartRequest: async () => undefined,
-    }),
+    createClient: () => makeClient(),
     runCleanup: async () => undefined,
     runConventionSync: async (authPath: string) => {
       conventionSyncCalls.push(authPath);
@@ -221,19 +321,13 @@ test('startPolling logs conflicts and suppresses overlapping polling cycles', as
   });
 
   let releaseFetch: (() => void) | null = null;
-  const client = {
-    fetchPendingTrigger: async () =>
-      await new Promise<{ data: DaemonTrigger | null }>((resolve) => {
-        releaseFetch = () => resolve({ data: trigger });
+  const client = makeClient({
+    fetchPollState: async () =>
+      await new Promise<PollStateResponse>((resolve) => {
+        releaseFetch = () => resolve(pollState({ pendingTrigger: trigger }));
       }),
     claimTrigger: async () => ({ ok: false, conflict: true }),
-    fetchOrphanedCancelRequested: async () => [] as string[],
-    updateTriggerStatus: async () => undefined,
-    fetchPendingWorktreeRemovals: async () => [],
-    reportWorktreeStatus: async () => undefined,
-    notifyUpdate: async () => undefined,
-    ackRestartRequest: async () => undefined,
-  };
+  });
 
   const intervalCallbacks: Array<() => void> = [];
   let keepAliveResolve: (() => void) | null = null;
@@ -297,16 +391,7 @@ test('startPolling clears the interval and exits on shutdown signals', async () 
 
   const intervalHandle = {} as NodeJS.Timeout;
   const pollingPromise = startPolling(config, () => async () => undefined, {
-    createClient: () => ({
-      fetchPendingTrigger: async () => ({ data: null }),
-      claimTrigger: async () => ({ ok: true, conflict: false }),
-      fetchOrphanedCancelRequested: async () => [] as string[],
-      updateTriggerStatus: async () => undefined,
-      fetchPendingWorktreeRemovals: async () => [],
-      reportWorktreeStatus: async () => undefined,
-      notifyUpdate: async () => undefined,
-      ackRestartRequest: async () => undefined,
-    }),
+    createClient: () => makeClient(),
     runCleanup: async () => undefined,
     setInterval: (() => intervalHandle) as typeof setInterval,
     clearInterval: ((handle: NodeJS.Timeout) => {
@@ -355,19 +440,10 @@ test('startPolling delegates auto-update via injected dependency', async () => {
   let keepAliveResolve: (() => void) | null = null;
 
   const pollingPromise = startPolling(config, () => async () => undefined, {
-    createClient: () => ({
-      fetchPendingTrigger: async () => ({
-        data: null,
-        meta: { cliLatestVersion: null, runnerLatestVersion: '99.0.0' },
+    createClient: () =>
+      makeClient({
+        fetchPollState: async () => pollState({}, { cliLatestVersion: null, runnerLatestVersion: '99.0.0' }),
       }),
-      claimTrigger: async () => ({ ok: true, conflict: false }),
-      fetchOrphanedCancelRequested: async () => [] as string[],
-      updateTriggerStatus: async () => undefined,
-      fetchPendingWorktreeRemovals: async () => [],
-      reportWorktreeStatus: async () => undefined,
-      notifyUpdate: async () => undefined,
-      ackRestartRequest: async () => undefined,
-    }),
     runCleanup: async () => undefined,
     maybeAutoUpdate: async () => {
       autoUpdateCallCount++;
@@ -417,18 +493,13 @@ test('startPolling restores persisted auth paths for worktree removals after res
 
   let keepAliveResolve: (() => void) | null = null;
   const pollingPromise = startPolling(config, () => async () => undefined, {
-    createClient: () => ({
-      fetchPendingTrigger: async () => ({ data: null }),
-      claimTrigger: async () => ({ ok: true, conflict: false }),
-      fetchOrphanedCancelRequested: async () => [] as string[],
-      updateTriggerStatus: async () => undefined,
-      fetchPendingWorktreeRemovals: async () => [worktreeRemovalTrigger],
-      reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
-        reportedStatuses.push({ triggerId, status, worktreeError });
-      },
-      notifyUpdate: async () => undefined,
-      ackRestartRequest: async () => undefined,
-    }),
+    createClient: () =>
+      makeClient({
+        fetchPollState: async () => pollState({ pendingWorktreeRemovals: [worktreeRemovalTrigger] }),
+        reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
+          reportedStatuses.push({ triggerId, status, worktreeError });
+        },
+      }),
     runCleanup: async () => undefined,
     removeWorktree: (authPath: string, worktreePath: string, worktreeId: string) => {
       removedWorktrees.push({ authPath, worktreePath, worktreeId });
@@ -481,18 +552,13 @@ test('startPolling reports FAILED when no persisted auth path matches the worktr
 
   let keepAliveResolve: (() => void) | null = null;
   const pollingPromise = startPolling(config, () => async () => undefined, {
-    createClient: () => ({
-      fetchPendingTrigger: async () => ({ data: null }),
-      claimTrigger: async () => ({ ok: true, conflict: false }),
-      fetchOrphanedCancelRequested: async () => [] as string[],
-      updateTriggerStatus: async () => undefined,
-      fetchPendingWorktreeRemovals: async () => [worktreeRemovalTrigger],
-      reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
-        reportedStatuses.push({ triggerId, status, worktreeError });
-      },
-      notifyUpdate: async () => undefined,
-      ackRestartRequest: async () => undefined,
-    }),
+    createClient: () =>
+      makeClient({
+        fetchPollState: async () => pollState({ pendingWorktreeRemovals: [worktreeRemovalTrigger] }),
+        reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
+          reportedStatuses.push({ triggerId, status, worktreeError });
+        },
+      }),
     runCleanup: async () => undefined,
     removeWorktree: () => {
       throw new Error('removeWorktree should not be called');
@@ -548,18 +614,13 @@ test('startPolling reports FAILED when worktree removal throws after matching a 
 
   let keepAliveResolve: (() => void) | null = null;
   const pollingPromise = startPolling(config, () => async () => undefined, {
-    createClient: () => ({
-      fetchPendingTrigger: async () => ({ data: null }),
-      claimTrigger: async () => ({ ok: true, conflict: false }),
-      fetchOrphanedCancelRequested: async () => [] as string[],
-      updateTriggerStatus: async () => undefined,
-      fetchPendingWorktreeRemovals: async () => [worktreeRemovalTrigger],
-      reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
-        reportedStatuses.push({ triggerId, status, worktreeError });
-      },
-      notifyUpdate: async () => undefined,
-      ackRestartRequest: async () => undefined,
-    }),
+    createClient: () =>
+      makeClient({
+        fetchPollState: async () => pollState({ pendingWorktreeRemovals: [worktreeRemovalTrigger] }),
+        reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
+          reportedStatuses.push({ triggerId, status, worktreeError });
+        },
+      }),
     runCleanup: async () => undefined,
     removeWorktree: () => {
       throw new Error('permission denied');
@@ -605,21 +666,14 @@ test('startPolling acks and runs restart when meta.restartRequested is true with
   let keepAliveResolve: (() => void) | null = null;
 
   const pollingPromise = startPolling(config, () => async () => undefined, {
-    createClient: () => ({
-      fetchPendingTrigger: async () => ({
-        data: null,
-        meta: { cliLatestVersion: null, runnerLatestVersion: null, restartRequested: true },
+    createClient: () =>
+      makeClient({
+        fetchPollState: async () =>
+          pollState({}, { cliLatestVersion: null, runnerLatestVersion: null, restartRequested: true }),
+        ackRestartRequest: async () => {
+          ackCalled += 1;
+        },
       }),
-      claimTrigger: async () => ({ ok: true, conflict: false }),
-      fetchOrphanedCancelRequested: async () => [] as string[],
-      updateTriggerStatus: async () => undefined,
-      fetchPendingWorktreeRemovals: async () => [],
-      reportWorktreeStatus: async () => undefined,
-      notifyUpdate: async () => undefined,
-      ackRestartRequest: async () => {
-        ackCalled += 1;
-      },
-    }),
     runCleanup: async () => undefined,
     maybeAutoUpdate: async () => {
       throw new Error('auto-update must be skipped while restarting');
@@ -665,24 +719,21 @@ test('startPolling restarts even when a pending trigger is present, ignoring the
       throw new Error('trigger handler must not run when restart wins');
     },
     {
-      createClient: () => ({
-        fetchPendingTrigger: async () => ({
-          data: trigger,
-          meta: { cliLatestVersion: null, runnerLatestVersion: null, restartRequested: true },
+      createClient: () =>
+        makeClient({
+          fetchPollState: async () =>
+            pollState(
+              { pendingTrigger: trigger },
+              { cliLatestVersion: null, runnerLatestVersion: null, restartRequested: true },
+            ),
+          claimTrigger: async () => {
+            claimCalled += 1;
+            return { ok: true, conflict: false };
+          },
+          ackRestartRequest: async () => {
+            ackCalled += 1;
+          },
         }),
-        claimTrigger: async () => {
-          claimCalled += 1;
-          return { ok: true, conflict: false };
-        },
-        fetchOrphanedCancelRequested: async () => [] as string[],
-        updateTriggerStatus: async () => undefined,
-        fetchPendingWorktreeRemovals: async () => [],
-        reportWorktreeStatus: async () => undefined,
-        notifyUpdate: async () => undefined,
-        ackRestartRequest: async () => {
-          ackCalled += 1;
-        },
-      }),
       runCleanup: async () => undefined,
       executeRestartRequest: () => {
         restartCalled += 1;
@@ -720,21 +771,14 @@ test('startPolling skips restart and leaves the flag for retry when ack fails', 
   let keepAliveResolve: (() => void) | null = null;
 
   const pollingPromise = startPolling(config, () => async () => undefined, {
-    createClient: () => ({
-      fetchPendingTrigger: async () => ({
-        data: null,
-        meta: { cliLatestVersion: null, runnerLatestVersion: null, restartRequested: true },
+    createClient: () =>
+      makeClient({
+        fetchPollState: async () =>
+          pollState({}, { cliLatestVersion: null, runnerLatestVersion: null, restartRequested: true }),
+        ackRestartRequest: async () => {
+          throw new Error('network down');
+        },
       }),
-      claimTrigger: async () => ({ ok: true, conflict: false }),
-      fetchOrphanedCancelRequested: async () => [] as string[],
-      updateTriggerStatus: async () => undefined,
-      fetchPendingWorktreeRemovals: async () => [],
-      reportWorktreeStatus: async () => undefined,
-      notifyUpdate: async () => undefined,
-      ackRestartRequest: async () => {
-        throw new Error('network down');
-      },
-    }),
     runCleanup: async () => undefined,
     executeRestartRequest: () => {
       restartCalled += 1;
@@ -770,16 +814,7 @@ test('startPolling acquires the power save blocker on start and releases it on s
   let keepAliveResolve: (() => void) | null = null;
 
   const pollingPromise = startPolling(config, () => async () => undefined, {
-    createClient: () => ({
-      fetchPendingTrigger: async () => ({ data: null }),
-      claimTrigger: async () => ({ ok: true, conflict: false }),
-      fetchOrphanedCancelRequested: async () => [] as string[],
-      updateTriggerStatus: async () => undefined,
-      fetchPendingWorktreeRemovals: async () => [],
-      reportWorktreeStatus: async () => undefined,
-      notifyUpdate: async () => undefined,
-      ackRestartRequest: async () => undefined,
-    }),
+    createClient: () => makeClient(),
     runCleanup: async () => undefined,
     setInterval: (() => ({}) as NodeJS.Timeout) as typeof setInterval,
     clearInterval: (() => undefined) as typeof clearInterval,
@@ -823,16 +858,7 @@ test('startPolling releases the power save blocker when keepAlive resolves', asy
   let keepAliveResolve: (() => void) | null = null;
 
   const pollingPromise = startPolling(config, () => async () => undefined, {
-    createClient: () => ({
-      fetchPendingTrigger: async () => ({ data: null }),
-      claimTrigger: async () => ({ ok: true, conflict: false }),
-      fetchOrphanedCancelRequested: async () => [] as string[],
-      updateTriggerStatus: async () => undefined,
-      fetchPendingWorktreeRemovals: async () => [],
-      reportWorktreeStatus: async () => undefined,
-      notifyUpdate: async () => undefined,
-      ackRestartRequest: async () => undefined,
-    }),
+    createClient: () => makeClient(),
     runCleanup: async () => undefined,
     setInterval: (() => ({}) as NodeJS.Timeout) as typeof setInterval,
     clearInterval: (() => undefined) as typeof clearInterval,

@@ -2,10 +2,9 @@ import { createRequire } from 'node:module';
 import type {
   ClaimResult,
   DaemonInfo,
-  DaemonTrigger,
   InjectedConventionRecord,
   OsType,
-  PendingResponse,
+  PollStateResponse,
   TriggerFinalStatus,
   TriggerLogInput,
   TriggerRuntime,
@@ -103,17 +102,20 @@ export class DaemonApiClient {
     return payload.data;
   }
 
-  async fetchPendingTrigger(): Promise<PendingResponse> {
-    const response = await this.requestWithRetry('/api/daemon-triggers/pending', {
+  // 한 polling cycle에 필요한 세 read(고아 취소 대상 / 워크트리 제거 대상 / pending)를
+  // 통합 snapshot 엔드포인트로 한 번에 조회한다. 실패 시 명확한 에러를 던져 호출자가
+  // polling cycle을 실패 처리하도록 한다(조용히 생략하지 않는다).
+  async fetchPollState(): Promise<PollStateResponse> {
+    const response = await this.requestWithRetry('/api/daemon-triggers/poll-state', {
       method: 'GET',
       headers: this.daemonHeaders(),
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch pending trigger (${response.status})`);
+      throw new Error(`Failed to fetch poll state (${response.status})`);
     }
 
-    const payload = (await response.json()) as PendingResponse;
+    const payload = (await response.json()) as PollStateResponse;
     return payload;
   }
 
@@ -169,20 +171,6 @@ export class DaemonApiClient {
     }
   }
 
-  async fetchOrphanedCancelRequested(): Promise<string[]> {
-    const response = await this.requestWithRetry('/api/daemon-triggers/orphaned-cancel-requested', {
-      method: 'GET',
-      headers: this.daemonHeaders(),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch orphaned cancel-requested triggers (${response.status})`);
-    }
-
-    const payload = (await response.json()) as { data: string[] };
-    return payload.data;
-  }
-
   async isTriggerCancelRequested(triggerId: string): Promise<boolean> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/cancel-status/${triggerId}`, {
       method: 'GET',
@@ -227,20 +215,6 @@ export class DaemonApiClient {
     if (!response.ok) {
       throw new Error(`Failed to report worktree status (${response.status})`);
     }
-  }
-
-  async fetchPendingWorktreeRemovals(): Promise<DaemonTrigger[]> {
-    const response = await this.requestWithRetry('/api/daemon-triggers/worktree/pending-removal', {
-      method: 'GET',
-      headers: this.daemonHeaders(),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch pending worktree removals (${response.status})`);
-    }
-
-    const payload = (await response.json()) as { data: DaemonTrigger[] };
-    return payload.data;
   }
 
   async appendTriggerLogs(triggerId: string, input: { logs?: TriggerLogInput[]; heartbeat?: boolean }): Promise<void> {

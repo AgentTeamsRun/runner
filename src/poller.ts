@@ -22,11 +22,9 @@ type PollingDependencies = {
     config: RuntimeConfig,
   ) => Pick<
     DaemonApiClient,
-    | 'fetchPendingTrigger'
+    | 'fetchPollState'
     | 'claimTrigger'
-    | 'fetchOrphanedCancelRequested'
     | 'updateTriggerStatus'
-    | 'fetchPendingWorktreeRemovals'
     | 'reportWorktreeStatus'
     | 'notifyUpdate'
     | 'ackRestartRequest'
@@ -133,85 +131,69 @@ export const startPolling = async (
     }
   };
 
-  const autoCancelOrphanedTriggers = async () => {
-    try {
-      const triggerIds = await client.fetchOrphanedCancelRequested();
-      for (const triggerId of triggerIds) {
-        try {
-          await client.updateTriggerStatus(
-            triggerId,
-            'CANCELLED',
-            'Automatically cancelled: runner is no longer active',
-          );
-          logger.info('Auto-cancelled orphaned trigger', { triggerId });
-        } catch (error) {
-          logger.warn('Failed to auto-cancel orphaned trigger', {
-            triggerId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+  // 통합 snapshot에서 받은 고아 취소 대상 ID들을 개별 mutation으로 처리한다.
+  const autoCancelOrphanedTriggers = async (triggerIds: string[]) => {
+    for (const triggerId of triggerIds) {
+      try {
+        await client.updateTriggerStatus(triggerId, 'CANCELLED', 'Automatically cancelled: runner is no longer active');
+        logger.info('Auto-cancelled orphaned trigger', { triggerId });
+      } catch (error) {
+        logger.warn('Failed to auto-cancel orphaned trigger', {
+          triggerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-    } catch (error) {
-      logger.warn('Failed to fetch orphaned cancel-requested triggers', {
-        error: error instanceof Error ? error.message : String(error),
-      });
     }
   };
 
-  const processWorktreeRemovals = async () => {
-    try {
-      const triggers = await client.fetchPendingWorktreeRemovals();
-      for (const trigger of triggers) {
-        try {
-          let removeSucceeded = false;
-          const effectiveWorktreeId = trigger.worktreeId ?? trigger.id;
-          let matchedAuthPath = false;
-          for (const authPath of knownAuthPaths) {
-            const worktreePath = resolveWorktreePath(authPath, effectiveWorktreeId);
-            if (!existsSync(worktreePath)) {
-              continue;
-            }
-
-            matchedAuthPath = true;
-            try {
-              removeWorktreeFn(authPath, worktreePath, effectiveWorktreeId);
-              removeSucceeded = true;
-              logger.info('Worktree removed for trigger', { triggerId: trigger.id, worktreePath });
-              break;
-            } catch (error) {
-              const worktreeError = error instanceof Error ? error.message : String(error);
-              logger.warn('Failed to remove worktree for trigger', {
-                triggerId: trigger.id,
-                authPath,
-                worktreePath,
-                error: worktreeError,
-              });
-              await client.reportWorktreeStatus(trigger.id, 'FAILED', worktreeError);
-              break;
-            }
+  // 통합 snapshot에서 받은 워크트리 제거 대상 트리거들을 개별 mutation으로 처리한다.
+  const processWorktreeRemovals = async (triggers: DaemonTrigger[]) => {
+    for (const trigger of triggers) {
+      try {
+        let removeSucceeded = false;
+        const effectiveWorktreeId = trigger.worktreeId ?? trigger.id;
+        let matchedAuthPath = false;
+        for (const authPath of knownAuthPaths) {
+          const worktreePath = resolveWorktreePath(authPath, effectiveWorktreeId);
+          if (!existsSync(worktreePath)) {
+            continue;
           }
 
-          if (removeSucceeded) {
-            await client.reportWorktreeStatus(trigger.id, 'REMOVED');
-          } else if (!matchedAuthPath) {
-            const worktreeError = `Failed to remove RunnerBox: worktree path was not found for ${effectiveWorktreeId}`;
-            logger.warn('Could not find authPath for worktree removal', {
+          matchedAuthPath = true;
+          try {
+            removeWorktreeFn(authPath, worktreePath, effectiveWorktreeId);
+            removeSucceeded = true;
+            logger.info('Worktree removed for trigger', { triggerId: trigger.id, worktreePath });
+            break;
+          } catch (error) {
+            const worktreeError = error instanceof Error ? error.message : String(error);
+            logger.warn('Failed to remove worktree for trigger', {
               triggerId: trigger.id,
-              worktreeId: effectiveWorktreeId,
+              authPath,
+              worktreePath,
+              error: worktreeError,
             });
             await client.reportWorktreeStatus(trigger.id, 'FAILED', worktreeError);
+            break;
           }
-        } catch (error) {
-          logger.warn('Failed to remove worktree for trigger', {
-            triggerId: trigger.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
         }
+
+        if (removeSucceeded) {
+          await client.reportWorktreeStatus(trigger.id, 'REMOVED');
+        } else if (!matchedAuthPath) {
+          const worktreeError = `Failed to remove RunnerBox: worktree path was not found for ${effectiveWorktreeId}`;
+          logger.warn('Could not find authPath for worktree removal', {
+            triggerId: trigger.id,
+            worktreeId: effectiveWorktreeId,
+          });
+          await client.reportWorktreeStatus(trigger.id, 'FAILED', worktreeError);
+        }
+      } catch (error) {
+        logger.warn('Failed to remove worktree for trigger', {
+          triggerId: trigger.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-    } catch (error) {
-      logger.warn('Failed to fetch pending worktree removals', {
-        error: error instanceof Error ? error.message : String(error),
-      });
     }
   };
 
@@ -224,16 +206,22 @@ export const startPolling = async (
     try {
       maybeRunCleanup();
       maybeRunConventionSync();
-      await autoCancelOrphanedTriggers();
-      await processWorktreeRemovals();
 
-      const pendingResponse = await client.fetchPendingTrigger();
-      const trigger = pendingResponse.data;
+      // 한 polling cycle의 세 read(고아 취소 대상 / 워크트리 제거 대상 / pending)를 통합
+      // snapshot 1회 조회로 가져온다. 실패 시 아래 catch에서 polling cycle 전체가 실패
+      // 처리되어 명확한 로그를 남긴다(조용히 pending 확인만 생략하지 않는다).
+      const pollState = await client.fetchPollState();
+
+      // 후속 mutation은 기존과 동일하게 개별 처리하며, 처리 순서도 보존한다.
+      await autoCancelOrphanedTriggers(pollState.data.orphanedCancelRequestedTriggerIds);
+      await processWorktreeRemovals(pollState.data.pendingWorktreeRemovals);
+
+      const trigger = pollState.data.pendingTrigger;
 
       // 웹에서 요청된 재시작은 pending 작업 유무와 무관하게 우선 처리한다.
       // 서버는 ack가 도착할 때까지 플래그를 유지하므로, ack 실패 시에는 다음 폴링에서
       // 다시 시도되어 요청이 조용히 소실되지 않는다.
-      if (pendingResponse.meta?.restartRequested) {
+      if (pollState.meta?.restartRequested) {
         try {
           await client.ackRestartRequest();
         } catch (error) {
@@ -250,7 +238,7 @@ export const startPolling = async (
       if (!trigger) {
         // idle 상태에서 자동 업데이트 시도
         try {
-          await autoUpdate(pendingResponse.meta, {
+          await autoUpdate(pollState.meta, {
             onRunnerUpdated: (version) => client.notifyUpdate(version, 'runner'),
           });
         } catch (error) {
