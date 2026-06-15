@@ -47,6 +47,16 @@ const toOutputPreview = (chunk: unknown): string => {
   return `${text.slice(0, OUTPUT_PREVIEW_MAX)}...`;
 };
 
+// OpenCode `run`은 의미 있는 에이전트 출력을 stderr로 흘려보낸다(stdout은 비는 경우가 많다).
+// 그래서 stdout만 누적하면 러너가 히스토리 파일을 안 썼을 때 stdout 폴백이 빈 값이 되어
+// "DONE인데 히스토리가 빈" 레코드가 만들어진다(trigger-handler.reportHistory). 폴백이 작동하도록
+// stderr도 outputText에 누적하되, Windows PowerShell이 진행 스트림을 stderr로 직렬화한
+// CLIXML 노이즈(`#< CLIXML`, `<Objs ...>`)는 히스토리를 오염시키므로 제외한다.
+export const isPowerShellClixmlNoise = (chunk: string): boolean => {
+  const text = chunk.trimStart();
+  return text.startsWith('#< CLIXML') || text.startsWith('<Objs ');
+};
+
 export class OpenCodeRunner implements Runner {
   constructor(private readonly runnerCmd: string = 'opencode') {}
 
@@ -155,7 +165,11 @@ export class OpenCodeRunner implements Runner {
       }
     });
     child.stderr?.on('data', (chunk) => {
-      const output = toOutputPreview(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      if (!isPowerShellClixmlNoise(rawOutput)) {
+        appendOutputText(rawOutput);
+      }
+      const output = toOutputPreview(rawOutput);
       if (output.length > 0) {
         lastOutput = output;
         lastErrorOutput = output;
