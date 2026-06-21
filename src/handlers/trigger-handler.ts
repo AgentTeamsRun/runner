@@ -30,6 +30,8 @@ type RemoveAttachmentDirectory = (path: string) => Promise<void>;
 type TriggerHandlerDependencies = {
   createRunnerFactory?: typeof createRunnerFactory;
   createLogReporter?: (client: DaemonApiClient, triggerId: string) => ReporterLike;
+  isGitRepo?: typeof isGitRepo;
+  createWorktree?: typeof createWorktree;
   readHistoryFile?: ReadHistoryFile;
   writeHistoryFile?: WriteHistoryFile;
   fetchAttachmentFile?: FetchAttachmentFile;
@@ -43,6 +45,8 @@ type TriggerHandlerDependencies = {
 export const createTriggerHandler = (options: TriggerHandlerOptions, dependencies: TriggerHandlerDependencies = {}) => {
   const { config, client, onAuthPathDiscovered } = options;
   const createRunner = (dependencies.createRunnerFactory ?? createRunnerFactory)(config.runnerCmd);
+  const checkIsGitRepo = dependencies.isGitRepo ?? isGitRepo;
+  const createRunnerWorktree = dependencies.createWorktree ?? createWorktree;
   const createLogReporter =
     dependencies.createLogReporter ??
     ((apiClient: DaemonApiClient, triggerId: string): ReporterLike => new TriggerLogReporter(apiClient, triggerId));
@@ -289,6 +293,22 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     await writeHistoryFile(parentHistoryPath, normalizedMarkdown.slice(0, maxHistoryLength));
   };
 
+  const reportWorktreeFailure = async (
+    triggerId: string,
+    reason: string,
+    reporter: ReporterLike | null,
+  ): Promise<void> => {
+    reporter?.append('ERROR', reason);
+    try {
+      await client.reportWorktreeStatus(triggerId, 'FAILED', sanitizeErrorMessage(reason));
+    } catch (error) {
+      logger.warn('Failed to report worktree failure status', {
+        triggerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   return async (trigger: DaemonTrigger): Promise<void> => {
     let logReporter: ReporterLike | null = null;
     let currentHistoryPath: string | null = null;
@@ -324,44 +344,46 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       let effectiveAuthPath = runtime.authPath;
 
-      if (runtime.useWorktree && runtime.authPath) {
-        try {
-          if (isGitRepo(runtime.authPath)) {
-            const worktreePath = createWorktree(runtime.authPath, {
-              worktreeId: runtime.worktreeId ?? trigger.id,
-              baseBranch: runtime.baseBranch,
-            });
-            effectiveAuthPath = worktreePath;
-            await client.reportWorktreeStatus(trigger.id, 'ACTIVE');
-            activeLogReporter.append('INFO', `Worktree created at ${worktreePath}.`);
-            logger.info('Worktree created for trigger', {
-              triggerId: trigger.id,
-              worktreePath,
-            });
-          } else {
-            logger.warn('Worktree requested but authPath is not a git repo, falling back to authPath', {
-              triggerId: trigger.id,
-              authPath: runtime.authPath,
-            });
-            activeLogReporter.append(
-              'WARN',
-              'Worktree requested but authPath is not a git repo. Falling back to authPath.',
-            );
-          }
-        } catch (err) {
-          logger.warn('Failed to create worktree, falling back to authPath', {
+      if (runtime.useWorktree) {
+        if (!runtime.authPath) {
+          const reason = 'Worktree requested but authPath is not configured.';
+          logger.warn('Worktree requested but authPath is not configured', {
             triggerId: trigger.id,
-            error: err instanceof Error ? err.message : String(err),
           });
-          activeLogReporter.append(
-            'WARN',
-            `Worktree creation failed: ${err instanceof Error ? err.message : String(err)}. Falling back to authPath.`,
-          );
-          try {
-            await client.reportWorktreeStatus(trigger.id, 'FAILED');
-          } catch {
-            // Ignore status report failure
-          }
+          await reportWorktreeFailure(trigger.id, reason, activeLogReporter);
+          throw new Error(reason);
+        }
+
+        if (!checkIsGitRepo(runtime.authPath)) {
+          const reason = `Not a git repository: ${runtime.authPath}`;
+          logger.warn('Worktree requested but authPath is not a git repo', {
+            triggerId: trigger.id,
+            authPath: runtime.authPath,
+          });
+          await reportWorktreeFailure(trigger.id, reason, activeLogReporter);
+          throw new Error(reason);
+        }
+
+        try {
+          const worktreePath = createRunnerWorktree(runtime.authPath, {
+            worktreeId: runtime.worktreeId ?? trigger.id,
+            baseBranch: runtime.baseBranch,
+          });
+          effectiveAuthPath = worktreePath;
+          await client.reportWorktreeStatus(trigger.id, 'ACTIVE');
+          activeLogReporter.append('INFO', `Worktree created at ${worktreePath}.`);
+          logger.info('Worktree created for trigger', {
+            triggerId: trigger.id,
+            worktreePath,
+          });
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          logger.warn('Failed to create worktree', {
+            triggerId: trigger.id,
+            error: reason,
+          });
+          await reportWorktreeFailure(trigger.id, reason, activeLogReporter);
+          throw new Error(reason);
         }
       }
 

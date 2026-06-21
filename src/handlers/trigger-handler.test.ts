@@ -544,6 +544,153 @@ test('createTriggerHandler reports runner failures and falls back to last output
   assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'last output']);
 });
 
+test('createTriggerHandler fails without running the runner when worktree creation fails', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const runnerInputs: Array<{ authPath: string | null }> = [];
+  const worktreeRuntime: TriggerRuntime = {
+    ...runtime,
+    useWorktree: true,
+    baseBranch: 'dev',
+    worktreeId: 'worktree-1',
+  };
+
+  const client = {
+    fetchTriggerRuntime: async () => worktreeRuntime,
+    isTriggerCancelRequested: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'isTriggerCancelRequested', args });
+      return false;
+    },
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+    reportWorktreeStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'reportWorktreeStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      createRunnerFactory: () => () => ({
+        run: async (input) => {
+          runnerInputs.push({ authPath: input.authPath });
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      isGitRepo: () => true,
+      createWorktree: () => {
+        throw new Error('git worktree add failed');
+      },
+      readHistoryFile: async () => '',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, useWorktree: true, baseBranch: 'dev', worktreeId: 'worktree-1', parentTriggerId: null });
+
+  assert.deepEqual(runnerInputs, []);
+  assert.deepEqual(clientCalls.at(0)?.args, ['trigger-1', 'FAILED', 'git worktree add failed']);
+  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'git worktree add failed']);
+  assert.equal(
+    clientCalls.some((entry) => entry.method === 'isTriggerCancelRequested'),
+    false,
+  );
+});
+
+test('createTriggerHandler fails without running the runner when worktree authPath is not a git repo', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const runnerInputs: Array<{ authPath: string | null }> = [];
+  const worktreeRuntime: TriggerRuntime = {
+    ...runtime,
+    useWorktree: true,
+    baseBranch: 'dev',
+    worktreeId: 'worktree-1',
+  };
+
+  const client = {
+    fetchTriggerRuntime: async () => worktreeRuntime,
+    isTriggerCancelRequested: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'isTriggerCancelRequested', args });
+      return false;
+    },
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+    reportWorktreeStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'reportWorktreeStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      createRunnerFactory: () => () => ({
+        run: async (input) => {
+          runnerInputs.push({ authPath: input.authPath });
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      isGitRepo: () => false,
+      readHistoryFile: async () => '',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, useWorktree: true, baseBranch: 'dev', worktreeId: 'worktree-1', parentTriggerId: null });
+
+  assert.deepEqual(runnerInputs, []);
+  assert.deepEqual(clientCalls.at(0)?.args, ['trigger-1', 'FAILED', 'Not a git repository: /auth/path']);
+  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'Not a git repository: /auth/path']);
+  assert.equal(
+    clientCalls.some((entry) => entry.method === 'isTriggerCancelRequested'),
+    false,
+  );
+});
+
 test('createTriggerHandler downgrades an idle-timeout to NEEDS_REVIEW when a history file was uploaded', async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
 
