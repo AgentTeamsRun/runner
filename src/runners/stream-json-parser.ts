@@ -240,6 +240,51 @@ export const parseStreamJsonLine = (line: string, options?: ParseOptions): Parse
 };
 
 /**
+ * Captures the most recent `"type":"result"` line from chunked stdout, independent of the
+ * runner's head-capped output buffer (OUTPUT_CAPTURE_MAX). The terminal `result` event arrives
+ * at the very end of a run, so on long runs it falls outside the head-capped buffer and the
+ * fallback history (extractResultTextFromStreamJson) can never surface the clean final text.
+ * Retaining just that single line lets the fallback stay readable regardless of run length.
+ *
+ * Uses the same `"type":"result"` substring heuristic as extractResultTextFromStreamJson so the
+ * two agree on what counts as a result line.
+ */
+export const createResultLineCapturer = (): {
+  push: (chunk: string) => void;
+  flush: () => void;
+  get: () => string | null;
+} => {
+  let buffer = '';
+  let lastResultLine: string | null = null;
+
+  const scan = (line: string): void => {
+    const trimmed = line.trim();
+    if (trimmed.includes('"type":"result"')) {
+      lastResultLine = trimmed;
+    }
+  };
+
+  return {
+    push(chunk: string) {
+      buffer += chunk;
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        scan(line);
+      }
+    },
+    flush() {
+      if (buffer.length > 0) {
+        scan(buffer);
+      }
+      buffer = '';
+    },
+    get: () => lastResultLine,
+  };
+};
+
+/**
  * Creates a line-buffered parser that handles chunked stdout data.
  * Stream data may arrive as partial lines, so this buffers until newlines.
  */

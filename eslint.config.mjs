@@ -1,6 +1,7 @@
 import { defineConfig, globalIgnores } from 'eslint/config';
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
+import importPlugin from 'eslint-plugin-import';
 
 const nodeGlobals = {
   process: 'readonly',
@@ -75,6 +76,15 @@ const ruleOverrides = {
   '@typescript-eslint/no-empty-function': 'off',
   '@typescript-eslint/ban-ts-comment': 'warn',
   'no-empty': 'off',
+  // 직접 import한 패키지는 워크스페이스 package.json에 직접 의존성으로 선언해야 한다.
+  'import/no-extraneous-dependencies': [
+    'error',
+    {
+      devDependencies: ['**/*.test.ts', '**/*.spec.ts'],
+      optionalDependencies: false,
+      peerDependencies: false,
+    },
+  ],
 };
 
 export default defineConfig([
@@ -84,6 +94,7 @@ export default defineConfig([
     files: ['src/**/*.ts'],
     plugins: {
       '@typescript-eslint': tseslint.plugin,
+      import: importPlugin,
     },
     languageOptions: {
       parser: tseslint.parser,
