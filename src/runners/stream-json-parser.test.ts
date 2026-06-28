@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { extractResultTextFromStreamJson } from './claude-code.js';
 import {
+  createResultLineCapturer,
   createStreamJsonLineParser,
   firstSentence,
   parseStreamJsonLine,
@@ -142,6 +144,54 @@ test('createStreamJsonLineParser handles chunked input and forwards options', ()
   parser.push(`${lineA.slice(half)}\n${lineB}\n`);
 
   assert.deepEqual(collected, ['[Tool] Read: a.ts', '[Tool] Read: b.ts']);
+});
+
+test('createResultLineCapturer retains the last result line across chunked input', () => {
+  const capturer = createResultLineCapturer();
+  assert.equal(capturer.get(), null);
+
+  const firstResult = JSON.stringify({ type: 'result', result: 'first pass done' });
+  const secondResult = JSON.stringify({ type: 'result', result: 'final answer' });
+  const noise = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'working' }] } });
+
+  capturer.push(`${firstResult}\n${noise}\n`);
+  assert.equal(capturer.get(), firstResult);
+
+  // A later result line wins, even when split mid-line across pushes.
+  const half = Math.floor(secondResult.length / 2);
+  capturer.push(secondResult.slice(0, half));
+  capturer.push(`${secondResult.slice(half)}\n`);
+  assert.equal(capturer.get(), secondResult);
+});
+
+test('createResultLineCapturer flushes a trailing result line with no terminating newline', () => {
+  const capturer = createResultLineCapturer();
+  const result = JSON.stringify({ type: 'result', result: 'done' });
+
+  capturer.push(result); // no trailing newline; still buffered
+  assert.equal(capturer.get(), null);
+
+  capturer.flush();
+  assert.equal(capturer.get(), result);
+});
+
+test('captured result line survives the head-capped buffer and feeds extractResultTextFromStreamJson', () => {
+  const capturer = createResultLineCapturer();
+
+  // Simulate a long run whose head-capped buffer keeps only the early output (no result event).
+  const headCappedOutput = JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-opus-4-8' });
+  const resultLine = JSON.stringify({ type: 'result', result: 'The clean final summary.' });
+
+  capturer.push(`${headCappedOutput}\n`);
+  capturer.push(`${resultLine}\n`);
+  capturer.flush();
+
+  const resultLineFromCapture = capturer.get();
+  assert.equal(resultLineFromCapture, resultLine);
+
+  // Mirror finalizeOutputText: re-attach the captured result line the head-cap dropped.
+  const finalized = `${headCappedOutput}\n${resultLineFromCapture}`;
+  assert.equal(extractResultTextFromStreamJson(finalized), 'The clean final summary.');
 });
 
 test('parseStreamJsonLine respects AGENTTEAMS_RUNNER_VERBOSE env when no option given', () => {

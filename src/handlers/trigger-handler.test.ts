@@ -206,6 +206,69 @@ test('createTriggerHandler preserves the local history file and still marks succ
   assert.deepEqual(statusCall?.args, ['trigger-1', 'DONE', undefined]);
 });
 
+test('createTriggerHandler flags NEEDS_REVIEW when the runner exits 0 without writing a history file', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const writeHistoryCalls: Array<{ path: string; content: string }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      createRunnerFactory: () => () => ({
+        run: async () => ({ exitCode: 0, outputText: 'The final summary.' }) satisfies RunResult,
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      // 러너가 필수 히스토리 파일을 남기지 않은 상태(파일 없음 → 읽기 실패).
+      readHistoryFile: async () => {
+        throw new Error('ENOENT: no such file');
+      },
+      writeHistoryFile: async (path, content) => {
+        writeHistoryCalls.push({ path, content });
+      },
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler(trigger);
+
+  // 캡처한 출력이 폴백 히스토리로 로컬 기록 + 서버 업로드되며, "completed successfully"라고 단정하지 않는다.
+  assert.equal(writeHistoryCalls.length, 1);
+  assert.match(writeHistoryCalls[0]?.content ?? '', /exited without writing the required history file/);
+  const uploadCall = clientCalls.find((entry) => entry.method === 'updateTriggerHistory');
+  assert.match(String(uploadCall?.args?.[1] ?? ''), /exited without writing the required history file/);
+  // 핵심: exitCode 0이어도 산출물이 없으면 DONE이 아니라 NEEDS_REVIEW로 강등된다.
+  const statusCall = clientCalls.find((entry) => entry.method === 'updateTriggerStatus');
+  assert.deepEqual(statusCall?.args, ['trigger-1', 'NEEDS_REVIEW', undefined]);
+});
+
 test('createTriggerHandler strips a UTF-8 BOM before reporting history to the database', async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
   const logEntries: Array<{ level: string; message: string }> = [];
@@ -868,7 +931,8 @@ test('createTriggerHandler stores stdout as fallback history when the runner omi
   assert.equal(writtenFiles[0]?.path, '/auth/path/.agentteams/runner/history/trigger-1.md');
   assert.match(String(clientCalls[0]?.args[1]), /Agent output \(history file not written\)/);
   assert.match(String(clientCalls[0]?.args[1]), /agentrunner version 0\.0\.11/);
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'DONE', undefined]);
+  // exitCode 0이라도 히스토리 파일이 없으면 DONE으로 단정하지 않고 NEEDS_REVIEW로 강등한다.
+  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'NEEDS_REVIEW', undefined]);
 });
 
 test('createTriggerHandler truncates long agent output in fallback history', async () => {

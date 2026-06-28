@@ -207,7 +207,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     historyPath: string | null,
     reporter: ReporterLike | null,
     fallback?: { outputText: string; errorMessage?: string },
-  ): Promise<{ uploadedHistoryFile: boolean }> => {
+  ): Promise<{ uploadedHistoryFile: boolean; hasHistoryFile: boolean }> => {
     const historyMarkdown = await loadHistoryMarkdown(historyPath);
     // 러너가 직접 쓴 온전한 히스토리 "파일"이 서버까지 업로드됐는지. stdout 폴백은 작업 완료를
     // 보장하지 못하므로 제외한다. idle 타임아웃을 NEEDS_REVIEW로 강등할지 판단하는 근거가 된다.
@@ -236,12 +236,12 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     }
 
     if (historyForUpload === null) {
-      return { uploadedHistoryFile: false };
+      return { uploadedHistoryFile: false, hasHistoryFile };
     }
 
     try {
       await client.updateTriggerHistory(triggerId, historyForUpload);
-      return { uploadedHistoryFile: hasHistoryFile };
+      return { uploadedHistoryFile: hasHistoryFile, hasHistoryFile };
     } catch (error) {
       // 히스토리 업로드 실패는 러너 성공을 뒤집지 않는다. 로컬 파일을 보존하고 경고만 남긴다.
       logger.warn('Failed to upload runner history; local history file preserved', {
@@ -250,14 +250,14 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         error: error instanceof Error ? error.message : String(error),
       });
       reporter?.append('WARN', 'Failed to upload runner history to the server. The local history file is preserved.');
-      return { uploadedHistoryFile: false };
+      return { uploadedHistoryFile: false, hasHistoryFile };
     }
   };
 
   const buildFallbackHistory = (outputText: string, errorMessage?: string): string => {
     const summaryLine = errorMessage
       ? `- Runner terminated with error: ${errorMessage}`
-      : '- Runner completed successfully but did not write the requested history file.';
+      : '- Runner exited without writing the required history file (flagged for review).';
     const trimmed = outputText.trim();
     if (trimmed.length === 0) {
       return ['### Summary', summaryLine, '- No stdout captured.', '', '### Questions for User', 'None'].join('\n');
@@ -474,7 +474,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         exitCode: runResult.exitCode,
       });
       logReporter.append('INFO', `Runner finished with exitCode=${runResult.exitCode}.`);
-      const { uploadedHistoryFile } = await reportHistory(trigger.id, currentHistoryPath, logReporter, {
+      const { hasHistoryFile } = await reportHistory(trigger.id, currentHistoryPath, logReporter, {
         outputText: runResult.outputText ?? '',
         errorMessage: runResult.exitCode === 0 ? undefined : runResult.errorMessage,
       });
@@ -482,12 +482,24 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       // idle 워치독에 의해 종료됐지만 러너가 온전한 히스토리 파일을 남겼다면, 작업은 사실상
       // 완료됐는데 종료 시퀀스에서 행이 걸린 경우다(예: Antigravity print 모드 finalize 행).
       // hard-FAIL 대신 NEEDS_REVIEW로 강등해 사람이 산출물을 보고 승인/거부하도록 한다.
-      const idleTimedOutWithHistory = runResult.idleTimedOut === true && uploadedHistoryFile && !runResult.cancelled;
+      // 산출물 존재 여부(hasHistoryFile)로 판단한다 — 서버 업로드 실패는 완료를 뒤집지 않는다.
+      const idleTimedOutWithHistory = runResult.idleTimedOut === true && hasHistoryFile && !runResult.cancelled;
       if (idleTimedOutWithHistory) {
         // 사유는 빨간 Error 탭이 아니라 INFO 로그로 남긴다(소프트 상태라 에러 스타일은 부적절).
         logReporter.append(
           'INFO',
           'Runner idle-timed-out during shutdown but a complete history file was produced; flagged for human review (approve to mark DONE, reject to mark FAILED).',
+        );
+      }
+
+      // exitCode 0이라도 러너가 필수 히스토리 파일을 안 썼다면 작업 완료를 보장할 수 없다(턴이
+      // 산출물 작성 전에 끝났거나 모델이 마지막 쓰기 단계를 누락한 경우). DONE으로 단정하지 않고
+      // NEEDS_REVIEW로 강등해 사람이 폴백(정제된 출력)을 보고 승인/거부하게 한다.
+      const exitedCleanWithoutHistory = runResult.exitCode === 0 && !hasHistoryFile && !runResult.cancelled;
+      if (exitedCleanWithoutHistory) {
+        logReporter.append(
+          'INFO',
+          'Runner exited cleanly (exitCode=0) but did not write a history file; flagged for human review (approve to mark DONE, reject to mark FAILED).',
         );
       }
 
@@ -501,7 +513,9 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       const status = runResult.cancelled
         ? 'CANCELLED'
         : runResult.exitCode === 0
-          ? 'DONE'
+          ? hasHistoryFile
+            ? 'DONE'
+            : 'NEEDS_REVIEW'
           : idleTimedOutWithHistory
             ? 'NEEDS_REVIEW'
             : 'FAILED';

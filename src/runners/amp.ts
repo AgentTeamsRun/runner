@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
 import { extractResultTextFromStreamJson } from './claude-code.js';
-import { createStreamJsonLineParser } from './stream-json-parser.js';
+import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 
@@ -143,6 +143,20 @@ export class AmpCodeRunner implements Runner {
       outputText += chunk.slice(0, OUTPUT_CAPTURE_MAX - outputText.length);
     };
 
+    // The head-capped outputText can drop the terminal `result` event on long runs; keep that
+    // line separately so the fallback history stays readable. finalizeOutputText re-attaches it
+    // to the tail when the captured buffer lost it.
+    const resultLineCapturer = createResultLineCapturer();
+    const finalizeOutputText = (): string | undefined => {
+      const trimmed = outputText.trim();
+      const resultLine = resultLineCapturer.get();
+      if (resultLine && !trimmed.includes('"type":"result"')) {
+        return trimmed.length > 0 ? `${trimmed}\n${resultLine}` : resultLine;
+      }
+
+      return trimmed || undefined;
+    };
+
     const idleTimer = { reset: (): void => {} };
     const streamParser = createStreamJsonLineParser(
       (entries) => {
@@ -155,6 +169,7 @@ export class AmpCodeRunner implements Runner {
     child.stdout?.on('data', (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
       appendOutputText(rawOutput);
+      resultLineCapturer.push(rawOutput);
       streamParser.push(rawOutput);
       const output = toOutputPreview(rawOutput);
       if (output.length > 0) {
@@ -260,7 +275,7 @@ export class AmpCodeRunner implements Runner {
         resolve({
           exitCode: 1,
           lastOutput,
-          outputText: outputText.trim() || undefined,
+          outputText: finalizeOutputText(),
           errorMessage: error.message,
         });
       });
@@ -271,6 +286,7 @@ export class AmpCodeRunner implements Runner {
         closeWatchdog.cancel();
         clearTimeout(timeoutId);
         streamParser.flush();
+        resultLineCapturer.flush();
         cleanup();
         logger.info('Runner process closed', {
           triggerId: opts.triggerId,
@@ -280,11 +296,11 @@ export class AmpCodeRunner implements Runner {
         });
 
         if (timedOut) {
-          const trimmedOutputText = outputText.trim();
+          const finalizedOutputText = finalizeOutputText();
           const resolvedOutputText =
-            idleTimedOut && trimmedOutputText.length > 0
-              ? extractResultTextFromStreamJson(outputText)
-              : trimmedOutputText || undefined;
+            idleTimedOut && finalizedOutputText
+              ? extractResultTextFromStreamJson(finalizedOutputText)
+              : finalizedOutputText;
           resolve({
             exitCode: 1,
             idleTimedOut,
@@ -302,7 +318,7 @@ export class AmpCodeRunner implements Runner {
             exitCode: 1,
             cancelled: true,
             lastOutput,
-            outputText: outputText.trim() || undefined,
+            outputText: finalizeOutputText(),
             errorMessage: 'Runner cancelled by user',
           });
           return;
@@ -311,7 +327,7 @@ export class AmpCodeRunner implements Runner {
         resolve({
           exitCode: code ?? 1,
           lastOutput,
-          outputText: outputText.trim() || undefined,
+          outputText: finalizeOutputText(),
           errorMessage:
             code === 0 ? undefined : lastErrorOutput || lastOutput || `Runner exited with code ${code ?? 1}`,
         });

@@ -5,6 +5,7 @@ import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
+import { createOpenCodeFinalTextCapturer, createOpenCodeJsonLineParser } from './opencode-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 
@@ -24,7 +25,7 @@ const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: stri
     `$promptText = @'`,
     `${prompt.replaceAll("'@", "'@")}`,
     `'@`,
-    `$promptText | & '${resolvedExecutablePath.replaceAll("'", "''")}' 'run'${modelSegment}`,
+    `$promptText | & '${resolvedExecutablePath.replaceAll("'", "''")}' 'run' '--format' 'json'${modelSegment}`,
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -185,6 +186,9 @@ export class OpenCodeRunner implements Runner {
     });
 
     const modelArgs = opts.model ? ['--model', opts.model] : [];
+    // `--format json` emits structured events (one JSON object per line) instead of the default
+    // TUI text, so the runner can refine them into readable logs and a clean fallback summary.
+    const runArgs = ['run', '--format', 'json', ...modelArgs];
     const child = isWindows
       ? spawn(
           'powershell.exe',
@@ -205,7 +209,7 @@ export class OpenCodeRunner implements Runner {
             },
           },
         )
-      : spawnExecutable(this.runnerCmd, ['run', ...modelArgs, opts.prompt], {
+      : spawnExecutable(this.runnerCmd, [...runArgs, opts.prompt], {
           cwd,
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -228,22 +232,40 @@ export class OpenCodeRunner implements Runner {
     let lastOutput = '';
     let lastErrorOutput = '';
     const outputCapture = createOpenCodeOutputCapture();
+    // Refine the JSON event stream into readable log lines (live log) and a clean final-text
+    // summary (fallback history). finalTextCapturer survives the head-capped raw buffer on long runs.
+    const finalTextCapturer = createOpenCodeFinalTextCapturer();
 
     const idleTimer = { reset: (): void => {} };
+    const jsonLineParser = createOpenCodeJsonLineParser(
+      (entries) => {
+        for (const entry of entries) {
+          lastOutput = entry.message;
+          opts.onStdoutChunk?.(entry.message);
+        }
+      },
+      { cwd },
+    );
+
+    const finalizeOutputText = (): string | undefined => {
+      finalTextCapturer.flush();
+      return finalTextCapturer.get() ?? outputCapture.toResultOutputText();
+    };
+
     child.stdout?.on('data', (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
-      outputCapture.appendStdout(rawOutput);
-      const output = toOutputPreview(rawOutput);
-      if (output.length > 0) {
-        lastOutput = output;
-        idleTimer.reset();
-        opts.onStdoutChunk?.(output);
-        logger.info('Runner stdout', {
-          triggerId: opts.triggerId,
-          pid: child.pid,
-          output,
-        });
+      if (rawOutput.length === 0) {
+        return;
       }
+      outputCapture.appendStdout(rawOutput);
+      finalTextCapturer.push(rawOutput);
+      jsonLineParser.push(rawOutput);
+      idleTimer.reset();
+      logger.info('Runner stdout', {
+        triggerId: opts.triggerId,
+        pid: child.pid,
+        output: toOutputPreview(rawOutput),
+      });
     });
     child.stderr?.on('data', (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
@@ -340,7 +362,7 @@ export class OpenCodeRunner implements Runner {
         resolve({
           exitCode: 1,
           lastOutput,
-          outputText: outputCapture.toResultOutputText(),
+          outputText: finalizeOutputText(),
           errorMessage: error.message,
         });
       });
@@ -350,6 +372,7 @@ export class OpenCodeRunner implements Runner {
       child.on('close', (code) => {
         closeWatchdog.cancel();
         clearTimeout(timeoutId);
+        jsonLineParser.flush();
         cleanup();
         logger.info('Runner process closed', {
           triggerId: opts.triggerId,
@@ -363,7 +386,7 @@ export class OpenCodeRunner implements Runner {
             exitCode: 1,
             idleTimedOut,
             lastOutput,
-            outputText: outputCapture.toResultOutputText(),
+            outputText: finalizeOutputText(),
             errorMessage: idleTimedOut
               ? `Runner idle timed out after ${Math.round(opts.idleTimeoutMs / 60_000)}m of no output`
               : `Runner fail-safe timed out after ${Math.round(opts.timeoutMs / 3_600_000)}h`,
@@ -376,7 +399,7 @@ export class OpenCodeRunner implements Runner {
             exitCode: 1,
             cancelled: true,
             lastOutput,
-            outputText: outputCapture.toResultOutputText(),
+            outputText: finalizeOutputText(),
             errorMessage: 'Runner cancelled by user',
           });
           return;
@@ -385,7 +408,7 @@ export class OpenCodeRunner implements Runner {
         resolve({
           exitCode: code ?? 1,
           lastOutput,
-          outputText: outputCapture.toResultOutputText(),
+          outputText: finalizeOutputText(),
           errorMessage:
             code === 0 ? undefined : lastErrorOutput || lastOutput || `Runner exited with code ${code ?? 1}`,
         });
