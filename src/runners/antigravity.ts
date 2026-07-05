@@ -26,7 +26,9 @@ export const buildAntigravityExecArgs = (
   agentteamsDir: string,
   internalLogPath: string,
   timeoutMs?: number,
+  model?: string | null,
 ): string[] => {
+  const modelArgs = model ? ['--model', model] : [];
   return [
     '--dangerously-skip-permissions',
     '--add-dir',
@@ -35,6 +37,7 @@ export const buildAntigravityExecArgs = (
     internalLogPath,
     '--print-timeout',
     toPrintTimeout(timeoutMs),
+    ...modelArgs,
     '--print',
     prompt,
   ];
@@ -48,7 +51,9 @@ export const toPowerShellEncodedCommand = (
   agentteamsDir: string,
   internalLogPath: string,
   timeoutMs?: number,
+  model?: string | null,
 ): string => {
+  const modelSegment = model ? ` '--model' ${toPowerShellLiteral(model)}` : '';
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
     '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
@@ -59,7 +64,7 @@ export const toPowerShellEncodedCommand = (
     `$promptText = @'`,
     `${prompt.replaceAll("'@", "'@")}`,
     `'@`,
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '--dangerously-skip-permissions' '--add-dir' ${toPowerShellLiteral(agentteamsDir)} '--log-file' ${toPowerShellLiteral(internalLogPath)} '--print-timeout' ${toPowerShellLiteral(toPrintTimeout(timeoutMs))} '--print' $promptText`,
+    `& ${toPowerShellLiteral(resolvedExecutablePath)} '--dangerously-skip-permissions' '--add-dir' ${toPowerShellLiteral(agentteamsDir)} '--log-file' ${toPowerShellLiteral(internalLogPath)} '--print-timeout' ${toPowerShellLiteral(toPrintTimeout(timeoutMs))}${modelSegment} '--print' $promptText`,
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -351,19 +356,28 @@ export class AntigravityRunner implements Runner {
       ? resolveExecutablePathWithPreference('agy', ['agy.cmd', 'agy'])
       : resolveExecutablePathWithPreference('agy', ['agy']);
     const windowsEncodedCommand = isWindows
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, agentteamsDir, internalLogPath, opts.timeoutMs)
+      ? toPowerShellEncodedCommand(
+          resolvedExecutablePath,
+          opts.prompt,
+          agentteamsDir,
+          internalLogPath,
+          opts.timeoutMs,
+          opts.model,
+        )
       : null;
     const executableInfo = describeExecutableResolution('agy', {
       platform: () => (isWindows ? 'win32' : platform()),
     });
-    const antigravityArgs = buildAntigravityExecArgs(opts.prompt, agentteamsDir, internalLogPath, opts.timeoutMs);
+    const antigravityArgs = buildAntigravityExecArgs(
+      opts.prompt,
+      agentteamsDir,
+      internalLogPath,
+      opts.timeoutMs,
+      opts.model,
+    );
 
-    if (opts.model && opts.model.trim().length > 0) {
-      logger.warn('Antigravity CLI does not expose a verified launch-time model flag; model is ignored', {
-        triggerId: opts.triggerId,
-        model: opts.model,
-      });
-    }
+    // Antigravity CLI(agy --print)는 `--model`을 지원하므로 AgentTeams의 model 스냅샷을
+    // 그대로 전달한다. fastMode는 지원하지 않아 trigger handler가 사용자 가시 WARN으로 남긴다.
 
     logger.info('Runner prompt', {
       triggerId: opts.triggerId,

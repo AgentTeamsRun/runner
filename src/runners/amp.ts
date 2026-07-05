@@ -14,12 +14,21 @@ const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
+// Amp CLI에는 `--model` 플래그가 없고 `-m, --mode`가 모델/프롬프트/도구 구성을 고르는
+// agent mode 계약이다(`deep`/`rush`/`smart`). AgentTeams의 `model` 필드는 러너별 실행 프로필
+// 스냅샷이므로, AmpCode 러너만 이 값을 `--mode`로 전달한다. 다른 러너의 `--model` 전달 방식과
+// 혼동해 `--model`로 바꾸지 않도록 스냅샷 테스트로 고정한다.
 export const buildAmpExecArgs = (prompt: string, model?: string | null): string[] => {
   const modeArgs = model ? ['--mode', model] : [];
   return ['--execute', prompt, '--dangerously-allow-all', '--stream-json-thinking', ...modeArgs];
 };
 
-const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: string, model?: string | null): string => {
+// 위 buildAmpExecArgs와 동일하게, Windows PowerShell 경로에서도 AmpCode만 `model`을 `--mode`로 전달한다.
+export const toPowerShellEncodedCommand = (
+  resolvedExecutablePath: string,
+  prompt: string,
+  model?: string | null,
+): string => {
   const modelSegment = model ? ` '--mode' '${model.replaceAll("'", "''")}'` : '';
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
