@@ -46,6 +46,7 @@
   "license": "Apache-2.0",
   "dependencies": {},
   "devDependencies": {
+    "@agentteams/core-constants": "workspace:*",
     "@eslint/js": "^9.39.4",
     "@types/node": "^25.9.1",
     "eslint": "^9.39.4",
