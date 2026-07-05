@@ -14,23 +14,16 @@ const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
-// ⚠️ 의미 재검토 대상(model → `--mode` 매핑): 서버가 확정한 `model` 식별자를 AMP CLI의
-// `--mode` 인자로 넘긴다. 그러나 Amp 매뉴얼(https://ampcode.com/manual) 기준 `--mode`는 model
-// 식별자가 아니라 에이전트 실행 모드(`deep`/`smart`/`rush`)를 고르는 개념이며, 매뉴얼에는 model을
-// 직접 지정하는 `--model` 플래그도 문서화돼 있지 않다. 즉 platform model 값을 `--mode`로 넘기는
-// 현재 매핑은 의미 불일치(오매핑) 가능성이 크다.
-//
-// 다만 로컬에 `amp`가 설치돼 있지 않아 `amp --help`로 live 계약을 확정하지 못했고, 무단 동작 변경
-// (예: `--mode`→`--model` 치환, 또는 전달 제거)은 검증 전까지 금지한다(플랜 Assumptions). 그래서
-// 여기서는 현행 매핑을 유지하되 의미를 주석/테스트로 명시하고, 사람이 live CLI로 확인하도록 플랜에
-// RISK 코멘트로 승격한다. 아래 스냅샷 테스트(amp.test.ts)는 현행 매핑을 고정해 무의식적 변경을 막는다.
+// Amp CLI에는 `--model` 플래그가 없고 `-m, --mode`가 모델/프롬프트/도구 구성을 고르는
+// agent mode 계약이다(`deep`/`rush`/`smart`). AgentTeams의 `model` 필드는 러너별 실행 프로필
+// 스냅샷이므로, AmpCode 러너만 이 값을 `--mode`로 전달한다. 다른 러너의 `--model` 전달 방식과
+// 혼동해 `--model`로 바꾸지 않도록 스냅샷 테스트로 고정한다.
 export const buildAmpExecArgs = (prompt: string, model?: string | null): string[] => {
   const modeArgs = model ? ['--mode', model] : [];
   return ['--execute', prompt, '--dangerously-allow-all', '--stream-json-thinking', ...modeArgs];
 };
 
-// 위 buildAmpExecArgs와 동일한 model → `--mode` 매핑(의미 재검토 대상)을 Windows PowerShell 경로에
-// 대해 적용한다.
+// 위 buildAmpExecArgs와 동일하게, Windows PowerShell 경로에서도 AmpCode만 `model`을 `--mode`로 전달한다.
 export const toPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
   prompt: string,

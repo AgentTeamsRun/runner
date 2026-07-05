@@ -24,11 +24,10 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   CODEX: { model: true, fastMode: true },
   // opencode는 --model만 전달하며 fastMode는 반영하지 않는다.
   OPENCODE: { model: true, fastMode: false },
-  // antigravity(agy --print)는 검증된 launch-time model 플래그가 없어 model을 반영하지 못한다.
-  ANTIGRAVITY: { model: false, fastMode: false },
-  // AMP: model은 현재 `--mode`로 전달되나 의미 검증이 끝나지 않았다(runners/amp.ts 주석 참조).
-  // 여기서는 "전달은 한다"는 현행 동작에 맞춰 model:true로 두고, 의미 리스크는 amp.ts 주석과
-  // 플랜 RISK 코멘트로 분리 추적한다(무단 동작 변경 금지).
+  // antigravity(agy --print)는 --model을 지원하지만 fastMode는 반영하지 않는다.
+  ANTIGRAVITY: { model: true, fastMode: false },
+  // AMP는 `--model`이 아니라 `--mode`로 실행 프로필을 선택하므로 model:true로 둔다.
+  // 실제 인자 조립은 runners/amp.ts에서 AmpCode 전용 계약으로 문서화한다.
   AMP: { model: true, fastMode: false },
 };
 

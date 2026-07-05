@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildAmpExecArgs, toPowerShellEncodedCommand } from './amp.js';
 
-// AMP의 model → `--mode` 매핑은 의미 재검토 대상이다(amp.ts 주석 참조). 아래 스냅샷 테스트는
-// 현행 매핑을 고정해, 계약 검증 전에 인자 조립이 무의식적으로 바뀌는 것을 막는다.
+// AmpCode만 AgentTeams의 model 스냅샷을 Amp CLI의 `--mode`로 전달한다(amp.ts 주석 참조).
+// 아래 스냅샷 테스트는 이를 `--model`로 바꾸는 회귀를 막는다.
 
-test('buildAmpExecArgs maps the requested model into the `--mode` flag (semantics under review)', () => {
+test('buildAmpExecArgs maps the requested model into the Amp `--mode` flag', () => {
   assert.deepEqual(buildAmpExecArgs('hello', 'gpt-5-codex'), [
     '--execute',
     'hello',

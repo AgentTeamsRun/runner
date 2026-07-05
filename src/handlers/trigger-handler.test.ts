@@ -1641,18 +1641,19 @@ test('createTriggerHandler surfaces a user-visible warning when the runner ignor
     },
   );
 
-  // ANTIGRAVITY는 model도 fastMode도 소비하지 못한다. 두 옵션 모두 명시적 WARN으로 승격돼야 한다.
+  // ANTIGRAVITY는 model을 --model로 소비하지만 fastMode는 지원하지 않는다.
   await handler({ ...trigger, runnerType: 'ANTIGRAVITY', model: 'gemini-3', fastMode: true });
 
   const warnings = logEntries.filter((entry) => entry.level === 'WARN');
   assert.equal(
     warnings.some((w) => /Model selection is not supported by runner ANTIGRAVITY/.test(w.message)),
-    true,
+    false,
   );
   assert.equal(
     warnings.some((w) => /Fast mode is not supported by runner ANTIGRAVITY/.test(w.message)),
     true,
   );
+  assert.equal(runnerInputs[0]?.model, 'gemini-3');
   // 미지원 fastMode는 러너로 전달되지 않는다(현행 gating 유지).
   assert.equal(runnerInputs[0]?.fastMode, false);
 });

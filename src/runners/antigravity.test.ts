@@ -18,7 +18,7 @@ test('buildAntigravityExecArgs uses verified print-mode contract', () => {
   const internalLogPath = join(agentteamsDir, 'runner', 'log', 'trigger.antigravity.log');
 
   assert.equal(isAbsolute(agentteamsDir), true);
-  assert.deepEqual(buildAntigravityExecArgs('hello', agentteamsDir, internalLogPath, 20_000), [
+  assert.deepEqual(buildAntigravityExecArgs('hello', agentteamsDir, internalLogPath, 20_000, 'gemini-3'), [
     '--dangerously-skip-permissions',
     '--add-dir',
     agentteamsDir,
@@ -26,6 +26,8 @@ test('buildAntigravityExecArgs uses verified print-mode contract', () => {
     internalLogPath,
     '--print-timeout',
     '20s',
+    '--model',
+    'gemini-3',
     '--print',
     'hello',
   ]);
@@ -53,7 +55,14 @@ test('toPowerShellEncodedCommand forwards absolute add-dir and log-file', () => 
   const cwd = 'C:\\Users\\agent\\project';
   const agentteamsDir = `${cwd}\\.agentteams`;
   const internalLogPath = `${agentteamsDir}\\runner\\log\\trigger.antigravity.log`;
-  const encoded = toPowerShellEncodedCommand('C:\\Tools\\agy.cmd', 'hello', agentteamsDir, internalLogPath, 20_000);
+  const encoded = toPowerShellEncodedCommand(
+    'C:\\Tools\\agy.cmd',
+    'hello',
+    agentteamsDir,
+    internalLogPath,
+    20_000,
+    'gemini-3',
+  );
   const decoded = Buffer.from(encoded, 'base64').toString('utf16le');
 
   assert.match(decoded, /'--add-dir' 'C:\\Users\\agent\\project\\.agentteams'/);
@@ -61,6 +70,7 @@ test('toPowerShellEncodedCommand forwards absolute add-dir and log-file', () => 
     decoded,
     /'--log-file' 'C:\\Users\\agent\\project\\.agentteams\\runner\\log\\trigger\.antigravity\.log'/,
   );
+  assert.match(decoded, /'--model' 'gemini-3'/);
   assert.doesNotMatch(decoded, /'--add-dir' '\.agentteams'/);
 });
 

@@ -17,8 +17,8 @@ test('only claude-code and codex support fastMode', () => {
   assert.equal(runnerSupportsFastMode('OPENCODE'), false);
 });
 
-test('antigravity does not support model selection', () => {
-  assert.equal(RUNNER_CAPABILITIES.ANTIGRAVITY.model, false);
+test('antigravity supports model selection', () => {
+  assert.equal(RUNNER_CAPABILITIES.ANTIGRAVITY.model, true);
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.model, true);
 });
 
@@ -27,12 +27,9 @@ test('unknown runner types default to no capabilities', () => {
   assert.equal(runnerSupportsFastMode('SOMETHING_ELSE'), false);
 });
 
-test('describeUnsupportedRunnerOptions flags model ignored for ANTIGRAVITY', () => {
+test('describeUnsupportedRunnerOptions is silent for ANTIGRAVITY model selection', () => {
   const warnings = describeUnsupportedRunnerOptions('ANTIGRAVITY', { model: 'gemini-3', fastMode: false });
-  assert.equal(warnings.length, 1);
-  assert.equal(warnings[0]?.option, 'model');
-  assert.match(warnings[0]?.message ?? '', /Model selection is not supported by runner ANTIGRAVITY/);
-  assert.match(warnings[0]?.message ?? '', /"gemini-3"/);
+  assert.deepEqual(warnings, []);
 });
 
 test('describeUnsupportedRunnerOptions flags fastMode ignored for unsupported runners', () => {
@@ -44,17 +41,18 @@ test('describeUnsupportedRunnerOptions flags fastMode ignored for unsupported ru
   }
 });
 
-test('describeUnsupportedRunnerOptions reports both unsupported options together', () => {
+test('describeUnsupportedRunnerOptions reports only fastMode for ANTIGRAVITY model plus fastMode', () => {
   const warnings = describeUnsupportedRunnerOptions('ANTIGRAVITY', { model: 'gemini-3', fastMode: true });
   assert.deepEqual(
     warnings.map((w) => w.option),
-    ['model', 'fastMode'],
+    ['fastMode'],
   );
 });
 
 test('describeUnsupportedRunnerOptions is silent for supported combinations', () => {
   assert.deepEqual(describeUnsupportedRunnerOptions('CODEX', { model: 'o4-mini', fastMode: true }), []);
   assert.deepEqual(describeUnsupportedRunnerOptions('CLAUDE_CODE', { model: 'sonnet', fastMode: true }), []);
+  assert.deepEqual(describeUnsupportedRunnerOptions('ANTIGRAVITY', { model: 'gemini-3', fastMode: false }), []);
   // opencode supports model but not fastMode → only fastMode warns; model alone is silent.
   assert.deepEqual(describeUnsupportedRunnerOptions('OPENCODE', { model: 'gpt-5', fastMode: false }), []);
 });
