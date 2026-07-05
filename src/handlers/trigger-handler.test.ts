@@ -1594,3 +1594,115 @@ test('createTriggerHandler does not append history or convention text to the API
     assert.doesNotMatch(runnerInputs[0]?.prompt ?? '', /Context-Matched Conventions \(AUTO-LOADED\)/);
   });
 });
+
+test('createTriggerHandler surfaces a user-visible warning when the runner ignores model/fastMode', async () => {
+  const logEntries: Array<{ level: string; message: string }> = [];
+  const runnerInputs: Array<{ model: string | null | undefined; fastMode: boolean | undefined }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async () => undefined,
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      createRunnerFactory: () => () => ({
+        run: async (input) => {
+          runnerInputs.push({ model: input.model, fastMode: input.fastMode });
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: (level, message) => {
+          logEntries.push({ level, message });
+        },
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  // ANTIGRAVITY는 model도 fastMode도 소비하지 못한다. 두 옵션 모두 명시적 WARN으로 승격돼야 한다.
+  await handler({ ...trigger, runnerType: 'ANTIGRAVITY', model: 'gemini-3', fastMode: true });
+
+  const warnings = logEntries.filter((entry) => entry.level === 'WARN');
+  assert.equal(
+    warnings.some((w) => /Model selection is not supported by runner ANTIGRAVITY/.test(w.message)),
+    true,
+  );
+  assert.equal(
+    warnings.some((w) => /Fast mode is not supported by runner ANTIGRAVITY/.test(w.message)),
+    true,
+  );
+  // 미지원 fastMode는 러너로 전달되지 않는다(현행 gating 유지).
+  assert.equal(runnerInputs[0]?.fastMode, false);
+});
+
+test('createTriggerHandler does not warn when the runner supports the requested options', async () => {
+  const logEntries: Array<{ level: string; message: string }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async () => undefined,
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      createRunnerFactory: () => () => ({
+        run: async () => ({ exitCode: 0 }) satisfies RunResult,
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: (level, message) => {
+          logEntries.push({ level, message });
+        },
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, runnerType: 'CODEX', model: 'o4-mini', fastMode: true });
+
+  const unsupportedWarnings = logEntries.filter(
+    (entry) => entry.level === 'WARN' && /is not supported by runner/.test(entry.message),
+  );
+  assert.deepEqual(unsupportedWarnings, []);
+});

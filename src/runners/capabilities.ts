@@ -1,0 +1,71 @@
+// 러너별 실행 옵션 지원 매트릭스의 단일 진실 소스(SSOT).
+//
+// 서버(설정/요청 화면)가 확정한 실행 옵션(model/fastMode)을 대상 러너가 실제로 소비하지
+// 못할 때, trigger handler가 이를 무음으로 폐기하는 대신 사용자 가시 경고로 승격하기 위한
+// 근거로 사용한다. 러너별로 흩어져 있던 "이 옵션을 지원하는가" 판정을 여기 한 곳에 모은다.
+//
+// 러너 타입 값 자체의 SSOT는 `@agentteams/core-constants`의 `RUNNER_TYPES`이지만, daemon은
+// zero-dependency 원칙상 런타임에 그 패키지를 참조하지 않는다. 여기서는 팩토리
+// (`runners/index.ts`)가 분기하는 러너 타입 문자열과 정렬된 로컬 맵으로 관리한다.
+
+export type KnownRunnerType = 'OPENCODE' | 'CLAUDE_CODE' | 'CODEX' | 'ANTIGRAVITY' | 'AMP';
+
+export interface RunnerCapabilities {
+  /** 요청된 model 식별자를 하위 CLI에 전달/적용하는가. */
+  model: boolean;
+  /** fast-inference 모드(fastMode)를 실제로 반영하는가. */
+  fastMode: boolean;
+}
+
+export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = {
+  // claude-code(-p --model / --settings fastMode)와 codex(--model / -c features.fast_mode)만
+  // 두 옵션을 실제로 소비한다.
+  CLAUDE_CODE: { model: true, fastMode: true },
+  CODEX: { model: true, fastMode: true },
+  // opencode는 --model만 전달하며 fastMode는 반영하지 않는다.
+  OPENCODE: { model: true, fastMode: false },
+  // antigravity(agy --print)는 검증된 launch-time model 플래그가 없어 model을 반영하지 못한다.
+  ANTIGRAVITY: { model: false, fastMode: false },
+  // AMP: model은 현재 `--mode`로 전달되나 의미 검증이 끝나지 않았다(runners/amp.ts 주석 참조).
+  // 여기서는 "전달은 한다"는 현행 동작에 맞춰 model:true로 두고, 의미 리스크는 amp.ts 주석과
+  // 플랜 RISK 코멘트로 분리 추적한다(무단 동작 변경 금지).
+  AMP: { model: true, fastMode: false },
+};
+
+const DEFAULT_CAPABILITIES: RunnerCapabilities = { model: false, fastMode: false };
+
+export const getRunnerCapabilities = (runnerType: string): RunnerCapabilities =>
+  RUNNER_CAPABILITIES[runnerType as KnownRunnerType] ?? DEFAULT_CAPABILITIES;
+
+export const runnerSupportsFastMode = (runnerType: string): boolean => getRunnerCapabilities(runnerType).fastMode;
+
+export type UnsupportedRunnerOption = {
+  option: 'model' | 'fastMode';
+  message: string;
+};
+
+// 요청됐지만 대상 러너가 지원하지 않는 실행 옵션과 그 사용자 노출 경고 문구를 만든다.
+// trigger handler가 반환된 각 항목을 로그 리포터(WARN)로 흘려 사용자 가시 신호로 남긴다.
+export const describeUnsupportedRunnerOptions = (
+  runnerType: string,
+  options: { model?: string | null; fastMode?: boolean | null },
+): UnsupportedRunnerOption[] => {
+  const capabilities = getRunnerCapabilities(runnerType);
+  const warnings: UnsupportedRunnerOption[] = [];
+
+  if (typeof options.model === 'string' && options.model.trim().length > 0 && !capabilities.model) {
+    warnings.push({
+      option: 'model',
+      message: `Model selection is not supported by runner ${runnerType}; the requested model "${options.model}" was ignored.`,
+    });
+  }
+
+  if (options.fastMode && !capabilities.fastMode) {
+    warnings.push({
+      option: 'fastMode',
+      message: `Fast mode is not supported by runner ${runnerType}; the requested fast mode was ignored.`,
+    });
+  }
+
+  return warnings;
+};

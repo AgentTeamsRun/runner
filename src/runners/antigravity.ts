@@ -358,12 +358,10 @@ export class AntigravityRunner implements Runner {
     });
     const antigravityArgs = buildAntigravityExecArgs(opts.prompt, agentteamsDir, internalLogPath, opts.timeoutMs);
 
-    if (opts.model && opts.model.trim().length > 0) {
-      logger.warn('Antigravity CLI does not expose a verified launch-time model flag; model is ignored', {
-        triggerId: opts.triggerId,
-        model: opts.model,
-      });
-    }
+    // Antigravity CLI(agy --print)에는 검증된 launch-time model 플래그가 없어 opts.model을
+    // 의도적으로 CLI에 전달하지 않는다(검증 안 된 플래그 임의 주입 금지). model 무시는 더 이상
+    // 서버 로그로만 남기지 않고, trigger handler가 러너 지원 매트릭스(runners/capabilities.ts)를
+    // 근거로 사용자 가시 경고(로그 리포터 WARN)로 승격한다.
 
     logger.info('Runner prompt', {
       triggerId: opts.triggerId,
