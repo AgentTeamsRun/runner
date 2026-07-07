@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import type { DaemonConfigFile, RuntimeConfig } from './types.js';
 
 const DEFAULT_POLLING_INTERVAL_MS = 30_000;
+const DEFAULT_MAX_POLLING_INTERVAL_MS = 120_000;
 const DEFAULT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_IDLE_TIMEOUT_MS = 600_000;
 const DEFAULT_RUNNER_CMD = 'opencode';
@@ -78,10 +79,17 @@ export const resolveRuntimeConfig = async (): Promise<RuntimeConfig> => {
     throw new Error("Daemon token is missing. Run 'agentrunner init --token <token>' first.");
   }
 
+  const pollingIntervalMs = parsePositiveInteger(process.env.POLLING_INTERVAL_MS, DEFAULT_POLLING_INTERVAL_MS);
+
   return {
     daemonToken,
     apiUrl,
-    pollingIntervalMs: parsePositiveInteger(process.env.POLLING_INTERVAL_MS, DEFAULT_POLLING_INTERVAL_MS),
+    pollingIntervalMs,
+    // idle 백오프 상한. base보다 작게 설정되면 base로 올려 clamp한다(백오프가 base보다 짧아지는 무의미 상태 방지).
+    maxPollingIntervalMs: Math.max(
+      parsePositiveInteger(process.env.MAX_POLLING_INTERVAL_MS, DEFAULT_MAX_POLLING_INTERVAL_MS),
+      pollingIntervalMs,
+    ),
     timeoutMs: parsePositiveInteger(process.env.TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
     idleTimeoutMs: parsePositiveInteger(process.env.IDLE_TIMEOUT_MS, DEFAULT_IDLE_TIMEOUT_MS),
     runnerCmd: process.env.RUNNER_CMD?.trim() || DEFAULT_RUNNER_CMD,

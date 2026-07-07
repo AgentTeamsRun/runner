@@ -19,6 +19,7 @@ const envKeys = [
   'AGENTTEAMS_DAEMON_TOKEN',
   'AGENTTEAMS_API_URL',
   'POLLING_INTERVAL_MS',
+  'MAX_POLLING_INTERVAL_MS',
   'IDLE_TIMEOUT_MS',
   'TIMEOUT_MS',
   'RUNNER_CMD',
@@ -116,6 +117,7 @@ test('resolveRuntimeConfig prefers environment variables and applies numeric par
       daemonToken: 'env-token',
       apiUrl: 'https://env.example',
       pollingIntervalMs: 30_000,
+      maxPollingIntervalMs: 120_000,
       timeoutMs: 1234,
       idleTimeoutMs: 600_000,
       runnerCmd: 'codex',
@@ -145,6 +147,35 @@ test('resolveRuntimeConfig uses the 24-hour fail-safe timeout by default', async
 
     assert.equal(result.timeoutMs, 86_400_000);
     assert.equal(result.idleTimeoutMs, 600_000);
+  });
+});
+
+test('resolveRuntimeConfig parses MAX_POLLING_INTERVAL_MS with fallback and base clamp', async () => {
+  await withTempHome(async () => {
+    process.env.AGENTTEAMS_DAEMON_TOKEN = 'env-token';
+
+    // 유효한 값은 그대로 사용한다.
+    process.env.MAX_POLLING_INTERVAL_MS = '90000';
+    assert.equal((await resolveRuntimeConfig()).maxPollingIntervalMs, 90_000);
+
+    // 0/음수/숫자 아님은 기본값으로 폴백한다.
+    process.env.MAX_POLLING_INTERVAL_MS = '0';
+    assert.equal((await resolveRuntimeConfig()).maxPollingIntervalMs, 120_000);
+    process.env.MAX_POLLING_INTERVAL_MS = '-5';
+    assert.equal((await resolveRuntimeConfig()).maxPollingIntervalMs, 120_000);
+    process.env.MAX_POLLING_INTERVAL_MS = 'abc';
+    assert.equal((await resolveRuntimeConfig()).maxPollingIntervalMs, 120_000);
+
+    // 미설정 시 기본값을 사용한다.
+    delete process.env.MAX_POLLING_INTERVAL_MS;
+    assert.equal((await resolveRuntimeConfig()).maxPollingIntervalMs, 120_000);
+
+    // base(pollingIntervalMs)보다 작게 설정되면 base로 올려 clamp한다.
+    process.env.POLLING_INTERVAL_MS = '60000';
+    process.env.MAX_POLLING_INTERVAL_MS = '45000';
+    const clamped = await resolveRuntimeConfig();
+    assert.equal(clamped.pollingIntervalMs, 60_000);
+    assert.equal(clamped.maxPollingIntervalMs, 60_000);
   });
 });
 
