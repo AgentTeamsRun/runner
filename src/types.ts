@@ -4,6 +4,7 @@ export type RuntimeConfig = {
   daemonToken: string;
   apiUrl: string;
   pollingIntervalMs: number;
+  maxPollingIntervalMs: number;
   timeoutMs: number;
   idleTimeoutMs: number;
   runnerCmd: string;

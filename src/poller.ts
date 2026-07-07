@@ -17,6 +17,12 @@ type TriggerHandlerFactory = (
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CONVENTION_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+// 한 polling cycle의 결과.
+// - ACTIVE: 처리할 일이 있었다(pending claim/실행, 고아 취소, 워크트리 제거, restart 중 하나 이상).
+// - IDLE: 순수 idle cycle(또는 cycle 실패) — 백오프 대상.
+// - SKIPPED: 진행 중인 cycle에 의해 재진입이 억제됨 — 스케줄링에 반영하지 않는다.
+type PollCycleOutcome = 'ACTIVE' | 'IDLE' | 'SKIPPED';
+
 type PollingDependencies = {
   createClient?: (
     config: RuntimeConfig,
@@ -34,8 +40,8 @@ type PollingDependencies = {
   removeWorktree?: typeof removeWorktree;
   maybeAutoUpdate?: typeof maybeAutoUpdate;
   executeRestartRequest?: typeof executeRestartRequest;
-  setInterval?: typeof global.setInterval;
-  clearInterval?: typeof global.clearInterval;
+  setTimeout?: typeof global.setTimeout;
+  clearTimeout?: typeof global.clearTimeout;
   processOn?: (event: NodeJS.Signals, listener: () => void) => void;
   processExit?: (code: number) => never;
   now?: () => number;
@@ -57,8 +63,8 @@ export const startPolling = async (
   const autoUpdate = dependencies.maybeAutoUpdate ?? maybeAutoUpdate;
   const performRestart = dependencies.executeRestartRequest ?? executeRestartRequest;
   const now = dependencies.now ?? Date.now;
-  const registerInterval = dependencies.setInterval ?? global.setInterval;
-  const unregisterInterval = dependencies.clearInterval ?? global.clearInterval;
+  const registerTimeout = dependencies.setTimeout ?? global.setTimeout;
+  const unregisterTimeout = dependencies.clearTimeout ?? global.clearTimeout;
   const registerSignal = dependencies.processOn ?? ((event, listener) => process.on(event, listener));
   const exitProcess = dependencies.processExit ?? ((code) => process.exit(code));
   const keepAlive =
@@ -196,12 +202,14 @@ export const startPolling = async (
     }
   };
 
-  const pollOnce = async () => {
+  const pollOnce = async (): Promise<PollCycleOutcome> => {
     if (isPolling) {
-      return;
+      return 'SKIPPED';
     }
 
     isPolling = true;
+    // 이번 cycle에 처리할 일이 있었는지. 순수 idle만 false로 남는다.
+    let hadWork = false;
     try {
       maybeRunCleanup();
       maybeRunConventionSync();
@@ -210,6 +218,10 @@ export const startPolling = async (
       // snapshot 1회 조회로 가져온다. 실패 시 아래 catch에서 polling cycle 전체가 실패
       // 처리되어 명확한 로그를 남긴다(조용히 pending 확인만 생략하지 않는다).
       const pollState = await client.fetchPollState();
+
+      hadWork =
+        pollState.data.orphanedCancelRequestedTriggerIds.length > 0 ||
+        pollState.data.pendingWorktreeRemovals.length > 0;
 
       // 후속 mutation은 기존과 동일하게 개별 처리하며, 처리 순서도 보존한다.
       await autoCancelOrphanedTriggers(pollState.data.orphanedCancelRequestedTriggerIds);
@@ -227,11 +239,12 @@ export const startPolling = async (
           logger.warn('Failed to ack restart request — will retry on next poll', {
             error: error instanceof Error ? error.message : String(error),
           });
-          return;
+          // ack 재시도를 base 간격으로 빠르게 잇기 위해 활동으로 취급한다.
+          return 'ACTIVE';
         }
 
         performRestart({ processExit: exitProcess });
-        return;
+        return 'ACTIVE';
       }
 
       if (!trigger) {
@@ -245,18 +258,18 @@ export const startPolling = async (
             error: error instanceof Error ? error.message : String(error),
           });
         }
-        return;
+        return hadWork ? 'ACTIVE' : 'IDLE';
       }
 
       const claim = await client.claimTrigger(trigger.id);
       if (claim.conflict) {
         logger.info('Trigger already claimed by another daemon', { triggerId: trigger.id });
-        return;
+        return 'ACTIVE';
       }
 
       if (!claim.ok) {
         logger.warn('Claim was rejected', { triggerId: trigger.id });
-        return;
+        return 'ACTIVE';
       }
 
       void onTrigger(trigger).catch((error) => {
@@ -265,18 +278,50 @@ export const startPolling = async (
           error: error instanceof Error ? error.message : String(error),
         });
       });
+      return 'ACTIVE';
     } catch (error) {
       logger.error('Polling cycle failed', {
         error: error instanceof Error ? error.message : String(error),
       });
+      return hadWork ? 'ACTIVE' : 'IDLE';
     } finally {
       isPolling = false;
     }
   };
 
-  const interval = registerInterval(() => {
-    void pollOnce();
-  }, config.pollingIntervalMs);
+  // idle 적응형 백오프: 연속 idle cycle마다 다음 폴 간격을 선형 증가시키고
+  // (base × (1 + idleStreak × 0.5), 상한 clamp), 활동이 감지되면 즉시 base로 리셋한다.
+  let stopped = false;
+  let idleStreak = 0;
+  let pendingPollTimer: NodeJS.Timeout | null = null;
+
+  const computeNextPollDelay = (outcome: 'ACTIVE' | 'IDLE'): number => {
+    if (outcome === 'ACTIVE') {
+      idleStreak = 0;
+      return config.pollingIntervalMs;
+    }
+    idleStreak += 1;
+    return Math.min(config.pollingIntervalMs * (1 + idleStreak * 0.5), config.maxPollingIntervalMs);
+  };
+
+  const runPollCycle = async (): Promise<void> => {
+    if (stopped) {
+      return;
+    }
+
+    const outcome = await pollOnce();
+    if (outcome === 'SKIPPED') {
+      // 진행 중인 cycle이 완료 시점에 다음 폴을 예약하므로 여기서 이중 예약하지 않는다.
+      return;
+    }
+    if (stopped) {
+      return;
+    }
+
+    pendingPollTimer = registerTimeout(() => {
+      void runPollCycle();
+    }, computeNextPollDelay(outcome));
+  };
 
   // daemon 시작과 함께 절전 방지를 한 번 acquire한다. polling cycle마다 반복하지 않는다.
   const releasePowerSaveBlocker = powerSaveBlocker.acquire('daemon-polling');
@@ -284,15 +329,21 @@ export const startPolling = async (
   logger.info('Daemon polling started', {
     apiUrl: config.apiUrl,
     pollingIntervalMs: config.pollingIntervalMs,
+    maxPollingIntervalMs: config.maxPollingIntervalMs,
     timeoutMs: config.timeoutMs,
     runnerCmd: config.runnerCmd,
   });
 
-  await pollOnce();
+  // 부트스트랩: 즉시 1회 폴 후 자기예약 루프가 다음 폴을 이어간다.
+  await runPollCycle();
 
   const shutdown = () => {
+    stopped = true;
+    if (pendingPollTimer !== null) {
+      unregisterTimeout(pendingPollTimer);
+      pendingPollTimer = null;
+    }
     releasePowerSaveBlocker();
-    unregisterInterval(interval);
     logger.info('Daemon stopped');
     exitProcess(0);
   };

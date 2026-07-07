@@ -11,6 +11,7 @@ const config: RuntimeConfig = {
   daemonToken: 'daemon-token',
   apiUrl: 'https://api.example',
   pollingIntervalMs: 5000,
+  maxPollingIntervalMs: 12_000,
   timeoutMs: 1000,
   idleTimeoutMs: 500,
   runnerCmd: 'opencode',
@@ -80,6 +81,22 @@ const makeClient = (overrides: PollClientOverrides = {}) => ({
   ackRestartRequest: overrides.ackRestartRequest ?? (async () => undefined),
 });
 
+// setTimeout 주입 목: 예약된 폴 콜백과 delay를 캡처해 수동으로 구동한다.
+// 자기예약 루프는 매 cycle 완료 후 새 timeout을 예약하므로, 다음 폴은 scheduled의
+// 마지막 항목을 fire하면 된다.
+const createTimeoutRecorder = () => {
+  const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+  const cleared: NodeJS.Timeout[] = [];
+  const setTimeoutMock = ((callback: () => void, delayMs?: number) => {
+    scheduled.push({ callback, delayMs: delayMs ?? 0 });
+    return { ref() {}, unref() {} } as unknown as NodeJS.Timeout;
+  }) as unknown as typeof setTimeout;
+  const clearTimeoutMock = ((handle: NodeJS.Timeout) => {
+    cleared.push(handle);
+  }) as typeof clearTimeout;
+  return { scheduled, cleared, setTimeoutMock, clearTimeoutMock };
+};
+
 type BlockerEvents = { events: string[]; blocker: { acquire: (label?: string) => () => void } };
 
 const createRecordingBlocker = (): BlockerEvents => {
@@ -102,7 +119,7 @@ test('startPolling handles a claimed trigger, registers auth paths, and runs sch
   });
 
   const signals = new Map<string, () => void>();
-  const intervalCallbacks: Array<() => void> = [];
+  const timeouts = createTimeoutRecorder();
   const cleanupCalls: string[] = [];
   const handledTriggers: string[] = [];
   const savedAuthPaths: string[] = [];
@@ -127,11 +144,8 @@ test('startPolling handles a claimed trigger, registers auth paths, and runs sch
       cleanupCalls.push(authPath);
     },
     runConventionSync: async () => undefined,
-    setInterval: ((callback: () => void) => {
-      intervalCallbacks.push(callback);
-      return { ref() {}, unref() {} } as unknown as NodeJS.Timeout;
-    }) as typeof setInterval,
-    clearInterval: (() => undefined) as typeof clearInterval,
+    setTimeout: timeouts.setTimeoutMock,
+    clearTimeout: timeouts.clearTimeoutMock,
     processOn: ((event: NodeJS.Signals, listener: () => void) => {
       signals.set(event, listener);
     }) as (event: NodeJS.Signals, listener: () => void) => void,
@@ -153,10 +167,12 @@ test('startPolling handles a claimed trigger, registers auth paths, and runs sch
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(handledTriggers, ['trigger-1']);
   assert.deepEqual(cleanupCalls, []);
-  assert.equal(intervalCallbacks.length, 1);
+  assert.equal(timeouts.scheduled.length, 1);
+  // 부트스트랩 cycle에서 트리거를 처리했으므로 다음 폴은 base 간격으로 예약된다.
+  assert.equal(timeouts.scheduled[0]?.delayMs, config.pollingIntervalMs);
 
   nowValue = 24 * 60 * 60 * 1000 + 1;
-  await intervalCallbacks[0]?.();
+  timeouts.scheduled[0]?.callback();
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(cleanupCalls, ['/auth/path']);
@@ -229,8 +245,8 @@ test('startPolling processes orphaned cancel, worktree removal, and pending clai
       // 워크트리 경로가 매칭되지 않도록 존재하지 않는 authPath를 사용 → 멱등 제거 완료 경로.
       loadAuthPaths: () => ['/nonexistent/auth/path'],
       saveAuthPath: () => '/tmp/auth-paths.json',
-      setInterval: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as typeof setInterval,
-      clearInterval: (() => undefined) as typeof clearInterval,
+      setTimeout: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as unknown as typeof setTimeout,
+      clearTimeout: (() => undefined) as typeof clearTimeout,
       processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
       processExit: (() => {
         throw new Error('should not exit');
@@ -261,7 +277,7 @@ test('startPolling processes orphaned cancel, worktree removal, and pending clai
 });
 
 test('startPolling runs convention sync per auth path every 6 hours', async () => {
-  const intervalCallbacks: Array<() => void> = [];
+  const timeouts = createTimeoutRecorder();
   const conventionSyncCalls: string[] = [];
   let nowValue = 6 * 60 * 60 * 1000 + 1;
   let keepAliveResolve: (() => void) | null = null;
@@ -273,11 +289,8 @@ test('startPolling runs convention sync per auth path every 6 hours', async () =
       conventionSyncCalls.push(authPath);
     },
     maybeAutoUpdate: async () => ({ cliUpdated: false, runnerUpdated: false }),
-    setInterval: ((callback: () => void) => {
-      intervalCallbacks.push(callback);
-      return { ref() {}, unref() {} } as unknown as NodeJS.Timeout;
-    }) as typeof setInterval,
-    clearInterval: (() => undefined) as typeof clearInterval,
+    setTimeout: timeouts.setTimeoutMock,
+    clearTimeout: timeouts.clearTimeoutMock,
     processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
     processExit: (() => {
       throw new Error('should not exit');
@@ -293,15 +306,15 @@ test('startPolling runs convention sync per auth path every 6 hours', async () =
 
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(conventionSyncCalls, ['/auth/path']);
-  assert.equal(intervalCallbacks.length, 1);
+  assert.equal(timeouts.scheduled.length, 1);
 
   nowValue += 6 * 60 * 60 * 1000 - 1;
-  await intervalCallbacks[0]?.();
+  timeouts.scheduled.at(-1)?.callback();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(conventionSyncCalls, ['/auth/path']);
 
   nowValue += 1;
-  await intervalCallbacks[0]?.();
+  timeouts.scheduled.at(-1)?.callback();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(conventionSyncCalls, ['/auth/path', '/auth/path']);
 
@@ -314,22 +327,30 @@ test('startPolling runs convention sync per auth path every 6 hours', async () =
   await pollingPromise;
 });
 
-test('startPolling logs conflicts and suppresses overlapping polling cycles', async () => {
+test('startPolling logs conflicts and suppresses overlapping polling cycles without double-scheduling', async () => {
   const infos: Array<{ message: string; meta?: Record<string, unknown> }> = [];
   mock.method(logger, 'info', (message: string, meta?: Record<string, unknown>) => {
     infos.push({ message, meta });
   });
 
+  // 부트스트랩 cycle은 즉시 idle로 완료시키고, 두 번째 cycle의 fetch를 행 걸어
+  // 그 사이 재진입(pollOnce 중복 호출)이 억제되는지 확인한다.
+  let fetchCalls = 0;
   let releaseFetch: (() => void) | null = null;
   const client = makeClient({
-    fetchPollState: async () =>
-      await new Promise<PollStateResponse>((resolve) => {
+    fetchPollState: async () => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return pollState();
+      }
+      return await new Promise<PollStateResponse>((resolve) => {
         releaseFetch = () => resolve(pollState({ pendingTrigger: trigger }));
-      }),
+      });
+    },
     claimTrigger: async () => ({ ok: false, conflict: true }),
   });
 
-  const intervalCallbacks: Array<() => void> = [];
+  const timeouts = createTimeoutRecorder();
   let keepAliveResolve: (() => void) | null = null;
 
   const pollingPromise = startPolling(
@@ -340,11 +361,8 @@ test('startPolling logs conflicts and suppresses overlapping polling cycles', as
     {
       createClient: () => client,
       runCleanup: async () => undefined,
-      setInterval: ((callback: () => void) => {
-        intervalCallbacks.push(callback);
-        return {} as NodeJS.Timeout;
-      }) as typeof setInterval,
-      clearInterval: (() => undefined) as typeof clearInterval,
+      setTimeout: timeouts.setTimeoutMock,
+      clearTimeout: timeouts.clearTimeoutMock,
       processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
       processExit: (() => {
         throw new Error('should not exit');
@@ -360,7 +378,15 @@ test('startPolling logs conflicts and suppresses overlapping polling cycles', as
   );
 
   await new Promise((resolve) => setImmediate(resolve));
-  await intervalCallbacks[0]?.();
+  assert.equal(timeouts.scheduled.length, 1, 'bootstrap cycle should schedule the next poll');
+
+  // 두 번째 cycle 시작(fetch 행) 후 같은 콜백을 한 번 더 fire → 재진입 억제.
+  timeouts.scheduled[0]?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled[0]?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timeouts.scheduled.length, 1, 'suppressed overlapping cycle must not schedule another poll');
+
   const releasePendingFetch =
     releaseFetch ??
     (() => {
@@ -373,6 +399,9 @@ test('startPolling logs conflicts and suppresses overlapping polling cycles', as
     infos.some((entry) => entry.message === 'Trigger already claimed by another daemon'),
     true,
   );
+  // 행 걸렸던 cycle이 완료되면서 다음 폴 1개만 예약되고, pending 트리거를 봤으므로 base 간격이다.
+  assert.equal(timeouts.scheduled.length, 2, 'the in-flight cycle owns scheduling the next poll');
+  assert.equal(timeouts.scheduled[1]?.delayMs, config.pollingIntervalMs);
 
   const resolveKeepAlive =
     keepAliveResolve ??
@@ -383,20 +412,20 @@ test('startPolling logs conflicts and suppresses overlapping polling cycles', as
   await pollingPromise;
 });
 
-test('startPolling clears the interval and exits on shutdown signals', async () => {
+test('startPolling clears the pending poll timer and exits on shutdown signals', async () => {
   const signals = new Map<string, () => void>();
   const cleared: NodeJS.Timeout[] = [];
   let keepAliveResolve: (() => void) | null = null;
   let exitCode: number | null = null;
 
-  const intervalHandle = {} as NodeJS.Timeout;
+  const timeoutHandle = {} as NodeJS.Timeout;
   const pollingPromise = startPolling(config, () => async () => undefined, {
     createClient: () => makeClient(),
     runCleanup: async () => undefined,
-    setInterval: (() => intervalHandle) as typeof setInterval,
-    clearInterval: ((handle: NodeJS.Timeout) => {
+    setTimeout: (() => timeoutHandle) as unknown as typeof setTimeout,
+    clearTimeout: ((handle: NodeJS.Timeout) => {
       cleared.push(handle);
-    }) as typeof clearInterval,
+    }) as typeof clearTimeout,
     processOn: ((event: NodeJS.Signals, listener: () => void) => {
       signals.set(event, listener);
     }) as (event: NodeJS.Signals, listener: () => void) => void,
@@ -424,7 +453,7 @@ test('startPolling clears the interval and exits on shutdown signals', async () 
   assert.ok(sigterm);
   sigterm();
   assert.equal(exitCode, 0);
-  assert.deepEqual(cleared, [intervalHandle]);
+  assert.deepEqual(cleared, [timeoutHandle]);
 
   const resolveKeepAlive =
     keepAliveResolve ??
@@ -449,8 +478,8 @@ test('startPolling delegates auto-update via injected dependency', async () => {
       autoUpdateCallCount++;
       return { cliUpdated: false, runnerUpdated: false };
     },
-    setInterval: (() => ({}) as NodeJS.Timeout) as typeof setInterval,
-    clearInterval: (() => undefined) as typeof clearInterval,
+    setTimeout: (() => ({}) as NodeJS.Timeout) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout,
     processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
     processExit: (() => undefined as never) as (code: number) => never,
     now: () => 0,
@@ -504,8 +533,8 @@ test('startPolling restores persisted auth paths for worktree removals after res
     removeWorktree: (authPath: string, worktreePath: string, worktreeId: string) => {
       removedWorktrees.push({ authPath, worktreePath, worktreeId });
     },
-    setInterval: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as typeof setInterval,
-    clearInterval: (() => undefined) as typeof clearInterval,
+    setTimeout: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout,
     processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
     processExit: (() => {
       throw new Error('should not exit');
@@ -563,8 +592,8 @@ test('startPolling reports REMOVED when no persisted auth path matches the workt
     removeWorktree: () => {
       throw new Error('removeWorktree should not be called');
     },
-    setInterval: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as typeof setInterval,
-    clearInterval: (() => undefined) as typeof clearInterval,
+    setTimeout: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout,
     processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
     processExit: (() => {
       throw new Error('should not exit');
@@ -625,8 +654,8 @@ test('startPolling reports FAILED when worktree removal throws after matching a 
     removeWorktree: () => {
       throw new Error('permission denied');
     },
-    setInterval: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as typeof setInterval,
-    clearInterval: (() => undefined) as typeof clearInterval,
+    setTimeout: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout,
     processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
     processExit: (() => {
       throw new Error('should not exit');
@@ -681,8 +710,8 @@ test('startPolling acks and runs restart when meta.restartRequested is true with
     executeRestartRequest: () => {
       restartCalled += 1;
     },
-    setInterval: (() => ({}) as NodeJS.Timeout) as typeof setInterval,
-    clearInterval: (() => undefined) as typeof clearInterval,
+    setTimeout: (() => ({}) as NodeJS.Timeout) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout,
     processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
     processExit: (() => undefined as never) as (code: number) => never,
     now: () => 0,
@@ -738,8 +767,8 @@ test('startPolling restarts even when a pending trigger is present, ignoring the
       executeRestartRequest: () => {
         restartCalled += 1;
       },
-      setInterval: (() => ({}) as NodeJS.Timeout) as typeof setInterval,
-      clearInterval: (() => undefined) as typeof clearInterval,
+      setTimeout: (() => ({}) as NodeJS.Timeout) as unknown as typeof setTimeout,
+      clearTimeout: (() => undefined) as typeof clearTimeout,
       processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
       processExit: (() => undefined as never) as (code: number) => never,
       now: () => 0,
@@ -783,8 +812,8 @@ test('startPolling skips restart and leaves the flag for retry when ack fails', 
     executeRestartRequest: () => {
       restartCalled += 1;
     },
-    setInterval: (() => ({}) as NodeJS.Timeout) as typeof setInterval,
-    clearInterval: (() => undefined) as typeof clearInterval,
+    setTimeout: (() => ({}) as NodeJS.Timeout) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout,
     processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
     processExit: (() => undefined as never) as (code: number) => never,
     now: () => 0,
@@ -816,8 +845,8 @@ test('startPolling acquires the power save blocker on start and releases it on s
   const pollingPromise = startPolling(config, () => async () => undefined, {
     createClient: () => makeClient(),
     runCleanup: async () => undefined,
-    setInterval: (() => ({}) as NodeJS.Timeout) as typeof setInterval,
-    clearInterval: (() => undefined) as typeof clearInterval,
+    setTimeout: (() => ({}) as NodeJS.Timeout) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout,
     processOn: ((event: NodeJS.Signals, listener: () => void) => {
       signals.set(event, listener);
     }) as (event: NodeJS.Signals, listener: () => void) => void,
@@ -860,8 +889,8 @@ test('startPolling releases the power save blocker when keepAlive resolves', asy
   const pollingPromise = startPolling(config, () => async () => undefined, {
     createClient: () => makeClient(),
     runCleanup: async () => undefined,
-    setInterval: (() => ({}) as NodeJS.Timeout) as typeof setInterval,
-    clearInterval: (() => undefined) as typeof clearInterval,
+    setTimeout: (() => ({}) as NodeJS.Timeout) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout,
     processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
     processExit: (() => undefined as never) as (code: number) => never,
     now: () => 0,
@@ -890,4 +919,148 @@ test('startPolling releases the power save blocker when keepAlive resolves', asy
     ['acquire:daemon-polling', 'release:daemon-polling'],
     'blocker should be released after keepAlive resolves',
   );
+});
+
+// idle 백오프 테스트 공통 의존성. 폴 스케줄만 관찰하고 나머지는 no-op으로 둔다.
+const backoffDependencies = (timeouts: ReturnType<typeof createTimeoutRecorder>, keepAlive: () => Promise<void>) => ({
+  runCleanup: async () => undefined,
+  runConventionSync: async () => undefined,
+  maybeAutoUpdate: async () => ({ cliUpdated: false, runnerUpdated: false }),
+  setTimeout: timeouts.setTimeoutMock,
+  clearTimeout: timeouts.clearTimeoutMock,
+  processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+  processExit: (() => {
+    throw new Error('should not exit');
+  }) as (code: number) => never,
+  now: () => 0,
+  loadAuthPaths: () => [],
+  saveAuthPath: () => '/tmp/auth-paths.json',
+  keepAlive,
+});
+
+test('startPolling backs off the poll interval while idle and clamps at maxPollingIntervalMs', async () => {
+  const timeouts = createTimeoutRecorder();
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => makeClient(),
+    ...backoffDependencies(
+      timeouts,
+      () =>
+        new Promise<void>((resolve) => {
+          keepAliveResolve = resolve;
+        }),
+    ),
+  });
+
+  // base 5000 / max 12000: idle 연속 시 5000×(1+n×0.5) → 7500, 10000, 12500→12000 clamp.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timeouts.scheduled.length, 1);
+  assert.equal(timeouts.scheduled[0]?.delayMs, 7500);
+
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timeouts.scheduled[1]?.delayMs, 10_000);
+
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timeouts.scheduled[2]?.delayMs, 12_000, 'delay should clamp at maxPollingIntervalMs');
+
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timeouts.scheduled[3]?.delayMs, 12_000, 'delay should stay clamped while idle continues');
+
+  const resolveKeepAlive =
+    keepAliveResolve ??
+    (() => {
+      throw new Error('keepAlive resolver was not registered');
+    });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
+test('startPolling resets the poll interval to base after an active cycle', async () => {
+  const timeouts = createTimeoutRecorder();
+  let keepAliveResolve: (() => void) | null = null;
+
+  // 폴 순서: idle → idle → pending 트리거(활동) → idle.
+  const responses = [pollState(), pollState(), pollState({ pendingTrigger: trigger }), pollState()];
+  const client = makeClient({
+    fetchPollState: async () => responses.shift() ?? pollState(),
+  });
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => client,
+    ...backoffDependencies(
+      timeouts,
+      () =>
+        new Promise<void>((resolve) => {
+          keepAliveResolve = resolve;
+        }),
+    ),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(
+    timeouts.scheduled.map((entry) => entry.delayMs),
+    // idle 백오프(7500→10000) → 활동 시 base(5000) 리셋 → idle streak 처음부터(7500).
+    [7500, 10_000, 5000, 7500],
+  );
+
+  const resolveKeepAlive =
+    keepAliveResolve ??
+    (() => {
+      throw new Error('keepAlive resolver was not registered');
+    });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
+test('startPolling stops scheduling new polls after shutdown', async () => {
+  const timeouts = createTimeoutRecorder();
+  const signals = new Map<string, () => void>();
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () => makeClient(),
+    ...backoffDependencies(
+      timeouts,
+      () =>
+        new Promise<void>((resolve) => {
+          keepAliveResolve = resolve;
+        }),
+    ),
+    processOn: ((event: NodeJS.Signals, listener: () => void) => {
+      signals.set(event, listener);
+    }) as (event: NodeJS.Signals, listener: () => void) => void,
+    processExit: (() => undefined as never) as (code: number) => never,
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timeouts.scheduled.length, 1);
+
+  const sigterm = signals.get('SIGTERM');
+  assert.ok(sigterm);
+  sigterm();
+  assert.equal(timeouts.cleared.length, 1, 'pending poll timer should be cleared on shutdown');
+
+  // 셧다운 이후 잔여 타이머 콜백이 fire되어도 새 폴을 예약하지 않는다.
+  timeouts.scheduled[0]?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timeouts.scheduled.length, 1, 'no new poll may be scheduled after shutdown');
+
+  const resolveKeepAlive =
+    keepAliveResolve ??
+    (() => {
+      throw new Error('keepAlive resolver was not registered');
+    });
+  resolveKeepAlive();
+  await pollingPromise;
 });
