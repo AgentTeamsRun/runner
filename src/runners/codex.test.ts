@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { buildCodexExecArgs, resolveCodexSandboxLevel, toPowerShellEncodedCommand } from './codex.js';
+import {
+  buildCodexExecArgs,
+  resolveCodexExecutionCwd,
+  resolveCodexSandboxLevel,
+  toPowerShellEncodedCommand,
+} from './codex.js';
 
 const decodeEncodedCommand = (encoded: string): string => Buffer.from(encoded, 'base64').toString('utf16le');
 
@@ -22,6 +30,21 @@ test('resolveCodexSandboxLevel defaults to workspace-write', () => {
 
 test('resolveCodexSandboxLevel accepts off', () => {
   assert.equal(resolveCodexSandboxLevel('off'), 'off');
+});
+
+test('resolveCodexExecutionCwd uses the physical path behind a symlink authPath', async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), 'agentteams-codex-cwd-'));
+  const physicalPath = join(tempRoot, 'physical-repo');
+  const symlinkPath = join(tempRoot, 'linked-repo');
+
+  try {
+    await mkdir(physicalPath);
+    await symlink(physicalPath, symlinkPath, 'dir');
+
+    assert.equal(await resolveCodexExecutionCwd(symlinkPath), await realpath(physicalPath));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('buildCodexExecArgs keeps sandboxing by default', () => {

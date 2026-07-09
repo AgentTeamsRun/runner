@@ -1,6 +1,6 @@
 import { createWriteStream } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
@@ -21,6 +21,14 @@ export const resolveCodexSandboxLevel = (
   }
 
   return DEFAULT_CODEX_SANDBOX_LEVEL;
+};
+
+export const resolveCodexExecutionCwd = async (authPath: string): Promise<string> => {
+  try {
+    return await realpath(authPath);
+  } catch {
+    return authPath;
+  }
 };
 
 export const buildCodexExecArgs = (
@@ -97,7 +105,7 @@ export class CodexRunner implements Runner {
       };
     }
 
-    const cwd = opts.authPath;
+    const cwd = await resolveCodexExecutionCwd(opts.authPath);
     const logPath = join(cwd, '.agentteams', 'runner', 'log', `${opts.triggerId}.log`);
     await mkdir(dirname(logPath), { recursive: true });
     const isWindows = platform() === 'win32';
@@ -148,6 +156,8 @@ export class CodexRunner implements Runner {
       windowsWrapper: isWindows ? 'powershell.exe -EncodedCommand' : null,
       sandboxLevel,
       fastMode: opts.fastMode === true,
+      authPath: opts.authPath,
+      cwd,
     });
 
     const child = isWindows
