@@ -19,6 +19,19 @@ const OUTPUT_CAPTURE_MAX = 200_000;
 // session; if the installed CLI does not recognize it, the option is silently ignored.
 const FAST_MODE_SETTINGS_JSON = JSON.stringify({ fastMode: true });
 
+export const buildClaudeCodeEnv = (
+  baseEnv: NodeJS.ProcessEnv,
+  runnerEnv: Record<string, string>,
+): NodeJS.ProcessEnv => {
+  const env = { ...baseEnv, ...runnerEnv };
+
+  // The prompt contract requires background Task delegation. Do not inherit the
+  // Claude Code escape hatch that silently converts those tasks back to blocking calls.
+  delete env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS;
+
+  return env;
+};
+
 export const buildClaudeCodeArgs = (model?: string | null, fastMode = false): string[] => {
   const modelArgs = model ? ['--model', model] : [];
   const settingsArgs = fastMode ? ['--settings', FAST_MODE_SETTINGS_JSON] : [];
@@ -123,6 +136,13 @@ export class ClaudeCodeRunner implements Runner {
       ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, opts.fastMode === true)
       : null;
     const claudeArgs = buildClaudeCodeArgs(opts.model, opts.fastMode === true);
+    const childEnv = buildClaudeCodeEnv(process.env, {
+      AGENTTEAMS_API_KEY: opts.apiKey,
+      AGENTTEAMS_API_URL: opts.apiUrl,
+      AGENTTEAMS_TEAM_ID: opts.teamId,
+      AGENTTEAMS_PROJECT_ID: opts.projectId,
+      AGENTTEAMS_AGENT_NAME: opts.agentConfigId,
+    });
     const executableInfo = describeExecutableResolution('claude', {
       platform: () => (isWindows ? 'win32' : platform()),
     });
@@ -150,28 +170,14 @@ export class ClaudeCodeRunner implements Runner {
             shell: false,
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: {
-              ...process.env,
-              AGENTTEAMS_API_KEY: opts.apiKey,
-              AGENTTEAMS_API_URL: opts.apiUrl,
-              AGENTTEAMS_TEAM_ID: opts.teamId,
-              AGENTTEAMS_PROJECT_ID: opts.projectId,
-              AGENTTEAMS_AGENT_NAME: opts.agentConfigId,
-            },
+            env: childEnv,
           },
         )
       : spawnExecutable('claude', [...claudeArgs, opts.prompt], {
           cwd,
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: {
-            ...process.env,
-            AGENTTEAMS_API_KEY: opts.apiKey,
-            AGENTTEAMS_API_URL: opts.apiUrl,
-            AGENTTEAMS_TEAM_ID: opts.teamId,
-            AGENTTEAMS_PROJECT_ID: opts.projectId,
-            AGENTTEAMS_AGENT_NAME: opts.agentConfigId,
-          },
+          env: childEnv,
         });
 
     const logStream = createWriteStream(logPath, { flags: 'a' });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildClaudeCodeArgs, extractResultTextFromStreamJson } from './claude-code.js';
+import { buildClaudeCodeArgs, buildClaudeCodeEnv, extractResultTextFromStreamJson } from './claude-code.js';
 
 test('buildClaudeCodeArgs enables stream-json mode with verbose output', () => {
   assert.deepEqual(buildClaudeCodeArgs('claude-sonnet'), [
@@ -36,6 +36,25 @@ test('buildClaudeCodeArgs injects fast mode settings', () => {
     '--model',
     'claude-opus-4-7',
   ]);
+});
+
+test('buildClaudeCodeEnv preserves background delegation when the parent disables it', () => {
+  const env = buildClaudeCodeEnv(
+    {
+      PATH: '/usr/bin',
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+      AGENTTEAMS_API_URL: 'https://stale.example.com',
+    },
+    {
+      AGENTTEAMS_API_URL: 'https://api.example.com',
+      AGENTTEAMS_API_KEY: 'runner-key',
+    },
+  );
+
+  assert.equal(env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, undefined);
+  assert.equal(env.PATH, '/usr/bin');
+  assert.equal(env.AGENTTEAMS_API_URL, 'https://api.example.com');
+  assert.equal(env.AGENTTEAMS_API_KEY, 'runner-key');
 });
 
 test('extractResultTextFromStreamJson returns the final result payload', () => {

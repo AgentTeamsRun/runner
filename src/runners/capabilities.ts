@@ -6,37 +6,54 @@
 //
 // 러너 타입 값 자체의 SSOT는 `@agentteams/core-constants`의 `RUNNER_TYPES`이지만, daemon은
 // zero-dependency 원칙상 런타임에 그 패키지를 참조하지 않는다. 여기서는 팩토리
-// (`runners/index.ts`)가 분기하는 러너 타입 문자열과 정렬된 로컬 맵으로 관리한다.
+// (`runners/index.ts`)와 마찬가지로 타입만 가져와 런타임 의존성 없이 완전성을 검증한다.
 
-export type KnownRunnerType = 'OPENCODE' | 'CLAUDE_CODE' | 'CODEX' | 'ANTIGRAVITY' | 'AMP';
+import type { RunnerType as KnownRunnerType } from '@agentteams/core-constants';
 
 export interface RunnerCapabilities {
   /** 요청된 model 식별자를 하위 CLI에 전달/적용하는가. */
   model: boolean;
   /** fast-inference 모드(fastMode)를 실제로 반영하는가. */
   fastMode: boolean;
+  /**
+   * 서브 에이전트 위임을 비동기(백그라운드)로 수행해, 위임 호출 계층의 별도 응답 제한
+   * (러너 idle/fail-safe timeout과 무관한 per-call 제한)을 회피할 수 있는 검증된
+   * 메커니즘이 있는가. 러너 요청 프롬프트의 위임 정책 분기(전용 문구 vs 러너-무관 안전
+   * 문구)가 이 판정을 따른다.
+   *
+   * [Intentional mirror] 프롬프트는 API가 조립하지만 daemon은 zero-dependency 원칙상
+   * API가 런타임에 이 파일을 참조할 수 없으므로, 판정 결과를
+   * `api/src/services/runnerCapabilities.ts`에 미러링한다. 이 값을 바꾸면 그쪽도 함께
+   * 갱신한다.
+   */
+  subAgentDelegation: boolean;
 }
 
 export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = {
   // claude-code(-p --model / --settings fastMode)와 codex(--model / -c features.fast_mode)만
   // 두 옵션을 실제로 소비한다.
-  CLAUDE_CODE: { model: true, fastMode: true },
-  CODEX: { model: true, fastMode: true },
+  // claude-code는 서브 에이전트(Task 도구)의 `run_in_background` 파라미터로 비동기 위임과
+  // 결과 별도 회수를 지원하는 유일한 러너다(Claude Code 2.x 런타임 계약으로 확인).
+  CLAUDE_CODE: { model: true, fastMode: true, subAgentDelegation: true },
+  CODEX: { model: true, fastMode: true, subAgentDelegation: false },
   // opencode는 --model만 전달하며 fastMode는 반영하지 않는다.
-  OPENCODE: { model: true, fastMode: false },
+  OPENCODE: { model: true, fastMode: false, subAgentDelegation: false },
   // antigravity(agy --print)는 --model을 지원하지만 fastMode는 반영하지 않는다.
-  ANTIGRAVITY: { model: true, fastMode: false },
+  ANTIGRAVITY: { model: true, fastMode: false, subAgentDelegation: false },
   // AMP는 `--model`이 아니라 `--mode`로 실행 프로필을 선택하므로 model:true로 둔다.
   // 실제 인자 조립은 runners/amp.ts에서 AmpCode 전용 계약으로 문서화한다.
-  AMP: { model: true, fastMode: false },
+  AMP: { model: true, fastMode: false, subAgentDelegation: false },
 };
 
-const DEFAULT_CAPABILITIES: RunnerCapabilities = { model: false, fastMode: false };
+const DEFAULT_CAPABILITIES: RunnerCapabilities = { model: false, fastMode: false, subAgentDelegation: false };
 
 export const getRunnerCapabilities = (runnerType: string): RunnerCapabilities =>
   RUNNER_CAPABILITIES[runnerType as KnownRunnerType] ?? DEFAULT_CAPABILITIES;
 
 export const runnerSupportsFastMode = (runnerType: string): boolean => getRunnerCapabilities(runnerType).fastMode;
+
+export const runnerSupportsSubAgentDelegation = (runnerType: string): boolean =>
+  getRunnerCapabilities(runnerType).subAgentDelegation;
 
 export type UnsupportedRunnerOption = {
   option: 'model' | 'fastMode';
