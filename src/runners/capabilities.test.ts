@@ -5,6 +5,7 @@ import {
   describeUnsupportedRunnerOptions,
   getRunnerCapabilities,
   runnerSupportsFastMode,
+  runnerSupportsSubAgentDelegation,
 } from './capabilities.js';
 
 test('only claude-code and codex support fastMode', () => {
@@ -22,9 +23,24 @@ test('antigravity supports model selection', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.model, true);
 });
 
+test('only claude-code supports background sub-agent delegation', () => {
+  assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.subAgentDelegation, true);
+  assert.equal(RUNNER_CAPABILITIES.CODEX.subAgentDelegation, false);
+  assert.equal(RUNNER_CAPABILITIES.OPENCODE.subAgentDelegation, false);
+  assert.equal(RUNNER_CAPABILITIES.ANTIGRAVITY.subAgentDelegation, false);
+  assert.equal(RUNNER_CAPABILITIES.AMP.subAgentDelegation, false);
+  assert.equal(runnerSupportsSubAgentDelegation('CLAUDE_CODE'), true);
+  assert.equal(runnerSupportsSubAgentDelegation('OPENCODE'), false);
+});
+
 test('unknown runner types default to no capabilities', () => {
-  assert.deepEqual(getRunnerCapabilities('SOMETHING_ELSE'), { model: false, fastMode: false });
+  assert.deepEqual(getRunnerCapabilities('SOMETHING_ELSE'), {
+    model: false,
+    fastMode: false,
+    subAgentDelegation: false,
+  });
   assert.equal(runnerSupportsFastMode('SOMETHING_ELSE'), false);
+  assert.equal(runnerSupportsSubAgentDelegation('SOMETHING_ELSE'), false);
 });
 
 test('describeUnsupportedRunnerOptions is silent for ANTIGRAVITY model selection', () => {
