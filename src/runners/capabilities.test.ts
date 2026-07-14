@@ -14,6 +14,7 @@ test('only claude-code and codex support fastMode', () => {
   assert.equal(RUNNER_CAPABILITIES.OPENCODE.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.ANTIGRAVITY.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.AMP.fastMode, false);
+  assert.equal(RUNNER_CAPABILITIES.COPILOT_CLI.fastMode, false);
   assert.equal(runnerSupportsFastMode('CODEX'), true);
   assert.equal(runnerSupportsFastMode('OPENCODE'), false);
 });
@@ -23,12 +24,22 @@ test('antigravity supports model selection', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.model, true);
 });
 
+test('Copilot CLI supports model selection but not fast mode or sub-agent delegation', () => {
+  assert.deepEqual(getRunnerCapabilities('COPILOT_CLI'), {
+    model: true,
+    fastMode: false,
+    subAgentDelegation: false,
+  });
+  assert.deepEqual(describeUnsupportedRunnerOptions('COPILOT_CLI', { model: 'gpt-5', fastMode: false }), []);
+});
+
 test('only claude-code supports background sub-agent delegation', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.subAgentDelegation, true);
   assert.equal(RUNNER_CAPABILITIES.CODEX.subAgentDelegation, false);
   assert.equal(RUNNER_CAPABILITIES.OPENCODE.subAgentDelegation, false);
   assert.equal(RUNNER_CAPABILITIES.ANTIGRAVITY.subAgentDelegation, false);
   assert.equal(RUNNER_CAPABILITIES.AMP.subAgentDelegation, false);
+  assert.equal(RUNNER_CAPABILITIES.COPILOT_CLI.subAgentDelegation, false);
   assert.equal(runnerSupportsSubAgentDelegation('CLAUDE_CODE'), true);
   assert.equal(runnerSupportsSubAgentDelegation('OPENCODE'), false);
 });

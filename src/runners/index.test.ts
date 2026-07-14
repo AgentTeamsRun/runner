@@ -7,6 +7,7 @@ import { CodexRunner } from './codex.js';
 import { createRunnerFactory } from './index.js';
 import { OpenCodeRunner } from './opencode.js';
 import { AntigravityRunner } from './antigravity.js';
+import { CopilotCliRunner } from './copilot-cli.js';
 
 test('createRunnerFactory returns the expected runner implementations', () => {
   const createRunner = createRunnerFactory('custom-opencode');
@@ -16,6 +17,7 @@ test('createRunnerFactory returns the expected runner implementations', () => {
   assert.equal(createRunner('CODEX') instanceof CodexRunner, true);
   assert.equal(createRunner('ANTIGRAVITY') instanceof AntigravityRunner, true);
   assert.equal(createRunner('AMP') instanceof AmpCodeRunner, true);
+  assert.equal(createRunner('COPILOT_CLI') instanceof CopilotCliRunner, true);
 });
 
 // SSOT(@agentteams/core-constants)와 factory가 처리하는 러너 타입 집합이 정확히

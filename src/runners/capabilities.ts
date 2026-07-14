@@ -43,6 +43,7 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // AMP는 `--model`이 아니라 `--mode`로 실행 프로필을 선택하므로 model:true로 둔다.
   // 실제 인자 조립은 runners/amp.ts에서 AmpCode 전용 계약으로 문서화한다.
   AMP: { model: true, fastMode: false, subAgentDelegation: false },
+  COPILOT_CLI: { model: true, fastMode: false, subAgentDelegation: false },
 };
 
 const DEFAULT_CAPABILITIES: RunnerCapabilities = { model: false, fastMode: false, subAgentDelegation: false };
