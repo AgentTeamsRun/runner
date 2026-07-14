@@ -22,6 +22,7 @@ const FAST_MODE_SETTINGS_JSON = JSON.stringify({ fastMode: true });
 export const buildClaudeCodeEnv = (
   baseEnv: NodeJS.ProcessEnv,
   runnerEnv: Record<string, string>,
+  options?: { effortRequested?: boolean },
 ): NodeJS.ProcessEnv => {
   const env = { ...baseEnv, ...runnerEnv };
 
@@ -29,12 +30,24 @@ export const buildClaudeCodeEnv = (
   // Claude Code escape hatch that silently converts those tasks back to blocking calls.
   delete env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS;
 
+  // When the request pins an effort level, the `--effort` flag must win. The
+  // `CLAUDE_CODE_EFFORT_LEVEL` env var takes precedence over the session flag, so an
+  // inherited value would silently override the server-confirmed effort. Strip it only
+  // when an effort is requested; otherwise keep the ambient default intact.
+  if (options?.effortRequested) {
+    delete env.CLAUDE_CODE_EFFORT_LEVEL;
+  }
+
   return env;
 };
 
-export const buildClaudeCodeArgs = (model?: string | null, fastMode = false): string[] => {
+const normalizeClaudeEffort = (effort?: string | null): string => (typeof effort === 'string' ? effort.trim() : '');
+
+export const buildClaudeCodeArgs = (model?: string | null, fastMode = false, effort?: string | null): string[] => {
   const modelArgs = model ? ['--model', model] : [];
   const settingsArgs = fastMode ? ['--settings', FAST_MODE_SETTINGS_JSON] : [];
+  const normalizedEffort = normalizeClaudeEffort(effort);
+  const effortArgs = normalizedEffort.length > 0 ? ['--effort', normalizedEffort] : [];
   return [
     '-p',
     '--output-format',
@@ -42,6 +55,7 @@ export const buildClaudeCodeArgs = (model?: string | null, fastMode = false): st
     '--verbose',
     '--dangerously-skip-permissions',
     ...settingsArgs,
+    ...effortArgs,
     ...modelArgs,
   ];
 };
@@ -78,8 +92,9 @@ const toPowerShellEncodedCommand = (
   prompt: string,
   model?: string | null,
   fastMode = false,
+  effort?: string | null,
 ): string => {
-  const argSegment = buildClaudeCodeArgs(model, fastMode)
+  const argSegment = buildClaudeCodeArgs(model, fastMode, effort)
     .map((arg) => ` '${arg.replaceAll("'", "''")}'`)
     .join('');
   const scriptContent = [
@@ -132,17 +147,23 @@ export class ClaudeCodeRunner implements Runner {
     const resolvedExecutablePath = isWindows
       ? resolveExecutablePathWithPreference('claude', ['claude.cmd', 'claude'])
       : resolveExecutablePathWithPreference('claude', ['claude']);
+    const normalizedEffort = typeof opts.effort === 'string' ? opts.effort.trim() : '';
+    const effortRequested = normalizedEffort.length > 0;
     const windowsEncodedCommand = isWindows
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, opts.fastMode === true)
+      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, opts.fastMode === true, opts.effort)
       : null;
-    const claudeArgs = buildClaudeCodeArgs(opts.model, opts.fastMode === true);
-    const childEnv = buildClaudeCodeEnv(process.env, {
-      AGENTTEAMS_API_KEY: opts.apiKey,
-      AGENTTEAMS_API_URL: opts.apiUrl,
-      AGENTTEAMS_TEAM_ID: opts.teamId,
-      AGENTTEAMS_PROJECT_ID: opts.projectId,
-      AGENTTEAMS_AGENT_NAME: opts.agentConfigId,
-    });
+    const claudeArgs = buildClaudeCodeArgs(opts.model, opts.fastMode === true, opts.effort);
+    const childEnv = buildClaudeCodeEnv(
+      process.env,
+      {
+        AGENTTEAMS_API_KEY: opts.apiKey,
+        AGENTTEAMS_API_URL: opts.apiUrl,
+        AGENTTEAMS_TEAM_ID: opts.teamId,
+        AGENTTEAMS_PROJECT_ID: opts.projectId,
+        AGENTTEAMS_AGENT_NAME: opts.agentConfigId,
+      },
+      { effortRequested },
+    );
     const executableInfo = describeExecutableResolution('claude', {
       platform: () => (isWindows ? 'win32' : platform()),
     });
@@ -158,6 +179,7 @@ export class ClaudeCodeRunner implements Runner {
       detached: isWindows ? false : true,
       windowsWrapper: isWindows ? 'powershell.exe -EncodedCommand' : null,
       fastMode: opts.fastMode === true,
+      effort: effortRequested ? normalizedEffort : null,
     });
 
     const child = isWindows

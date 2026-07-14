@@ -169,3 +169,65 @@ test('resolveCodexSandboxLevel reads from process.env when no argument given', (
     }
   }
 });
+
+test('buildCodexExecArgs injects exactly one model_reasoning_effort override when effort is set', () => {
+  const args = buildCodexExecArgs('hello', 'gpt-5-codex', 'workspace-write', false, 'high');
+  assert.deepEqual(args, [
+    '-a',
+    'never',
+    'exec',
+    '-s',
+    'workspace-write',
+    '-c',
+    'sandbox_workspace_write.network_access=true',
+    '-c',
+    'model_reasoning_effort="high"',
+    '--model',
+    'gpt-5-codex',
+    'hello',
+  ]);
+  assert.equal(args.filter((arg) => arg.startsWith('model_reasoning_effort=')).length, 1);
+});
+
+test('buildCodexExecArgs keeps both fast mode and effort overrides when combined', () => {
+  const args = buildCodexExecArgs('hello', 'gpt-5-codex', 'workspace-write', true, 'xhigh');
+  assert.ok(args.includes('features.fast_mode=true'));
+  assert.ok(args.includes('service_tier="fast"'));
+  assert.ok(args.includes('model_reasoning_effort="xhigh"'));
+  // prompt must remain the final positional arg
+  assert.equal(args[args.length - 1], 'hello');
+});
+
+test('buildCodexExecArgs omits effort override when effort is missing or blank', () => {
+  const withoutEffort = buildCodexExecArgs('hello', 'gpt-5-codex', 'workspace-write', false);
+  const blankEffort = buildCodexExecArgs('hello', 'gpt-5-codex', 'workspace-write', false, '  ');
+  assert.equal(withoutEffort.filter((arg) => arg.startsWith('model_reasoning_effort=')).length, 0);
+  assert.deepEqual(blankEffort, withoutEffort);
+});
+
+test('toPowerShellEncodedCommand includes model_reasoning_effort override when effort is set', () => {
+  const encoded = toPowerShellEncodedCommand(
+    'C:\\codex.cmd',
+    'C:\\repo\\.agentteams\\runner\\tmp\\t.prompt.txt',
+    'gpt-5.5',
+    'workspace-write',
+    true,
+    'high',
+  );
+  const decoded = decodeEncodedCommand(encoded);
+  assert.ok(decoded.includes('model_reasoning_effort="high"'));
+  assert.ok(decoded.includes('features.fast_mode=true'));
+  assert.ok(decoded.includes("'--model' 'gpt-5.5'"));
+});
+
+test('toPowerShellEncodedCommand omits effort override when effort is missing', () => {
+  const encoded = toPowerShellEncodedCommand(
+    'C:\\codex.cmd',
+    'C:\\repo\\.agentteams\\runner\\tmp\\t.prompt.txt',
+    'gpt-5.5',
+    'workspace-write',
+    false,
+  );
+  const decoded = decodeEncodedCommand(encoded);
+  assert.ok(!decoded.includes('model_reasoning_effort'));
+});
