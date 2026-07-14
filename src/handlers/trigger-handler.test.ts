@@ -14,6 +14,7 @@ const trigger: DaemonTrigger = {
   runnerType: 'CODEX',
   model: 'o4-mini',
   fastMode: false,
+  effort: null,
   status: 'PENDING',
   agentConfigId: 'agent-1',
   startedAt: null,

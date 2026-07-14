@@ -34,6 +34,8 @@ export type DaemonTrigger = {
   runnerType: string;
   model: string | null;
   fastMode: boolean;
+  /// 서버가 확정한 추론 강도(Effort) 레벨. null이면 모델/클라이언트 기본값을 사용한다.
+  effort: string | null;
   status: string;
   agentConfigId: string;
   startedAt: string | null;

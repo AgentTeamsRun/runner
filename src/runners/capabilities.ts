@@ -16,6 +16,12 @@ export interface RunnerCapabilities {
   /** fast-inference 모드(fastMode)를 실제로 반영하는가. */
   fastMode: boolean;
   /**
+   * 서버가 확정한 추론 강도(Effort) 레벨을 하위 CLI 인자로 전달/적용하는가.
+   * CODEX(`-c model_reasoning_effort`)와 CLAUDE_CODE(`--effort`)만 지원한다.
+   * 실제 허용 레벨은 API가 모델 메타데이터로 검증하므로 daemon은 값 검증을 중복하지 않는다.
+   */
+  effort: boolean;
+  /**
    * 서브 에이전트 위임을 비동기(백그라운드)로 수행해, 위임 호출 계층의 별도 응답 제한
    * (러너 idle/fail-safe timeout과 무관한 per-call 제한)을 회피할 수 있는 검증된
    * 메커니즘이 있는가. 러너 요청 프롬프트의 위임 정책 분기(전용 문구 vs 러너-무관 안전
@@ -34,29 +40,37 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // 두 옵션을 실제로 소비한다.
   // claude-code는 서브 에이전트(Task 도구)의 `run_in_background` 파라미터로 비동기 위임과
   // 결과 별도 회수를 지원하는 유일한 러너다(Claude Code 2.x 런타임 계약으로 확인).
-  CLAUDE_CODE: { model: true, fastMode: true, subAgentDelegation: true },
-  CODEX: { model: true, fastMode: true, subAgentDelegation: false },
-  // opencode는 --model만 전달하며 fastMode는 반영하지 않는다.
-  OPENCODE: { model: true, fastMode: false, subAgentDelegation: false },
-  // antigravity(agy --print)는 --model을 지원하지만 fastMode는 반영하지 않는다.
-  ANTIGRAVITY: { model: true, fastMode: false, subAgentDelegation: false },
+  CLAUDE_CODE: { model: true, fastMode: true, effort: true, subAgentDelegation: true },
+  CODEX: { model: true, fastMode: true, effort: true, subAgentDelegation: false },
+  // opencode는 --model만 전달하며 fastMode/effort는 반영하지 않는다.
+  OPENCODE: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
+  // antigravity(agy --print)는 --model을 지원하지만 fastMode/effort는 반영하지 않는다.
+  ANTIGRAVITY: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
   // AMP는 `--model`이 아니라 `--mode`로 실행 프로필을 선택하므로 model:true로 둔다.
   // 실제 인자 조립은 runners/amp.ts에서 AmpCode 전용 계약으로 문서화한다.
-  AMP: { model: true, fastMode: false, subAgentDelegation: false },
+  AMP: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
+  COPILOT_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
 };
 
-const DEFAULT_CAPABILITIES: RunnerCapabilities = { model: false, fastMode: false, subAgentDelegation: false };
+const DEFAULT_CAPABILITIES: RunnerCapabilities = {
+  model: false,
+  fastMode: false,
+  effort: false,
+  subAgentDelegation: false,
+};
 
 export const getRunnerCapabilities = (runnerType: string): RunnerCapabilities =>
   RUNNER_CAPABILITIES[runnerType as KnownRunnerType] ?? DEFAULT_CAPABILITIES;
 
 export const runnerSupportsFastMode = (runnerType: string): boolean => getRunnerCapabilities(runnerType).fastMode;
 
+export const runnerSupportsEffort = (runnerType: string): boolean => getRunnerCapabilities(runnerType).effort;
+
 export const runnerSupportsSubAgentDelegation = (runnerType: string): boolean =>
   getRunnerCapabilities(runnerType).subAgentDelegation;
 
 export type UnsupportedRunnerOption = {
-  option: 'model' | 'fastMode';
+  option: 'model' | 'fastMode' | 'effort';
   message: string;
 };
 
@@ -64,7 +78,7 @@ export type UnsupportedRunnerOption = {
 // trigger handler가 반환된 각 항목을 로그 리포터(WARN)로 흘려 사용자 가시 신호로 남긴다.
 export const describeUnsupportedRunnerOptions = (
   runnerType: string,
-  options: { model?: string | null; fastMode?: boolean | null },
+  options: { model?: string | null; fastMode?: boolean | null; effort?: string | null },
 ): UnsupportedRunnerOption[] => {
   const capabilities = getRunnerCapabilities(runnerType);
   const warnings: UnsupportedRunnerOption[] = [];
@@ -80,6 +94,13 @@ export const describeUnsupportedRunnerOptions = (
     warnings.push({
       option: 'fastMode',
       message: `Fast mode is not supported by runner ${runnerType}; the requested fast mode was ignored.`,
+    });
+  }
+
+  if (typeof options.effort === 'string' && options.effort.trim().length > 0 && !capabilities.effort) {
+    warnings.push({
+      option: 'effort',
+      message: `Effort level is not supported by runner ${runnerType}; the requested effort "${options.effort}" was ignored.`,
     });
   }
 

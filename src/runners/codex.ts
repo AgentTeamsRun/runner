@@ -31,19 +31,30 @@ export const resolveCodexExecutionCwd = async (authPath: string): Promise<string
   }
 };
 
+// 요청 Effort를 Codex `-c model_reasoning_effort="<level>"` 오버라이드로 변환한다.
+// 값은 서버가 이미 소문자로 검증·확정했으므로 daemon은 재검증하지 않고 그대로 전달한다.
+const buildCodexEffortArgs = (effort?: string | null): string[] => {
+  const normalized = typeof effort === 'string' ? effort.trim() : '';
+  return normalized.length > 0 ? ['-c', `model_reasoning_effort="${normalized}"`] : [];
+};
+
 export const buildCodexExecArgs = (
   prompt: string,
   model?: string | null,
   sandboxLevel: 'workspace-write' | 'off' = resolveCodexSandboxLevel(),
   fastMode = false,
+  effort?: string | null,
 ): string[] => {
   const baseArgs =
     sandboxLevel === 'off'
       ? ['-a', 'never', 'exec', '--dangerously-bypass-approvals-and-sandbox']
       : ['-a', 'never', 'exec', '-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true'];
   const fastModeArgs = fastMode ? ['-c', 'features.fast_mode=true', '-c', 'service_tier="fast"'] : [];
+  const effortArgs = buildCodexEffortArgs(effort);
 
-  return model ? [...baseArgs, ...fastModeArgs, '--model', model, prompt] : [...baseArgs, ...fastModeArgs, prompt];
+  return model
+    ? [...baseArgs, ...fastModeArgs, ...effortArgs, '--model', model, prompt]
+    : [...baseArgs, ...fastModeArgs, ...effortArgs, prompt];
 };
 
 const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
@@ -57,6 +68,7 @@ export const toPowerShellEncodedCommand = (
   model?: string | null,
   sandboxLevel: 'workspace-write' | 'off' = resolveCodexSandboxLevel(),
   fastMode = false,
+  effort?: string | null,
 ): string => {
   const sandboxSegment =
     sandboxLevel === 'off'
@@ -64,6 +76,9 @@ export const toPowerShellEncodedCommand = (
       : "'-s' 'workspace-write' '-c' 'sandbox_workspace_write.network_access=true'";
   const modelSegment = model ? ` '--model' ${toPowerShellLiteral(model)}` : '';
   const fastModeSegment = fastMode ? " '-c' 'features.fast_mode=true' '-c' 'service_tier=\"fast\"'" : '';
+  const normalizedEffort = typeof effort === 'string' ? effort.trim() : '';
+  const effortSegment =
+    normalizedEffort.length > 0 ? ` '-c' ${toPowerShellLiteral(`model_reasoning_effort="${normalizedEffort}"`)}` : '';
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
     '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
@@ -72,7 +87,7 @@ export const toPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `$promptText | & ${toPowerShellLiteral(resolvedExecutablePath)} '-a' 'never' 'exec' ${sandboxSegment}${fastModeSegment}${modelSegment}`,
+    `$promptText | & ${toPowerShellLiteral(resolvedExecutablePath)} '-a' 'never' 'exec' ${sandboxSegment}${fastModeSegment}${effortSegment}${modelSegment}`,
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -128,9 +143,10 @@ export class CodexRunner implements Runner {
           opts.model,
           sandboxLevel,
           opts.fastMode === true,
+          opts.effort,
         )
       : null;
-    const codexArgs = buildCodexExecArgs(opts.prompt, opts.model, sandboxLevel, opts.fastMode === true);
+    const codexArgs = buildCodexExecArgs(opts.prompt, opts.model, sandboxLevel, opts.fastMode === true, opts.effort);
     const executableInfo = describeExecutableResolution('codex', {
       platform: () => (isWindows ? 'win32' : platform()),
     });
@@ -156,6 +172,7 @@ export class CodexRunner implements Runner {
       windowsWrapper: isWindows ? 'powershell.exe -EncodedCommand' : null,
       sandboxLevel,
       fastMode: opts.fastMode === true,
+      effort: typeof opts.effort === 'string' && opts.effort.trim().length > 0 ? opts.effort.trim() : null,
       authPath: opts.authPath,
       cwd,
     });

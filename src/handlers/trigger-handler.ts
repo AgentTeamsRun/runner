@@ -10,7 +10,11 @@ import { resolveRunnerHistoryPaths } from '../utils/runner-history.js';
 import { isGitRepo, createWorktree } from '../utils/git-worktree.js';
 import { extractResultTextFromStreamJson } from '../runners/claude-code.js';
 import { runOriginIssueSafeguard } from '../utils/origin-issue-safeguard.js';
-import { describeUnsupportedRunnerOptions, runnerSupportsFastMode } from '../runners/capabilities.js';
+import {
+  describeUnsupportedRunnerOptions,
+  runnerSupportsEffort,
+  runnerSupportsFastMode,
+} from '../runners/capabilities.js';
 
 function sanitizeErrorMessage(msg: string): string {
   return msg.replaceAll(homedir(), '~');
@@ -438,12 +442,14 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         void checkCancelRequested();
       }, cancelPollIntervalMs);
       const runnerFastMode = runnerSupportsFastMode(trigger.runnerType) ? trigger.fastMode : false;
-      // 서버가 확정한 실행 옵션(model/fastMode) 중 대상 러너가 소비하지 못하는 것을 무음으로
+      const runnerEffort = runnerSupportsEffort(trigger.runnerType) ? trigger.effort : null;
+      // 서버가 확정한 실행 옵션(model/fastMode/effort) 중 대상 러너가 소비하지 못하는 것을 무음으로
       // 폐기하지 않고 사용자 가시 경고(로그 리포터 WARN)로 승격한다. 러너별 지원 매트릭스는
       // runners/capabilities.ts의 단일 정의를 참조한다.
       for (const unsupported of describeUnsupportedRunnerOptions(trigger.runnerType, {
         model: trigger.model,
         fastMode: trigger.fastMode,
+        effort: trigger.effort,
       })) {
         logger.warn('Runner option not supported by target runner; ignoring', {
           triggerId: trigger.id,
@@ -466,6 +472,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         agentConfigId: runtime.agentConfigId,
         model: trigger.model,
         fastMode: runnerFastMode,
+        effort: runnerEffort,
         signal: cancelController.signal,
         onStdoutChunk: (chunk) => {
           activeLogReporter.append('INFO', chunk);

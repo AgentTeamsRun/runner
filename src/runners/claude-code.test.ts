@@ -72,3 +72,53 @@ test('extractResultTextFromStreamJson falls back to raw output when result parsi
 
   assert.equal(extractResultTextFromStreamJson(output), output);
 });
+
+test('buildClaudeCodeArgs injects the --effort flag with the requested level', () => {
+  assert.deepEqual(buildClaudeCodeArgs('claude-sonnet-5', false, 'high'), [
+    '-p',
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    '--dangerously-skip-permissions',
+    '--effort',
+    'high',
+    '--model',
+    'claude-sonnet-5',
+  ]);
+});
+
+test('buildClaudeCodeArgs keeps both fast mode settings and the --effort flag when combined', () => {
+  const args = buildClaudeCodeArgs('claude-opus-4-8', true, 'max');
+  assert.ok(args.includes('--settings'));
+  assert.ok(args.includes('{"fastMode":true}'));
+  const effortIndex = args.indexOf('--effort');
+  assert.notEqual(effortIndex, -1);
+  assert.equal(args[effortIndex + 1], 'max');
+});
+
+test('buildClaudeCodeArgs omits the --effort flag when effort is missing or blank', () => {
+  assert.equal(buildClaudeCodeArgs('claude-sonnet-5', false).includes('--effort'), false);
+  assert.equal(buildClaudeCodeArgs('claude-sonnet-5', false, '   ').includes('--effort'), false);
+});
+
+test('buildClaudeCodeEnv strips CLAUDE_CODE_EFFORT_LEVEL only when an effort is requested', () => {
+  const withEffort = buildClaudeCodeEnv(
+    { PATH: '/usr/bin', CLAUDE_CODE_EFFORT_LEVEL: 'max' },
+    { AGENTTEAMS_API_KEY: 'runner-key' },
+    { effortRequested: true },
+  );
+  assert.equal(withEffort.CLAUDE_CODE_EFFORT_LEVEL, undefined);
+
+  const withoutEffort = buildClaudeCodeEnv(
+    { PATH: '/usr/bin', CLAUDE_CODE_EFFORT_LEVEL: 'max' },
+    { AGENTTEAMS_API_KEY: 'runner-key' },
+    { effortRequested: false },
+  );
+  assert.equal(withoutEffort.CLAUDE_CODE_EFFORT_LEVEL, 'max');
+
+  const defaultOptions = buildClaudeCodeEnv(
+    { PATH: '/usr/bin', CLAUDE_CODE_EFFORT_LEVEL: 'max' },
+    { AGENTTEAMS_API_KEY: 'runner-key' },
+  );
+  assert.equal(defaultOptions.CLAUDE_CODE_EFFORT_LEVEL, 'max');
+});
