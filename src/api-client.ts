@@ -17,6 +17,14 @@ const runnerVersion = packageJson.version ?? '0.0.0';
 
 const MAX_NETWORK_RETRIES = 3;
 const BASE_BACKOFF_MS = 1000;
+export const DAEMON_API_TRANSPORT_TIMEOUT_MS = 30_000;
+
+class DaemonApiTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`Daemon API request timed out after ${timeoutMs}ms`);
+    this.name = 'DaemonApiTimeoutError';
+  }
+}
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -63,12 +71,18 @@ export class DaemonApiClient {
     return headers;
   }
 
-  private async requestWithRetry(path: string, options: RequestInit): Promise<Response> {
+  private async requestWithRetry(path: string, options: Omit<RequestInit, 'signal'>): Promise<Response> {
     const url = `${this.apiUrl}${path}`;
 
     for (let attempt = 0; attempt <= MAX_NETWORK_RETRIES; attempt += 1) {
+      const timeoutController = new AbortController();
+      const timeoutError = new DaemonApiTimeoutError(DAEMON_API_TRANSPORT_TIMEOUT_MS);
+      const timeoutHandle = setTimeout(() => {
+        timeoutController.abort(timeoutError);
+      }, DAEMON_API_TRANSPORT_TIMEOUT_MS);
+
       try {
-        return await fetch(url, options);
+        return await fetch(url, { ...options, signal: timeoutController.signal });
       } catch (error) {
         if (!isNetworkError(error) || attempt >= MAX_NETWORK_RETRIES) {
           throw error;
@@ -78,10 +92,14 @@ export class DaemonApiClient {
         const delayMs = BASE_BACKOFF_MS * 2 ** attempt;
         logger.warn(`Retry ${retryNumber}/${MAX_NETWORK_RETRIES}: network error while requesting daemon API`, {
           path,
+          retryNumber,
           delayMs,
+          ...(error instanceof DaemonApiTimeoutError ? { timeoutMs: error.timeoutMs } : {}),
           error: error instanceof Error ? error.message : String(error),
         });
         await wait(delayMs);
+      } finally {
+        clearTimeout(timeoutHandle);
       }
     }
 

@@ -38,7 +38,7 @@ The `init` command:
 3. Registers an OS-level autostart service and starts the runner immediately
    - **macOS**: `~/Library/LaunchAgents/run.agentteams.runner.plist` (launchd)
    - **Linux**: `~/.config/systemd/user/agentrunner.service` (systemd)
-   - **Windows**: Startup folder `agentrunner-start.vbs`
+   - **Windows**: Task Scheduler task `AgentRunner` (current-user logon trigger)
 
 ### Options
 
@@ -91,9 +91,9 @@ Example output:
 agentrunner stop
 ```
 
-Sends SIGTERM to the running process for a graceful shutdown.
+Sends SIGTERM to the running process for a graceful shutdown. On Windows, it ends the current `AgentRunner` scheduled-task instance first so the failure policy does not restart an intentionally stopped runner. The task remains registered and can start again at the next logon.
 
-> If autostart is registered, the OS may restart the runner automatically.
+> On macOS and Linux, the registered OS supervisor may restart the runner automatically.
 > Use `uninstall` to stop completely.
 
 ### 5. Restart (`restart`)
@@ -105,6 +105,7 @@ agentrunner restart
 Restarts the runner using the current environment:
 
 - If autostart is registered, AgentRunner restarts through the registered OS service.
+- On Windows, restart ends the existing `AgentRunner` task instance before running it again.
 - If autostart is not registered, AgentRunner starts a new detached background process.
 
 ### 6. Update (`update`)
@@ -123,8 +124,8 @@ agentrunner uninstall
 
 Performs the following:
 
-1. Stops the running process
-2. Removes the autostart service and deletes the service file
+1. Removes or disables the autostart supervisor so it cannot respawn the runner
+2. Stops the running process
 3. Cleans up the PID file
 
 ## Configuration
@@ -170,8 +171,25 @@ If a process is already running for the same `agentConfigId`, new triggers are `
 - **Runner logs**: console output (forwarded to OS log system when autostarted)
   - **macOS**: `/tmp/agentrunner.log`, `/tmp/agentrunner-error.log`
   - **Linux**: `journalctl --user -u agentrunner -f`
-  - **Windows**: check the Startup folder script and the spawned background process
+  - **Windows**: `%USERPROFILE%\.agentteams\agentrunner.log`
 - **Task logs**: `<workdir>/.agentteams/daemonLog/daemon-<triggerId>.log`
+
+### Windows recovery checks
+
+The `AgentRunner` scheduled task ignores duplicate starts and retries failed exits up to three times at one-minute intervals. Inspect it and follow the append-only daemon log with:
+
+```powershell
+schtasks /Query /TN "AgentRunner" /V /FO LIST
+Get-Content "$env:USERPROFILE\.agentteams\agentrunner.log" -Wait
+```
+
+For a release smoke test on a disposable Windows test machine:
+
+1. Run `agentrunner restart` and verify the scheduled task gets a new runner PID without opening a console window.
+2. End the runner process unexpectedly and verify Task Scheduler starts it again after the configured delay.
+3. Disconnect and reconnect the network, or suspend and resume Windows. API requests that remain stalled are aborted after 30 seconds and retried; verify a later poll attempt or successful poll appears in the log.
+4. Run `agentrunner status`, then `agentrunner stop`. Verify the current task instance stops and does not immediately respawn.
+5. Run `agentrunner uninstall` only when cleanup is intended, and verify `schtasks /Query /TN "AgentRunner"` reports that the task no longer exists.
 
 ## Troubleshooting
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import test, { mock } from 'node:test';
-import { DaemonApiClient } from './api-client.js';
+import { DAEMON_API_TRANSPORT_TIMEOUT_MS, DaemonApiClient } from './api-client.js';
 import { logger } from './logger.js';
 
 const require = createRequire(import.meta.url);
@@ -185,6 +185,9 @@ test('requestWithRetry retries network failures with exponential backoff and war
 
   const delays: number[] = [];
   globalThis.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number) => {
+    if (delay === DAEMON_API_TRANSPORT_TIMEOUT_MS) {
+      return 0 as unknown as NodeJS.Timeout;
+    }
     delays.push(delay ?? 0);
     callback();
     return 0 as unknown as NodeJS.Timeout;
@@ -223,4 +226,56 @@ test('requestWithRetry retries network failures with exponential backoff and war
   assert.equal(warnings.length, 2);
   assert.match(warnings[0]?.message ?? '', /Retry 1\/3/);
   assert.equal(warnings[1]?.meta?.delayMs, 2000);
+});
+
+test('requestWithRetry aborts stalled requests at the transport timeout and retries safely', async () => {
+  const warnings: Array<{ message: string; meta?: Record<string, unknown> }> = [];
+  mock.method(logger, 'warn', (message: string, meta?: Record<string, unknown>) => {
+    warnings.push({ message, meta });
+  });
+
+  const delays: number[] = [];
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number) => {
+    delays.push(delay ?? 0);
+    callback();
+    return 0 as unknown as NodeJS.Timeout;
+  }) as typeof setTimeout;
+
+  const signals: AbortSignal[] = [];
+  globalThis.fetch = (async (_url, options) => {
+    const signal = options?.signal;
+    assert.ok(signal);
+    signals.push(signal);
+    await new Promise((_resolve, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+    throw new Error('unreachable');
+  }) as typeof fetch;
+
+  const client = new DaemonApiClient('https://api.example', 'daemon-token');
+  await assert.rejects(() => client.fetchPollState(), /timed out/);
+
+  assert.equal(signals.length, 4, 'initial request plus three retries');
+  assert.ok(signals.every((signal) => signal.aborted));
+  assert.deepEqual(delays, [30_000, 1000, 30_000, 2000, 30_000, 4000, 30_000]);
+  assert.equal(warnings.length, 3);
+  assert.deepEqual(
+    warnings.map((warning) => ({
+      path: warning.meta?.path,
+      retryNumber: warning.meta?.retryNumber,
+      delayMs: warning.meta?.delayMs,
+      timeoutMs: warning.meta?.timeoutMs,
+    })),
+    [
+      { path: '/api/daemon-triggers/poll-state', retryNumber: 1, delayMs: 1000, timeoutMs: 30_000 },
+      { path: '/api/daemon-triggers/poll-state', retryNumber: 2, delayMs: 2000, timeoutMs: 30_000 },
+      { path: '/api/daemon-triggers/poll-state', retryNumber: 3, delayMs: 4000, timeoutMs: 30_000 },
+    ],
+  );
+  assert.ok(warnings.every((warning) => !JSON.stringify(warning).includes('daemon-token')));
+  assert.ok(warnings.every((warning) => !JSON.stringify(warning).includes('https://api.example')));
 });

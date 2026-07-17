@@ -1,23 +1,45 @@
 import { logger } from '../logger.js';
 import { getDaemonStatus, removePidFile } from '../pid.js';
-import { unregisterAutostart } from '../autostart.js';
+import { getAutostartStatus, unregisterAutostart } from '../autostart.js';
 
-export const runUninstallCommand = async (): Promise<void> => {
-  // 1. Stop running daemon if any.
-  const { running, pid } = await getDaemonStatus();
+type UninstallCommandDeps = {
+  getAutostartStatus?: typeof getAutostartStatus;
+  unregisterAutostart?: typeof unregisterAutostart;
+  getDaemonStatus?: typeof getDaemonStatus;
+  removePidFile?: typeof removePidFile;
+  kill?: typeof process.kill;
+  logger?: Pick<typeof logger, 'info'>;
+};
+
+export const runUninstallCommand = async (deps: UninstallCommandDeps = {}): Promise<void> => {
+  const resolvedGetAutostartStatus = deps.getAutostartStatus ?? getAutostartStatus;
+  const resolvedUnregisterAutostart = deps.unregisterAutostart ?? unregisterAutostart;
+  const resolvedGetDaemonStatus = deps.getDaemonStatus ?? getDaemonStatus;
+  const resolvedRemovePidFile = deps.removePidFile ?? removePidFile;
+  const resolvedKill = deps.kill ?? process.kill.bind(process);
+  const resolvedLogger = deps.logger ?? logger;
+
+  const autostartStatus = resolvedGetAutostartStatus();
+  const isWindowsTask = autostartStatus.platform === 'task-scheduler';
+  if (isWindowsTask) {
+    await resolvedUnregisterAutostart();
+  }
+
+  const { running, pid } = await resolvedGetDaemonStatus();
 
   if (running && pid !== null) {
     try {
-      process.kill(pid, 'SIGTERM');
-      logger.info('Stopped running daemon', { pid });
+      resolvedKill(pid, 'SIGTERM');
+      resolvedLogger.info('Stopped running daemon', { pid });
     } catch {
       // Process may have exited between check and kill.
     }
-    await removePidFile();
+    await resolvedRemovePidFile();
   }
 
-  // 2. Unregister autostart service.
-  await unregisterAutostart();
+  if (!isWindowsTask) {
+    await resolvedUnregisterAutostart();
+  }
 
-  logger.info('Uninstall completed. Daemon service removed and autostart unregistered.');
+  resolvedLogger.info('Uninstall completed. Daemon service removed and autostart unregistered.');
 };

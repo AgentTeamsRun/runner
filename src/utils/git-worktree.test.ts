@@ -6,7 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readlinkSync,
+  realpathSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -176,7 +176,7 @@ test('createWorktree symlinks .agentteams from original repo', () => {
 
     assert.equal(existsSync(targetLink), true);
     assert.equal(lstatSync(targetLink).isSymbolicLink(), true);
-    assert.equal(readlinkSync(targetLink), agentteamsDir);
+    assert.equal(realpathSync(targetLink), realpathSync(agentteamsDir));
   } finally {
     cleanupDir(repo);
     const repoName = basename(repo);

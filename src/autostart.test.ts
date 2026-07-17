@@ -3,8 +3,14 @@ import test, { mock } from 'node:test';
 import {
   buildPlistContent,
   buildSystemdContent,
-  buildWindowsVbsContent,
+  buildWindowsPowerShellWrapper,
+  buildWindowsTaskXmlContent,
+  getAutostartStatus,
   launchWindowsHiddenDaemon,
+  registerWindowsTask,
+  restartWindowsTask,
+  scheduleWindowsTaskRestart,
+  unregisterWindowsTask,
 } from './autostart.js';
 
 const originalPath = process.env.PATH;
@@ -14,33 +20,140 @@ test.afterEach(() => {
   process.env.PATH = originalPath;
 });
 
-test('buildWindowsVbsContent launches agentrunner hidden with inherited env', () => {
-  process.env.PATH = 'C:\\Windows\\System32;C:\\Users\\rlaru\\AppData\\Roaming\\npm';
+test('buildWindowsTaskXmlContent configures supervised hidden logon startup', () => {
+  const content = buildWindowsTaskXmlContent('DOMAIN\\runner', 'C:\\Users\\runner\\.agentteams\\agentrunner-start.ps1');
 
-  const content = buildWindowsVbsContent(
-    {
-      token: 'daemon-token',
-      apiUrl: 'https://api.agentteams.run',
-    },
-    'C:\\Users\\rlaru\\AppData\\Roaming\\npm\\agentrunner.cmd',
-  );
-
-  assert.match(content, /Set shell = CreateObject\("WScript\.Shell"\)/u);
-  assert.match(content, /env\("AGENTTEAMS_DAEMON_TOKEN"\) = "daemon-token"/u);
-  assert.match(content, /env\("AGENTTEAMS_API_URL"\) = "https:\/\/api\.agentteams\.run"/u);
-  assert.match(content, /shell\.Run """.*agentrunner\.cmd"" start", 0, False/u);
+  assert.match(content, /<LogonTrigger>/u);
+  assert.match(content, /<UserId>DOMAIN\\runner<\/UserId>/u);
+  assert.match(content, /<Hidden>true<\/Hidden>/u);
+  assert.match(content, /<MultipleInstancesPolicy>IgnoreNew<\/MultipleInstancesPolicy>/u);
+  assert.match(content, /<RestartOnFailure>\s*<Interval>PT1M<\/Interval>\s*<Count>3<\/Count>/u);
+  assert.match(content, /<Command>powershell\.exe<\/Command>/u);
+  assert.match(content, /-WindowStyle Hidden/u);
 });
 
-test('buildWindowsVbsContent injects CODEX_SANDBOX_LEVEL=off', () => {
-  const content = buildWindowsVbsContent(
-    {
-      token: 't',
-      apiUrl: 'http://localhost:3001',
-    },
-    'agentrunner.cmd',
+test('buildWindowsPowerShellWrapper passes environment and rotates the bounded daemon log', () => {
+  const content = buildWindowsPowerShellWrapper(
+    { token: "tok'en", apiUrl: 'https://api.example' },
+    'C:\\Program Files\\AgentTeams\\agentrunner.cmd',
+    'C:\\Users\\runner\\.agentteams\\agentrunner.log',
+    'C:\\Windows\\System32;C:\\Tools',
   );
 
-  assert.match(content, /env\("CODEX_SANDBOX_LEVEL"\) = "off"/u);
+  assert.match(content, /\$env:PATH = 'C:\\Windows\\System32;C:\\Tools'/u);
+  assert.match(content, /\$env:AGENTTEAMS_DAEMON_TOKEN = 'tok''en'/u);
+  assert.match(content, /\$env:AGENTTEAMS_API_URL = 'https:\/\/api\.example'/u);
+  assert.match(content, /\$env:CODEX_SANDBOX_LEVEL = 'off'/u);
+  assert.match(content, /\$maxLogBytes = 10485760/u);
+  assert.match(content, /Move-Item -LiteralPath \$logPath -Destination "\$logPath\.1" -Force/u);
+  assert.match(content, /Clear-Content -LiteralPath \$logPath -ErrorAction SilentlyContinue/u);
+  assert.match(content, /& 'C:\\Program Files\\AgentTeams\\agentrunner\.cmd' start \*>> '.*agentrunner\.log'/u);
+});
+
+test('getAutostartStatus queries Task Scheduler with hidden execution on Windows', () => {
+  const calls: Array<{ command: string; windowsHide?: boolean }> = [];
+  const status = getAutostartStatus({
+    platform: () => 'win32',
+    execSync: ((command: string, options?: { windowsHide?: boolean }) => {
+      calls.push({ command, windowsHide: options?.windowsHide });
+      return Buffer.from('TaskName: AgentRunner');
+    }) as typeof import('node:child_process').execSync,
+  });
+
+  assert.deepEqual(status, { registered: true, platform: 'task-scheduler' });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.command, /schtasks \/Query \/TN "AgentRunner"/u);
+  assert.equal(calls[0]!.windowsHide, true);
+});
+
+test('registerWindowsTask writes scheduler assets, removes legacy files, and creates and runs the task', async () => {
+  const commands: string[] = [];
+  const writes: Array<{ path: string; data: string; encoding: BufferEncoding }> = [];
+  const removed: string[] = [];
+
+  const result = await registerWindowsTask(
+    { token: 'token', apiUrl: 'https://api.example' },
+    {
+      userId: 'DOMAIN\\runner',
+      daemonPath: 'C:\\Tools\\agentrunner.cmd',
+      mkdir: async () => undefined,
+      writeFile: async (path, data, encoding) => {
+        writes.push({ path, data, encoding });
+      },
+      unlink: async (path) => {
+        removed.push(path);
+      },
+      chmodSync: () => undefined,
+      execSync: (command, options) => {
+        commands.push(command);
+        assert.equal(options.windowsHide, true);
+        return Buffer.from('');
+      },
+    },
+  );
+
+  assert.equal(result.platform, 'task-scheduler');
+  assert.equal(writes.length, 2);
+  assert.ok(writes.some((write) => write.path.endsWith('agentrunner-start.ps1') && write.encoding === 'utf8'));
+  assert.ok(writes.some((write) => write.path.endsWith('agentrunner-task.xml') && write.encoding === 'utf16le'));
+  assert.ok(removed.some((path) => path.endsWith('agentrunner-start.vbs')));
+  assert.ok(removed.some((path) => path.endsWith('agentrunner-restart.vbs')));
+  assert.match(commands[0]!, /schtasks \/Delete/u);
+  assert.match(commands[1]!, /schtasks \/Create .* \/XML .* \/F/u);
+  assert.match(commands[2]!, /schtasks \/Run/u);
+});
+
+test('unregisterWindowsTask deletes the task and all generated or legacy artifacts idempotently', async () => {
+  const commands: string[] = [];
+  const removed: string[] = [];
+  await unregisterWindowsTask({
+    execSync: (command, options) => {
+      commands.push(command);
+      assert.equal(options.windowsHide, true);
+      return Buffer.from('');
+    },
+    unlink: async (path) => {
+      removed.push(path);
+    },
+  });
+
+  assert.equal(commands.length, 1);
+  assert.match(commands[0]!, /schtasks \/Delete \/TN "AgentRunner" \/F/u);
+  assert.ok(removed.some((path) => path.endsWith('agentrunner-task.xml')));
+  assert.ok(removed.some((path) => path.endsWith('agentrunner-start.ps1')));
+  assert.ok(removed.some((path) => path.endsWith('agentrunner-start.vbs')));
+});
+
+test('restartWindowsTask ends the running task before starting it again', async () => {
+  const commands: string[] = [];
+  await restartWindowsTask(null, {
+    execSync: (command, options) => {
+      commands.push(command);
+      assert.equal(options.windowsHide, true);
+      return Buffer.from('');
+    },
+  });
+
+  assert.deepEqual(commands, ['schtasks /End /TN "AgentRunner"', 'schtasks /Run /TN "AgentRunner"']);
+});
+
+test('scheduleWindowsTaskRestart queues a hidden task start after the current action exits', () => {
+  const calls: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
+  let unrefCalled = false;
+
+  scheduleWindowsTaskRestart({
+    spawn: ((command: string, args: readonly string[], options: Record<string, unknown>) => {
+      calls.push({ command, args, options });
+      return { unref: () => (unrefCalled = true) };
+    }) as unknown as typeof import('node:child_process').spawn,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.command, 'powershell.exe');
+  assert.match(calls[0]!.args.at(-1) ?? '', /Start-Sleep -Milliseconds 500; schtasks \/Run \/TN 'AgentRunner'/u);
+  assert.equal(calls[0]!.options.windowsHide, true);
+  assert.equal(calls[0]!.options.detached, true);
+  assert.equal(unrefCalled, true);
 });
 
 test('buildPlistContent injects CODEX_SANDBOX_LEVEL=off', () => {
@@ -62,81 +175,28 @@ test('buildSystemdContent injects CODEX_SANDBOX_LEVEL=off', () => {
   assert.match(content, /Environment="CODEX_SANDBOX_LEVEL=off"/u);
 });
 
-test('buildWindowsVbsContent always launches with shell.Run style=0 (hidden)', () => {
-  const content = buildWindowsVbsContent(
-    {
-      token: 't',
-      apiUrl: 'http://localhost:3001',
-    },
-    'C:\\Users\\rlaru\\AppData\\Roaming\\npm\\agentrunner.cmd',
-  );
-
-  // Style 0 = hidden window; False = don't wait. Both are required for hidden launch.
-  assert.match(content, /, 0, False$/mu);
-});
-
-test('launchWindowsHiddenDaemon reuses the registered startup VBS when present', () => {
-  const execCalls: string[] = [];
+test('launchWindowsHiddenDaemon starts a detached hidden PowerShell process without VBS', () => {
+  const calls: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
+  let unrefCalled = false;
 
   launchWindowsHiddenDaemon({
-    existsSync: () => true,
-    writeFileSync: () => {
-      throw new Error('should not write a new VBS when startup VBS exists');
-    },
-    mkdirSync: () => undefined,
-    execSync: ((command: string, options: { windowsHide: boolean }) => {
-      execCalls.push(command);
-      assert.equal(options.windowsHide, true, 'wscript spawn must be hidden');
-      return Buffer.from('');
-    }) as unknown as (command: string, options: { windowsHide: boolean }) => unknown,
-    getAutostartConfig: () => null,
-  });
-
-  assert.equal(execCalls.length, 1);
-  assert.match(execCalls[0]!, /^wscript\.exe ".*agentrunner-start\.vbs"$/u);
-  assert.doesNotMatch(execCalls[0]!, /powershell/iu, 'must not fall through to PowerShell');
-});
-
-test('launchWindowsHiddenDaemon writes a fresh VBS and runs wscript when no startup VBS exists', () => {
-  const writes: Array<{ path: string; content: string }> = [];
-  const execCalls: string[] = [];
-
-  launchWindowsHiddenDaemon({
-    existsSync: () => false,
-    writeFileSync: (path, content) => {
-      writes.push({ path, content });
-    },
-    mkdirSync: () => undefined,
-    execSync: ((command: string, options: { windowsHide: boolean }) => {
-      execCalls.push(command);
-      assert.equal(options.windowsHide, true);
-      return Buffer.from('');
-    }) as unknown as (command: string, options: { windowsHide: boolean }) => unknown,
-    getAutostartConfig: () => ({ token: 'tok', apiUrl: 'https://api.example' }),
-  });
-
-  assert.equal(writes.length, 1);
-  assert.match(writes[0]!.path, /agentrunner-restart\.vbs$/u);
-  assert.match(writes[0]!.content, /env\("AGENTTEAMS_DAEMON_TOKEN"\) = "tok"/u);
-  assert.match(writes[0]!.content, /, 0, False$/mu);
-  assert.equal(execCalls.length, 1);
-  assert.match(execCalls[0]!, /^wscript\.exe ".*agentrunner-restart\.vbs"$/u);
-});
-
-test('launchWindowsHiddenDaemon throws when no startup VBS and no config is available', () => {
-  assert.throws(
-    () =>
-      launchWindowsHiddenDaemon({
-        existsSync: () => false,
-        writeFileSync: () => {
-          throw new Error('should not write');
+    resolveExecutablePath: () => 'C:\\Tools\\agentrunner.cmd',
+    spawn: ((command: string, args: readonly string[], options: Record<string, unknown>) => {
+      calls.push({ command, args, options });
+      return {
+        unref: () => {
+          unrefCalled = true;
         },
-        mkdirSync: () => undefined,
-        execSync: (() => {
-          throw new Error('should not exec');
-        }) as unknown as (command: string, options: { windowsHide: boolean }) => unknown,
-        getAutostartConfig: () => null,
-      }),
-    /AGENTTEAMS_DAEMON_TOKEN/u,
-  );
+      };
+    }) as typeof import('node:child_process').spawn,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.command, 'powershell.exe');
+  assert.ok(calls[0]!.args.includes('-WindowStyle'));
+  assert.ok(calls[0]!.args.includes('Hidden'));
+  assert.match(calls[0]!.args.at(-1) ?? '', /agentrunner\.cmd.* start/u);
+  assert.equal(calls[0]!.options.windowsHide, true);
+  assert.equal(calls[0]!.options.detached, true);
+  assert.equal(unrefCalled, true);
 });

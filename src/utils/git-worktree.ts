@@ -35,7 +35,8 @@ export function healWorktreeConfig(authPath: string, worktreePath: string): void
   const targetAgentteams = path.join(worktreePath, '.agentteams');
   if (existsSync(sourceAgentteams) && !existsSync(targetAgentteams)) {
     try {
-      symlinkSync(sourceAgentteams, targetAgentteams, 'dir');
+      // Windows directory junctions do not require Developer Mode or elevation.
+      symlinkSync(sourceAgentteams, targetAgentteams, process.platform === 'win32' ? 'junction' : 'dir');
     } catch {
       // Non-critical: agent can still work without conventions
     }

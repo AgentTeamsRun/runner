@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { platform as getPlatform } from 'node:os';
 
 /**
- * On Windows the daemon is launched from a Startup-folder VBS that bakes in a
+ * On Windows the daemon is launched from a Task Scheduler wrapper that bakes in a
  * frozen PATH snapshot captured at autostart-registration time (see autostart.ts).
  * Any directory added to the user/machine PATH afterwards — which is how every
  * CLI installer (npm, scoop, choco, native installers) exposes its binary — is
