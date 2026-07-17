@@ -1,5 +1,5 @@
-import { execSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, promises as fs, writeFileSync } from 'node:fs';
+import { execSync, spawn } from 'node:child_process';
+import { chmodSync, existsSync, promises as fs } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveExecutablePath } from './executable.js';
@@ -7,6 +7,7 @@ import { logger } from './logger.js';
 
 const SERVICE_LABEL = 'run.agentteams.runner';
 const TASK_NAME = 'AgentRunner';
+const WINDOWS_LOG_MAX_BYTES = 10 * 1024 * 1024;
 
 // --- Path helpers ---
 
@@ -19,6 +20,12 @@ const getWindowsBatPath = (): string => join(homedir(), '.agentteams', 'agentrun
 const getWindowsVbsPath = (): string => join(homedir(), '.agentteams', 'agentrunner-start.vbs');
 
 const getWindowsRestartVbsPath = (): string => join(homedir(), '.agentteams', 'agentrunner-restart.vbs');
+
+const getWindowsTaskXmlPath = (): string => join(homedir(), '.agentteams', 'agentrunner-task.xml');
+
+const getWindowsWrapperPath = (): string => join(homedir(), '.agentteams', 'agentrunner-start.ps1');
+
+const getWindowsLogPath = (): string => join(homedir(), '.agentteams', 'agentrunner.log');
 
 const getWindowsStartupVbsPath = (): string =>
   join(
@@ -115,23 +122,78 @@ SyslogIdentifier=agentrunner
 WantedBy=default.target`;
 };
 
-const escapeForVbsString = (value: string): string => value.replaceAll('"', '""');
+const escapeForPowerShellString = (value: string): string => value.replaceAll("'", "''");
 
-// --- Windows hidden launcher ---
+const escapeForXml = (value: string): string =>
+  value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
-export const buildWindowsVbsContent = (
+export const buildWindowsPowerShellWrapper = (
   config: AutostartConfig,
   daemonPath: string = resolveExecutablePath('agentrunner'),
+  logPath: string = getWindowsLogPath(),
+  currentPath: string = process.env.PATH ?? '',
 ): string => {
   return [
-    'Set shell = CreateObject("WScript.Shell")',
-    'Set env = shell.Environment("PROCESS")',
-    `env("PATH") = "${escapeForVbsString(process.env.PATH ?? '')}"`,
-    `env("AGENTTEAMS_DAEMON_TOKEN") = "${escapeForVbsString(config.token)}"`,
-    `env("AGENTTEAMS_API_URL") = "${escapeForVbsString(config.apiUrl)}"`,
-    `env("CODEX_SANDBOX_LEVEL") = "off"`,
-    `shell.Run """${escapeForVbsString(daemonPath)}"" start", 0, False`,
+    "$ErrorActionPreference = 'Stop'",
+    `$env:PATH = '${escapeForPowerShellString(currentPath)}'`,
+    `$env:AGENTTEAMS_DAEMON_TOKEN = '${escapeForPowerShellString(config.token)}'`,
+    `$env:AGENTTEAMS_API_URL = '${escapeForPowerShellString(config.apiUrl)}'`,
+    "$env:CODEX_SANDBOX_LEVEL = 'off'",
+    `$logPath = '${escapeForPowerShellString(logPath)}'`,
+    `$maxLogBytes = ${WINDOWS_LOG_MAX_BYTES}`,
+    'try {',
+    '  if ((Test-Path -LiteralPath $logPath -PathType Leaf) -and ((Get-Item -LiteralPath $logPath).Length -ge $maxLogBytes)) {',
+    '    Move-Item -LiteralPath $logPath -Destination "$logPath.1" -Force',
+    '  }',
+    '} catch {',
+    '  Clear-Content -LiteralPath $logPath -ErrorAction SilentlyContinue',
+    '}',
+    `& '${escapeForPowerShellString(daemonPath)}' start *>> '${escapeForPowerShellString(logPath)}'`,
+    'exit $LASTEXITCODE',
   ].join('\r\n');
+};
+
+export const buildWindowsTaskXmlContent = (userId: string, wrapperPath: string): string => {
+  const escapedUserId = escapeForXml(userId);
+  const argumentsValue = escapeForXml(
+    `-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${wrapperPath}"`,
+  );
+
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>AgentTeams Runner</Description></RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>${escapedUserId}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>${escapedUserId}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Hidden>true</Hidden>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>${argumentsValue}</Arguments>
+    </Exec>
+  </Actions>
+</Task>`;
 };
 
 // --- Public API ---
@@ -211,19 +273,25 @@ export const restartAutostartService = async (): Promise<void> => {
   }
 
   if (os === 'win32') {
-    await restartWindowsStartup(config);
+    await restartWindowsTask(config);
     return;
   }
 
   throw new Error(`Autostart restart is not supported on '${os}'.`);
 };
 
-export const getAutostartStatus = (): { registered: boolean; platform: string } => {
-  const os = platform();
+type AutostartStatusDeps = {
+  platform?: typeof platform;
+  execSync?: typeof execSync;
+};
+
+export const getAutostartStatus = (deps: AutostartStatusDeps = {}): { registered: boolean; platform: string } => {
+  const os = (deps.platform ?? platform)();
+  const resolvedExecSync = deps.execSync ?? execSync;
 
   if (os === 'darwin') {
     try {
-      const output = execSync(`launchctl list ${SERVICE_LABEL} 2>/dev/null`, {
+      const output = resolvedExecSync(`launchctl list ${SERVICE_LABEL} 2>/dev/null`, {
         encoding: 'utf8',
       });
       return { registered: output.includes(SERVICE_LABEL), platform: 'launchd' };
@@ -234,7 +302,7 @@ export const getAutostartStatus = (): { registered: boolean; platform: string } 
 
   if (os === 'linux') {
     try {
-      const output = execSync('systemctl --user is-enabled agentrunner 2>/dev/null', {
+      const output = resolvedExecSync('systemctl --user is-enabled agentrunner 2>/dev/null', {
         encoding: 'utf8',
       });
       return { registered: output.trim() === 'enabled', platform: 'systemd' };
@@ -244,10 +312,12 @@ export const getAutostartStatus = (): { registered: boolean; platform: string } 
   }
 
   if (os === 'win32') {
-    return {
-      registered: existsSync(getWindowsStartupVbsPath()),
-      platform: 'startup-folder',
-    };
+    try {
+      resolvedExecSync(`schtasks /Query /TN "${TASK_NAME}"`, { windowsHide: true });
+      return { registered: true, platform: 'task-scheduler' };
+    } catch {
+      return { registered: false, platform: 'task-scheduler' };
+    }
   }
 
   return { registered: false, platform: os };
@@ -374,58 +444,99 @@ const restartSystemd = async (config: AutostartConfig | null): Promise<void> => 
 
 // --- Windows Task Scheduler ---
 
-const registerWindowsTask = async (config: AutostartConfig): Promise<AutostartResult> => {
+type WindowsAutostartDeps = {
+  execSync?: (command: string, options: { windowsHide: boolean }) => unknown;
+  mkdir?: (path: string, options: { recursive: boolean }) => Promise<unknown>;
+  writeFile?: (path: string, data: string, encoding: BufferEncoding) => Promise<void>;
+  unlink?: (path: string) => Promise<void>;
+  chmodSync?: (path: string, mode: number) => void;
+  daemonPath?: string;
+  userId?: string;
+};
+
+export const registerWindowsTask = async (
+  config: AutostartConfig,
+  deps: WindowsAutostartDeps = {},
+): Promise<AutostartResult> => {
+  const resolvedExecSync = deps.execSync ?? execSync;
+  const resolvedMkdir = deps.mkdir ?? fs.mkdir;
+  const resolvedWriteFile = deps.writeFile ?? fs.writeFile;
+  const resolvedUnlink = deps.unlink ?? fs.unlink;
+  const resolvedChmodSync = deps.chmodSync ?? chmodSync;
+  const taskXmlPath = getWindowsTaskXmlPath();
+  const wrapperPath = getWindowsWrapperPath();
   const startupVbsPath = getWindowsStartupVbsPath();
   const legacyVbsPath = getWindowsVbsPath();
   const legacyBatPath = getWindowsBatPath();
+  const restartVbsPath = getWindowsRestartVbsPath();
+
+  await resolvedMkdir(dirname(taskXmlPath), { recursive: true });
 
   // Remove legacy Task Scheduler entry if any.
   try {
-    execSync(`schtasks /Delete /TN "${TASK_NAME}" /F 2>nul`, { windowsHide: true });
+    resolvedExecSync(`schtasks /Delete /TN "${TASK_NAME}" /F 2>nul`, { windowsHide: true });
   } catch {
     // Not registered — that's fine.
   }
 
-  const content = buildWindowsVbsContent(config);
-  await fs.writeFile(startupVbsPath, content, 'utf8');
-  chmodSync(startupVbsPath, 0o600);
+  const userName = process.env.USERNAME ?? process.env.USER ?? '';
+  const userId = deps.userId ?? (process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${userName}` : userName);
+  if (!userId) {
+    throw new Error('Cannot register Windows Task Scheduler autostart: current user is unknown.');
+  }
+
+  await resolvedWriteFile(
+    wrapperPath,
+    buildWindowsPowerShellWrapper(config, deps.daemonPath ?? resolveExecutablePath('agentrunner')),
+    'utf8',
+  );
+  await resolvedWriteFile(taskXmlPath, buildWindowsTaskXmlContent(userId, wrapperPath), 'utf16le');
+  resolvedChmodSync(wrapperPath, 0o600);
+  resolvedChmodSync(taskXmlPath, 0o600);
 
   // Clean up legacy files.
-  for (const legacyPath of [legacyVbsPath, legacyBatPath]) {
+  for (const legacyPath of [startupVbsPath, legacyVbsPath, legacyBatPath, restartVbsPath]) {
     try {
-      await fs.unlink(legacyPath);
+      await resolvedUnlink(legacyPath);
     } catch {
       // Legacy file may not exist.
     }
   }
 
-  // Start the runner immediately (hidden).
+  resolvedExecSync(`schtasks /Create /TN "${TASK_NAME}" /XML "${taskXmlPath}" /F`, { windowsHide: true });
+
+  // Start the registered task immediately.
   try {
-    execSync(`wscript.exe "${startupVbsPath}"`, { windowsHide: true });
+    resolvedExecSync(`schtasks /Run /TN "${TASK_NAME}"`, { windowsHide: true });
   } catch {
     logger.warn('Autostart registered but immediate start failed. It will start at next logon.');
   }
 
-  logger.info('Registered Windows Startup folder autostart', { startupVbsPath });
-  return { registered: true, servicePath: startupVbsPath, platform: 'startup-folder' };
+  logger.info('Registered Windows Task Scheduler autostart', { taskXmlPath });
+  return { registered: true, servicePath: taskXmlPath, platform: 'task-scheduler' };
 };
 
-const unregisterWindowsTask = async (): Promise<void> => {
+export const unregisterWindowsTask = async (deps: WindowsAutostartDeps = {}): Promise<void> => {
+  const resolvedExecSync = deps.execSync ?? execSync;
+  const resolvedUnlink = deps.unlink ?? fs.unlink;
   const startupVbsPath = getWindowsStartupVbsPath();
   const legacyVbsPath = getWindowsVbsPath();
   const legacyBatPath = getWindowsBatPath();
+  const restartVbsPath = getWindowsRestartVbsPath();
+  const taskXmlPath = getWindowsTaskXmlPath();
+  const wrapperPath = getWindowsWrapperPath();
 
   // Remove legacy Task Scheduler entry if any.
   try {
-    execSync(`schtasks /Delete /TN "${TASK_NAME}" /F 2>nul`, { windowsHide: true });
+    resolvedExecSync(`schtasks /Delete /TN "${TASK_NAME}" /F 2>nul`, { windowsHide: true });
   } catch {
     // Not registered — that's fine.
   }
 
   // Remove Startup folder VBS and legacy files.
-  for (const filePath of [startupVbsPath, legacyVbsPath, legacyBatPath]) {
+  for (const filePath of [startupVbsPath, legacyVbsPath, legacyBatPath, restartVbsPath, taskXmlPath, wrapperPath]) {
     try {
-      await fs.unlink(filePath);
+      await resolvedUnlink(filePath);
       logger.info('Removed autostart file', { filePath });
     } catch {
       // File may not exist.
@@ -433,56 +544,88 @@ const unregisterWindowsTask = async (): Promise<void> => {
   }
 };
 
-const restartWindowsStartup = async (config: AutostartConfig | null): Promise<void> => {
-  const startupVbsPath = getWindowsStartupVbsPath();
-
-  if (!existsSync(startupVbsPath)) {
-    throw new Error('Windows startup script is not registered.');
-  }
-
-  if (config) {
-    const content = buildWindowsVbsContent(config);
-    await fs.writeFile(startupVbsPath, content, 'utf8');
-    chmodSync(startupVbsPath, 0o600);
-    logger.info('Regenerated Windows startup script before restart', { startupVbsPath });
-  }
-
-  execSync(`wscript.exe "${startupVbsPath}"`, { windowsHide: true });
+type RestartWindowsTaskDeps = {
+  execSync?: (command: string, options: { windowsHide: boolean }) => unknown;
+  writeFile?: (path: string, data: string, encoding: BufferEncoding) => Promise<void>;
+  chmodSync?: (path: string, mode: number) => void;
+  daemonPath?: string;
 };
 
-// --- Windows hidden launcher (for on-demand restart) ---
+export const restartWindowsTask = async (
+  config: AutostartConfig | null,
+  deps: RestartWindowsTaskDeps = {},
+): Promise<void> => {
+  const resolvedExecSync = deps.execSync ?? execSync;
+  if (config) {
+    const wrapperPath = getWindowsWrapperPath();
+    await (deps.writeFile ?? fs.writeFile)(
+      wrapperPath,
+      buildWindowsPowerShellWrapper(config, deps.daemonPath ?? resolveExecutablePath('agentrunner')),
+      'utf8',
+    );
+    (deps.chmodSync ?? chmodSync)(wrapperPath, 0o600);
+    logger.info('Regenerated Windows task wrapper before restart', { wrapperPath });
+  }
+
+  try {
+    resolvedExecSync(`schtasks /End /TN "${TASK_NAME}"`, { windowsHide: true });
+  } catch {
+    // The task may already be stopped — continue with an explicit run.
+  }
+  resolvedExecSync(`schtasks /Run /TN "${TASK_NAME}"`, { windowsHide: true });
+};
+
+type ScheduleWindowsTaskRestartDeps = {
+  spawn?: typeof spawn;
+};
+
+// A task cannot run a second instance while its current action is still alive.
+// Queue the explicit start in a detached helper so it runs after this daemon exits
+// cleanly, rather than consuming Task Scheduler's failure-restart budget.
+export const scheduleWindowsTaskRestart = (deps: ScheduleWindowsTaskRestartDeps = {}): void => {
+  const resolvedSpawn = deps.spawn ?? spawn;
+  const child = resolvedSpawn(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-WindowStyle',
+      'Hidden',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      `Start-Sleep -Milliseconds 500; schtasks /Run /TN '${TASK_NAME}'`,
+    ],
+    {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: process.env,
+    },
+  );
+  child.unref();
+};
+
+// --- Windows hidden launcher (manual, unregistered start) ---
 
 type LaunchWindowsHiddenDeps = {
-  existsSync?: (path: string) => boolean;
-  writeFileSync?: (path: string, data: string, encoding: BufferEncoding) => void;
-  mkdirSync?: (path: string, options: { recursive: boolean }) => void;
-  execSync?: (command: string, options: { windowsHide: boolean }) => unknown;
-  getAutostartConfig?: () => AutostartConfig | null;
+  spawn?: typeof spawn;
+  resolveExecutablePath?: typeof resolveExecutablePath;
 };
 
-// Run agentrunner via wscript+VBS so no console window appears.
-// Prefers the registered Startup VBS if present; otherwise writes a fresh VBS
-// next to the daemon config and runs it.
 export const launchWindowsHiddenDaemon = (deps: LaunchWindowsHiddenDeps = {}): void => {
-  const resolvedExists = deps.existsSync ?? existsSync;
-  const resolvedWrite = deps.writeFileSync ?? writeFileSync;
-  const resolvedMkdir = deps.mkdirSync ?? mkdirSync;
-  const resolvedExec = deps.execSync ?? execSync;
-  const resolvedGetConfig = deps.getAutostartConfig ?? getAutostartConfigFromEnv;
-
-  const startupVbsPath = getWindowsStartupVbsPath();
-  if (resolvedExists(startupVbsPath)) {
-    resolvedExec(`wscript.exe "${startupVbsPath}"`, { windowsHide: true });
-    return;
-  }
-
-  const config = resolvedGetConfig();
-  if (!config) {
-    throw new Error('Cannot launch Windows daemon hidden: AGENTTEAMS_DAEMON_TOKEN/AGENTTEAMS_API_URL are missing.');
-  }
-
-  const restartVbsPath = getWindowsRestartVbsPath();
-  resolvedMkdir(dirname(restartVbsPath), { recursive: true });
-  resolvedWrite(restartVbsPath, buildWindowsVbsContent(config), 'utf8');
-  resolvedExec(`wscript.exe "${restartVbsPath}"`, { windowsHide: true });
+  const resolvedSpawn = deps.spawn ?? spawn;
+  const daemonPath = (deps.resolveExecutablePath ?? resolveExecutablePath)('agentrunner');
+  const command = `& '${escapeForPowerShellString(daemonPath)}' start`;
+  const child = resolvedSpawn(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-Command', command],
+    {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: process.env,
+    },
+  );
+  child.unref();
 };

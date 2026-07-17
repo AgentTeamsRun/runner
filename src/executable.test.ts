@@ -81,6 +81,19 @@ test('resolveExecutablePath prefers PATH lookup results', () => {
   assert.equal(resolved, '/usr/local/bin/codex');
 });
 
+for (const resolvedAgent of ['C:\\Cursor\\agent.exe', 'C:\\Users\\test\\AppData\\Local\\Cursor\\agent.cmd']) {
+  test(`resolveExecutablePath accepts Cursor agent PATH result ${resolvedAgent.split('\\\\').at(-1)}`, () => {
+    const resolved = resolveExecutablePath('agent', {
+      platform: () => 'win32',
+      execFileSync: ((command: string, args: string[]) => {
+        if (command === 'where' && args[0] === 'agent') return `${resolvedAgent}\n`;
+        throw new Error(`unexpected command: ${command}`);
+      }) as unknown as typeof import('node:child_process').execFileSync,
+    });
+    assert.equal(resolved, resolvedAgent);
+  });
+}
+
 test('resolveExecutablePathWithPreference prefers opencode.cmd on Windows', () => {
   const resolved = resolveExecutablePathWithPreference('opencode', ['opencode.cmd', 'opencode'], {
     platform: () => 'win32',

@@ -129,7 +129,7 @@ npm run dev
 
 > `CODEX_SANDBOX_LEVEL=off`는 `codex --dangerously-bypass-approvals-and-sandbox`를 사용합니다. Git 쓰기와 임의 명령 실행이 모두 가능해지므로 로컬 개발/검증 용도로만 사용하세요.
 >
-> **자동시작과 수동 시작의 동작 통일**: 자동시작 서비스 파일(launchd/systemd/Startup)은 `CODEX_SANDBOX_LEVEL=off`를 환경변수로 주입합니다. 수동 `agentrunner start`도 동일하게 `CODEX_SANDBOX_LEVEL`이 설정되지 않은 경우 `off`로 기본값을 적용합니다. 명시적으로 `CODEX_SANDBOX_LEVEL=workspace-write agentrunner start`처럼 지정하면 해당 값이 우선됩니다.
+> **자동시작과 수동 시작의 동작 통일**: 자동시작 서비스 파일(launchd/systemd/Task Scheduler)은 `CODEX_SANDBOX_LEVEL=off`를 환경변수로 주입합니다. 수동 `agentrunner start`도 동일하게 `CODEX_SANDBOX_LEVEL`이 설정되지 않은 경우 `off`로 기본값을 적용합니다. 명시적으로 `CODEX_SANDBOX_LEVEL=workspace-write agentrunner start`처럼 지정하면 해당 값이 우선됩니다.
 
 ## 프로젝트 구조
 
@@ -166,11 +166,11 @@ daemon/
 
 `init` 실행 시 OS에 맞는 서비스를 등록합니다.
 
-| OS      | 방식           | 서비스 파일                                                                             |
-| ------- | -------------- | --------------------------------------------------------------------------------------- |
-| macOS   | launchd        | `~/Library/LaunchAgents/run.agentteams.runner.plist`                                    |
-| Linux   | systemd (user) | `~/.config/systemd/user/agentrunner.service`                                            |
-| Windows | Startup folder | `~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/agentrunner-start.vbs` |
+| OS      | 방식           | 서비스 파일/이름                                           |
+| ------- | -------------- | ---------------------------------------------------------- |
+| macOS   | launchd        | `~/Library/LaunchAgents/run.agentteams.runner.plist`       |
+| Linux   | systemd (user) | `~/.config/systemd/user/agentrunner.service`               |
+| Windows | Task Scheduler | 태스크 `AgentRunner`, `~/.agentteams/agentrunner-task.xml` |
 
 ### 서비스 디버깅
 
@@ -184,8 +184,9 @@ cat /tmp/agentrunner-error.log
 systemctl --user status agentrunner
 journalctl --user -u agentrunner -f
 
-# Windows: Startup script 확인
-dir "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\agentrunner-start.vbs"
+# Windows: 예약 태스크와 append 로그 확인
+schtasks /Query /TN "AgentRunner" /V /FO LIST
+powershell -NoProfile -Command "Get-Content '$env:USERPROFILE\.agentteams\agentrunner.log' -Wait"
 ```
 
 ## 동작 흐름
@@ -202,18 +203,35 @@ dir "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\agentrunner-s
 - `agentrunner restart`
   - 자동 시작 등록이 있으면 해당 OS 등록 경로로 재시작
   - 자동 시작 등록이 없으면 detached 백그라운드 프로세스로 다시 시작
+  - Windows Task Scheduler 등록 경로는 현재 인스턴스를 `/End`한 뒤 `/Run`
 - `agentrunner update`
   - `npm install -g @agentteams/runner@latest`
   - 설치 성공 후 `restart` 흐름 수행
-  - Windows는 서비스 재기동이 아니라 Startup script를 다시 실행하는 UX
+  - Windows는 Task Scheduler의 동일 태스크를 재기동하며 중복 인스턴스를 만들지 않음
+
+- `agentrunner stop`
+  - Windows에서는 태스크 인스턴스를 먼저 종료해 실패 재시작을 막고 daemon을 정상 종료
+  - 태스크 등록은 유지되므로 다음 로그인에서는 다시 시작 가능
+- `agentrunner uninstall`
+  - Windows에서는 태스크를 먼저 삭제한 뒤 daemon과 PID 파일을 정리
 
 ## 로그
 
 - **데몬 로그**: 콘솔 출력 (자동 시작 시 OS 로그 시스템으로 전달)
   - macOS: `/tmp/agentrunner.log`, `/tmp/agentrunner-error.log`
   - Linux: `journalctl --user -u agentrunner -f`
-  - Windows: 이벤트 뷰어 → Windows 로그 → 응용 프로그램 (`AgentRunner`)
+  - Windows: `%USERPROFILE%\.agentteams\agentrunner.log`
 - **태스크 로그**: `<작업경로>/.agentteams/daemonLog/daemon-<triggerId>.log`
+
+### Windows 절전·네트워크 복구 smoke test
+
+실제 사용자 PC가 아닌 테스트용 Windows 장비에서 다음을 확인합니다.
+
+1. `agentrunner init` 또는 업그레이드 등록 후 `schtasks /Query /TN "AgentRunner" /V /FO LIST`로 로그온 트리거, `IgnoreNew`, 실패 재시작 설정을 확인합니다.
+2. `agentrunner restart` 후 콘솔 창 노출 없이 새 PID가 생성되고 `~/.agentteams/agentrunner.log`에 로그가 append되는지 확인합니다.
+3. runner 프로세스를 비정상 종료하고 1분 뒤 Task Scheduler가 새 PID로 최대 3회 범위에서 재시작하는지 확인합니다.
+4. 네트워크를 단절·복구하거나 절전·복귀한 뒤, 30초 HTTP transport timeout 경고와 후속 poll 시도 또는 성공 로그를 확인합니다.
+5. `agentrunner stop` 후 즉시 재시작되지 않는지 확인합니다. `agentrunner uninstall`을 수행한 경우 예약 태스크가 삭제되었는지도 확인합니다.
 
 ## 개발 워크플로우
 

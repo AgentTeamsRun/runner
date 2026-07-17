@@ -1,6 +1,6 @@
 {
   "name": "@agentteams/runner",
-  "version": "0.0.97",
+  "version": "0.0.98",
   "description": "AgentRunner - Background runner that polls and executes AI agent tasks",
   "type": "module",
   "main": "dist/index.js",
@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "tsx watch src/index.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
-    "lint": "eslint 'src/**/*.ts'",
+    "lint": "eslint \"src/**/*.ts\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "start": "node dist/index.js",

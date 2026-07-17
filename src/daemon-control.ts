@@ -1,6 +1,11 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { platform as getPlatform } from 'node:os';
-import { getAutostartStatus, launchWindowsHiddenDaemon, restartAutostartService } from './autostart.js';
+import {
+  getAutostartStatus,
+  launchWindowsHiddenDaemon,
+  restartAutostartService,
+  scheduleWindowsTaskRestart,
+} from './autostart.js';
 import { logger } from './logger.js';
 import { getDaemonStatus } from './pid.js';
 import { spawnExecutable } from './executable.js';
@@ -26,6 +31,7 @@ type RestartDeps = {
 
 type ExecuteRestartDeps = {
   getAutostartStatus?: typeof getAutostartStatus;
+  scheduleWindowsTaskRestart?: typeof scheduleWindowsTaskRestart;
   spawnDetachedDaemon?: () => DetachedChildProcess | void;
   platform?: typeof getPlatform;
   processExit?: (code: number) => never;
@@ -54,10 +60,8 @@ const waitForDaemonToStop = async (
 };
 
 export const spawnDetachedDaemon = (): DetachedChildProcess | void => {
-  // On Windows, spawnExecutable wraps the call in `powershell.exe -Command`,
-  // which flashes a console window even with `windowsHide: true` because the
-  // `.cmd` shim creates its own console host. Use the hidden VBS launcher
-  // instead so users never see a terminal pop up.
+  // On Windows, use the dedicated hidden PowerShell launcher so the `.cmd`
+  // shim never creates a visible console host.
   if (getPlatform() === 'win32') {
     launchWindowsHiddenDaemon();
     return;
@@ -79,12 +83,19 @@ export const spawnDetachedDaemon = (): DetachedChildProcess | void => {
 // let the OS supervisor restart us, or spawn a replacement and exit cleanly.
 export const executeRestartRequest = (deps: ExecuteRestartDeps = {}): void => {
   const resolvedGetAutostartStatus = deps.getAutostartStatus ?? getAutostartStatus;
+  const resolvedScheduleWindowsTaskRestart = deps.scheduleWindowsTaskRestart ?? scheduleWindowsTaskRestart;
   const resolvedSpawnDetachedDaemon = deps.spawnDetachedDaemon ?? spawnDetachedDaemon;
   const resolvedPlatform = (deps.platform ?? getPlatform)();
   const exitProcess = deps.processExit ?? ((code: number) => process.exit(code));
   const resolvedLogger = deps.logger ?? logger;
 
   const autostartStatus = resolvedGetAutostartStatus();
+  if (autostartStatus.registered && autostartStatus.platform === 'task-scheduler') {
+    resolvedLogger.info('Restart requested — scheduling explicit Task Scheduler restart');
+    resolvedScheduleWindowsTaskRestart();
+    exitProcess(0);
+    return;
+  }
   const supervisedRespawn =
     autostartStatus.registered && (autostartStatus.platform === 'launchd' || autostartStatus.platform === 'systemd');
 
@@ -114,6 +125,13 @@ export const restartDaemon = async (deps: RestartDeps = {}): Promise<void> => {
   const resolvedSleep = deps.sleep ?? ((milliseconds: number) => delay(milliseconds));
   const resolvedLogger = deps.logger ?? logger;
 
+  const autostartStatus = resolvedGetAutostartStatus();
+  if (autostartStatus.registered && autostartStatus.platform === 'task-scheduler') {
+    resolvedLogger.info('Restarting AgentRunner via registered Task Scheduler task');
+    await resolvedRestartAutostartService();
+    return;
+  }
+
   const daemonStatus = await resolvedGetDaemonStatus();
   if (daemonStatus.running && daemonStatus.pid !== null) {
     resolvedLogger.info('Stopping AgentRunner before restart', { pid: daemonStatus.pid });
@@ -124,7 +142,6 @@ export const restartDaemon = async (deps: RestartDeps = {}): Promise<void> => {
     });
   }
 
-  const autostartStatus = resolvedGetAutostartStatus();
   if (autostartStatus.registered) {
     resolvedLogger.info('Restarting AgentRunner via registered autostart service', {
       platform: autostartStatus.platform,

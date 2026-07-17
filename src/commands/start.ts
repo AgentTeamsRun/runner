@@ -7,7 +7,7 @@ import { logger } from '../logger.js';
 import { refreshWindowsPathFromRegistry } from '../windows-path.js';
 
 /**
- * The Windows autostart launcher (Startup-folder VBS) injects a PATH snapshot
+ * The Windows Task Scheduler wrapper injects a PATH snapshot
  * frozen at registration time, so runner CLIs installed afterwards become
  * unresolvable. Re-read the live registry PATH at startup to stay agnostic to
  * how each CLI was installed (npm, scoop, choco, native installers, ...).
@@ -23,7 +23,7 @@ const refreshExecutablePath = (): void => {
 
 /**
  * Default CODEX_SANDBOX_LEVEL to "off" when not explicitly set.
- * Auto-start services (launchd/systemd/Startup) inject CODEX_SANDBOX_LEVEL=off
+ * Auto-start services (launchd/systemd/Task Scheduler) inject CODEX_SANDBOX_LEVEL=off
  * in their service files. For manual `agentrunner start`, we apply the same
  * default so both paths behave identically.
  */

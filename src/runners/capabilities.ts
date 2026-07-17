@@ -50,6 +50,7 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // 실제 인자 조립은 runners/amp.ts에서 AmpCode 전용 계약으로 문서화한다.
   AMP: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
   COPILOT_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
+  CURSOR_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
 };
 
 const DEFAULT_CAPABILITIES: RunnerCapabilities = {

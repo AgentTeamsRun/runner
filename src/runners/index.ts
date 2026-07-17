@@ -4,6 +4,7 @@ import { CodexRunner } from './codex.js';
 import { AmpCodeRunner } from './amp.js';
 import { AntigravityRunner } from './antigravity.js';
 import { CopilotCliRunner } from './copilot-cli.js';
+import { CursorCliRunner } from './cursor-cli.js';
 import type { Runner } from './types.js';
 // 러너 타입 집합의 단일 진실 소스(SSOT). `import type`이므로 컴파일 시 완전히 제거되어
 // daemon 런타임/배포 산출물(dist)에는 이 패키지 의존이 남지 않는다(zero-dependency 유지).
@@ -28,6 +29,8 @@ export const createRunnerFactory = (runnerCmd: string) => {
         return new AmpCodeRunner();
       case 'COPILOT_CLI':
         return new CopilotCliRunner();
+      case 'CURSOR_CLI':
+        return new CursorCliRunner();
       // TODO: AIDER
       // TODO: GOOSE
       // TODO: PLANDEX

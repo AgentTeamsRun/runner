@@ -939,6 +939,39 @@ const backoffDependencies = (timeouts: ReturnType<typeof createTimeoutRecorder>,
   keepAlive,
 });
 
+test('startPolling schedules one next poll after fetchPollState rejects', async () => {
+  const timeouts = createTimeoutRecorder();
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () =>
+      makeClient({
+        fetchPollState: async () => {
+          throw new Error('network unavailable');
+        },
+      }),
+    ...backoffDependencies(
+      timeouts,
+      () =>
+        new Promise<void>((resolve) => {
+          keepAliveResolve = resolve;
+        }),
+    ),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timeouts.scheduled.length, 1);
+  assert.equal(timeouts.scheduled[0]?.delayMs, 7500, 'failed idle cycle keeps the adaptive delay rule');
+
+  const resolveKeepAlive =
+    keepAliveResolve ??
+    (() => {
+      throw new Error('keepAlive resolver was not registered');
+    });
+  resolveKeepAlive();
+  await pollingPromise;
+});
+
 test('startPolling backs off the poll interval while idle and clamps at maxPollingIntervalMs', async () => {
   const timeouts = createTimeoutRecorder();
   let keepAliveResolve: (() => void) | null = null;

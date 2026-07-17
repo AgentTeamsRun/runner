@@ -39,7 +39,7 @@ test('resolveCodexExecutionCwd uses the physical path behind a symlink authPath'
 
   try {
     await mkdir(physicalPath);
-    await symlink(physicalPath, symlinkPath, 'dir');
+    await symlink(physicalPath, symlinkPath, process.platform === 'win32' ? 'junction' : 'dir');
 
     assert.equal(await resolveCodexExecutionCwd(symlinkPath), await realpath(physicalPath));
   } finally {

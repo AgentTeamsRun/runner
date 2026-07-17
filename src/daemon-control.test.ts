@@ -53,6 +53,27 @@ test('restartDaemon starts detached daemon when autostart is not registered', as
   assert.equal(started, true);
 });
 
+test('restartDaemon delegates Windows task restart without signaling the daemon first', async () => {
+  const events: string[] = [];
+  await restartDaemon({
+    getDaemonStatus: async () => {
+      events.push('status');
+      return { running: true, pid: 4321 };
+    },
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    restartAutostartService: async () => {
+      events.push('task-restart');
+    },
+    kill: () => {
+      events.push('kill');
+      return true;
+    },
+    logger: { info: () => undefined },
+  });
+
+  assert.deepEqual(events, ['task-restart']);
+});
+
 test('executeRestartRequest exits non-zero when supervised by launchd', () => {
   const exitCodes: number[] = [];
   let spawned = false;
@@ -95,12 +116,16 @@ test('executeRestartRequest exits non-zero when supervised by systemd', () => {
   assert.equal(spawned, false);
 });
 
-test('executeRestartRequest spawns a hidden Windows daemon even when startup-folder is registered', () => {
+test('executeRestartRequest schedules an explicit restart and exits cleanly for Windows Task Scheduler', () => {
   const exitCodes: number[] = [];
   let spawned = false;
+  let scheduled = false;
 
   executeRestartRequest({
-    getAutostartStatus: () => ({ registered: true, platform: 'startup-folder' }),
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    scheduleWindowsTaskRestart: () => {
+      scheduled = true;
+    },
     spawnDetachedDaemon: () => {
       spawned = true;
     },
@@ -112,7 +137,8 @@ test('executeRestartRequest spawns a hidden Windows daemon even when startup-fol
     logger: { info: () => undefined },
   });
 
-  assert.equal(spawned, true, 'Windows startup-folder is not a supervisor — must respawn');
+  assert.equal(spawned, false);
+  assert.equal(scheduled, true);
   assert.deepEqual(exitCodes, [0]);
 });
 

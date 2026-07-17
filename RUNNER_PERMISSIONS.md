@@ -2,12 +2,15 @@
 
 ## Runner별 권한 설정
 
-| Runner          | CLI        | 권한 플래그                      | 샌드박스                            |
-| --------------- | ---------- | -------------------------------- | ----------------------------------- |
-| **Claude Code** | `claude`   | `--dangerously-skip-permissions` | 전체 스킵                           |
-| **AMP**         | `ampcode`  | `--dangerously-allow-all`        | 전체 스킵                           |
-| **Codex**       | `codex`    | `CODEX_SANDBOX_LEVEL` 환경변수   | `workspace-write` (기본) 또는 `off` |
-| **OpenCode**    | `opencode` | 없음                             | 없음                                |
+| Runner          | CLI        | 권한 플래그                      | 샌드박스                                |
+| --------------- | ---------- | -------------------------------- | --------------------------------------- |
+| **Claude Code** | `claude`   | `--dangerously-skip-permissions` | 전체 스킵                               |
+| **AMP**         | `ampcode`  | `--dangerously-allow-all`        | 전체 스킵                               |
+| **Codex**       | `codex`    | `CODEX_SANDBOX_LEVEL` 환경변수   | `workspace-write` (기본) 또는 `off`     |
+| **OpenCode**    | `opencode` | 없음                             | 없음                                    |
+| **Cursor CLI**  | `agent`    | `--force`                        | 명시적으로 거부되지 않은 명령 자동 허용 |
+
+Cursor CLI의 `--force`는 비대화형 실행 중 파일 변경과 셸 명령을 자동 승인합니다. 신뢰할 수 있는 workspace에서만 사용하고, 가능하면 RunnerBox 또는 worktree로 실행 범위를 격리합니다. Cursor 로그인 세션과 `CURSOR_API_KEY`는 Cursor가 관리하며 AgentTeams는 인증 값이나 `.cursor` 설정을 생성·변경하지 않습니다.
 
 ## 워크트리 설정 (`healWorktreeConfig`)
 
@@ -17,12 +20,13 @@
 
 ## 에이전트별 로그 수집 방식
 
-| Runner          | stdout 포맷                                 | 파싱                                         | 로그 수집 방식                                                 |
-| --------------- | ------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------- |
-| **Claude Code** | stream-json (`--output-format stream-json`) | `createStreamJsonLineParser` → 구조화된 로그 | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
-| **AMP**         | stream-json (`--stream-json-thinking`)      | `createStreamJsonLineParser` → 구조화된 로그 | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
-| **Codex**       | plain text                                  | 없음 (raw output 그대로)                     | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록          |
-| **OpenCode**    | plain text                                  | 없음 (raw output 그대로)                     | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록          |
+| Runner          | stdout 포맷                                                         | 파싱                                                     | 로그 수집 방식                                                                               |
+| --------------- | ------------------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **Claude Code** | stream-json (`--output-format stream-json`)                         | `createStreamJsonLineParser` → 구조화된 로그             | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록                               |
+| **AMP**         | stream-json (`--stream-json-thinking`)                              | `createStreamJsonLineParser` → 구조화된 로그             | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록                               |
+| **Codex**       | plain text                                                          | 없음 (raw output 그대로)                                 | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록                                        |
+| **OpenCode**    | plain text                                                          | 없음 (raw output 그대로)                                 | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록                                        |
+| **Cursor CLI**  | stream-json (`--output-format stream-json --stream-partial-output`) | `createCursorStreamJsonLineParser` → bounded 구조화 로그 | assistant delta를 병합하고 안전한 tool 상태만 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
 
 ### stream-json 파서 (`stream-json-parser.ts`)
 
@@ -34,12 +38,14 @@ Claude Code와 AMP의 stdout은 JSON lines 형식이며, 파서가 다음 타입
 
 파서는 길이 제한을 적용: thinking 300자, text 500자, tool input 200자.
 
+Cursor CLI는 별도 상태형 파서를 사용합니다. 작은 `assistant` text delta는 문장·개행·도구 이벤트·`result`·종료 또는 800자 상한에서만 flush하고, 같은 turn의 partial 누적값과 동일한 최종 assistant 이벤트는 중복 기록하지 않습니다. `user` prompt, `system.apiKeySource`, 알 수 없는 이벤트, terminal 명령 본문과 `tool_call.completed.result` body는 서버 가시 로그에 전달하지 않고, 도구명·안전한 경로·시작/완료/실패 상태만 요약합니다. terminal `result.result`는 로그 body로 노출하지 않지만 fallback history용 `outputText`에는 보존합니다.
+
 ### 로그 흐름 (공통)
 
 ```
 runner stdout ──┬── logStream (raw) ──→ .agentteams/runner/log/{triggerId}.log
                 │
-                ├── streamParser (Claude Code/AMP만) ──→ onStdoutChunk (파싱된 메시지)
+                ├── streamParser (Claude Code/AMP/Cursor CLI) ──→ onStdoutChunk (파싱된 메시지)
                 │   또는 raw output (Codex/OpenCode) ──→ onStdoutChunk
                 │
                 └── outputText (메모리, 최대 200KB) ──→ fallback history 용
