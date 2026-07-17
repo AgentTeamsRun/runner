@@ -13,6 +13,17 @@ export type ParseOptions = {
   verbose?: boolean;
 };
 
+type CursorStreamJsonLine = {
+  type: string;
+  subtype?: string;
+  model?: string;
+  message?: { content?: Array<{ type?: string; text?: string }> };
+  tool_call?: Record<string, unknown>;
+  is_error?: boolean;
+  duration_ms?: number;
+  timestamp_ms?: number;
+};
+
 type StreamJsonLine =
   | { type: 'system'; subtype?: string; session_id?: string; tools?: string[]; model?: string }
   | { type: 'user'; message?: { content?: Array<{ type: string; text?: string }> } }
@@ -34,6 +45,7 @@ const THINKING_PREVIEW_MAX = 300;
 const TEXT_PREVIEW_MAX = 160;
 const TOOL_PREVIEW_MAX = 120;
 const BASH_PREVIEW_MAX = 100;
+const CURSOR_TEXT_LOG_MAX = 800;
 
 const truncate = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, max)}...`);
 
@@ -315,6 +327,163 @@ export const createStreamJsonLineParser = (
         }
       }
       buffer = '';
+    },
+  };
+};
+
+const cursorToolDisplayName = (key: string): string => {
+  const withoutSuffix = key.replace(/ToolCall$/u, '');
+  if (withoutSuffix.length === 0) return 'Unknown';
+  return `${withoutSuffix[0]?.toUpperCase() ?? ''}${withoutSuffix.slice(1)}`;
+};
+
+const cursorToolSummary = (toolCall: Record<string, unknown> | undefined, subtype: string, cwd?: string): string => {
+  const [key, rawValue] = Object.entries(toolCall ?? {})[0] ?? ['unknownToolCall', undefined];
+  const value = rawValue && typeof rawValue === 'object' ? (rawValue as Record<string, unknown>) : {};
+  const args = value.args && typeof value.args === 'object' ? (value.args as Record<string, unknown>) : {};
+  const displayName = cursorToolDisplayName(key);
+  const path = typeof args.path === 'string' ? shortenPath(args.path, cwd) : '';
+  const result = value.result && typeof value.result === 'object' ? (value.result as Record<string, unknown>) : {};
+  const failed = subtype === 'completed' && ('error' in result || 'failure' in result);
+  const status = subtype === 'completed' ? (failed ? 'failed' : 'completed') : 'started';
+  return `[Tool] ${displayName}${path ? `: ${path}` : ''} (${status})`;
+};
+
+const findCursorFlushIndex = (text: string): number => {
+  const newlineIndex = text.search(/\r?\n/u);
+  if (newlineIndex >= 0) {
+    return newlineIndex + (text[newlineIndex] === '\r' ? 2 : 1);
+  }
+
+  const sentence = /[.!?。](?:\s|$)/u.exec(text);
+  if (sentence?.index !== undefined) {
+    return sentence.index + sentence[0].length;
+  }
+
+  return text.length >= CURSOR_TEXT_LOG_MAX ? CURSOR_TEXT_LOG_MAX : -1;
+};
+
+/**
+ * Cursor emits assistant text as many small deltas. This parser merges those deltas into
+ * bounded human-readable entries and intentionally excludes user prompts, auth metadata,
+ * unknown events, and tool result bodies from server-visible logs.
+ */
+export const createCursorStreamJsonLineParser = (
+  onEntries: (entries: ParsedLogEntry[]) => void,
+  options?: Pick<ParseOptions, 'cwd'>,
+): { push: (chunk: string) => void; flush: () => void } => {
+  let lineBuffer = '';
+  let assistantBuffer = '';
+  let assistantTurnText = '';
+  let assistantTurnEventCount = 0;
+  let sawTimestampedAssistantDelta = false;
+
+  const resetAssistantTurn = (): void => {
+    assistantTurnText = '';
+    assistantTurnEventCount = 0;
+    sawTimestampedAssistantDelta = false;
+  };
+
+  const emit = (entry: ParsedLogEntry): void => onEntries([entry]);
+  const flushAssistant = (force = false): void => {
+    while (assistantBuffer.length > 0) {
+      const flushIndex = force
+        ? Math.min(assistantBuffer.length, CURSOR_TEXT_LOG_MAX)
+        : findCursorFlushIndex(assistantBuffer);
+      if (flushIndex < 0) return;
+
+      const message = assistantBuffer.slice(0, flushIndex).replace(/\s+/gu, ' ').trim();
+      assistantBuffer = assistantBuffer.slice(flushIndex);
+      if (message.length > 0) emit({ level: 'INFO', message });
+      if (!force && assistantBuffer.length < CURSOR_TEXT_LOG_MAX && findCursorFlushIndex(assistantBuffer) < 0) return;
+    }
+  };
+
+  const processLine = (line: string): void => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) return;
+
+    let parsed: CursorStreamJsonLine;
+    try {
+      parsed = JSON.parse(trimmed) as CursorStreamJsonLine;
+    } catch {
+      return;
+    }
+
+    switch (parsed.type) {
+      case 'system':
+        if (parsed.subtype === 'init') {
+          emit({ level: 'INFO', message: `Cursor session initialized (model=${parsed.model ?? 'unknown'})` });
+        }
+        break;
+      case 'assistant':
+        {
+          const text = (parsed.message?.content ?? [])
+            .filter((block) => block.type === 'text' && typeof block.text === 'string')
+            .map((block) => block.text)
+            .join('');
+          const isRepeatedFinalEvent =
+            text.length > 0 &&
+            text === assistantTurnText &&
+            (assistantTurnEventCount > 1 || (sawTimestampedAssistantDelta && parsed.timestamp_ms === undefined));
+          if (text.length > 0 && !isRepeatedFinalEvent) {
+            assistantTurnText += text;
+            assistantTurnEventCount += 1;
+            sawTimestampedAssistantDelta ||= parsed.timestamp_ms !== undefined;
+            assistantBuffer += text;
+          }
+        }
+        flushAssistant();
+        break;
+      case 'tool_call':
+        flushAssistant(true);
+        resetAssistantTurn();
+        if (parsed.subtype === 'started' || parsed.subtype === 'completed') {
+          emit({
+            level:
+              parsed.subtype === 'completed' &&
+              Object.values(parsed.tool_call ?? {}).some(
+                (value) =>
+                  value !== null &&
+                  typeof value === 'object' &&
+                  'result' in value &&
+                  value.result !== null &&
+                  typeof value.result === 'object' &&
+                  ('error' in value.result || 'failure' in value.result),
+              )
+                ? 'WARN'
+                : 'INFO',
+            message: cursorToolSummary(parsed.tool_call, parsed.subtype, options?.cwd),
+          });
+        }
+        break;
+      case 'result':
+        flushAssistant(true);
+        resetAssistantTurn();
+        emit({
+          level: parsed.is_error ? 'WARN' : 'INFO',
+          message: `[Result] ${parsed.is_error ? 'Failed' : 'Completed'}${
+            typeof parsed.duration_ms === 'number' ? ` in ${Math.round(parsed.duration_ms / 1000)}s` : ''
+          }`,
+        });
+        break;
+      default:
+        break;
+    }
+  };
+
+  return {
+    push(chunk: string) {
+      lineBuffer += chunk;
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop() ?? '';
+      for (const line of lines) processLine(line);
+    },
+    flush() {
+      if (lineBuffer.trim().length > 0) processLine(lineBuffer);
+      lineBuffer = '';
+      flushAssistant(true);
+      resetAssistantTurn();
     },
   };
 };

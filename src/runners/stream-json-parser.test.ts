@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { extractResultTextFromStreamJson } from './claude-code.js';
 import {
+  createCursorStreamJsonLineParser,
   createResultLineCapturer,
   createStreamJsonLineParser,
   firstSentence,
@@ -212,4 +213,150 @@ test('parseStreamJsonLine respects AGENTTEAMS_RUNNER_VERBOSE env when no option 
       process.env.AGENTTEAMS_RUNNER_VERBOSE = previous;
     }
   }
+});
+
+test('Cursor parser merges small assistant deltas and flushes on sentence, tool, result, and end boundaries', () => {
+  const entries: Array<{ level: string; message: string }> = [];
+  const parser = createCursorStreamJsonLineParser((next) => entries.push(...next), { cwd: '/repo' });
+  const assistant = (text: string) =>
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+
+  parser.push(`${assistant('Reading ')}\n${assistant('the repository. ')}\n`);
+  parser.push(
+    `${assistant('Opening configuration')}
+${JSON.stringify({
+  type: 'tool_call',
+  subtype: 'started',
+  tool_call: { readToolCall: { args: { path: '/repo/config.json' } } },
+})}\n`,
+  );
+  parser.push(`${assistant('Done without punctuation')}\n`);
+  parser.push(`${JSON.stringify({ type: 'result', duration_ms: 1500, result: 'sensitive final body' })}\n`);
+  parser.flush();
+
+  assert.deepEqual(entries, [
+    { level: 'INFO', message: 'Reading the repository.' },
+    { level: 'INFO', message: 'Opening configuration' },
+    { level: 'INFO', message: '[Tool] Read: config.json (started)' },
+    { level: 'INFO', message: 'Done without punctuation' },
+    { level: 'INFO', message: '[Result] Completed in 2s' },
+  ]);
+});
+
+test('Cursor parser bounds assistant entries instead of emitting one log per delta', () => {
+  const messages: string[] = [];
+  const parser = createCursorStreamJsonLineParser((entries) => messages.push(...entries.map((entry) => entry.message)));
+
+  for (let index = 0; index < 100; index += 1) {
+    parser.push(
+      `${JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'abcdefghij' }] },
+      })}\n`,
+    );
+  }
+  parser.flush();
+
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0]?.length, 800);
+  assert.equal(messages[1]?.length, 200);
+});
+
+test('Cursor parser excludes prompts, auth source, unknown events, and tool result bodies from logs', () => {
+  const messages: string[] = [];
+  const parser = createCursorStreamJsonLineParser(
+    (entries) => messages.push(...entries.map((entry) => entry.message)),
+    {
+      cwd: '/repo',
+    },
+  );
+
+  const lines = [
+    { type: 'system', subtype: 'init', model: 'Composer', apiKeySource: 'secret-login-source' },
+    { type: 'user', message: { content: [{ type: 'text', text: 'private prompt' }] } },
+    { type: 'connection', subtype: 'reconnecting', detail: 'private detail' },
+    {
+      type: 'tool_call',
+      subtype: 'completed',
+      tool_call: {
+        readToolCall: {
+          args: { path: '/repo/secret.txt' },
+          result: { success: { content: 'top secret file body', totalLines: 1 } },
+        },
+      },
+    },
+    {
+      type: 'tool_call',
+      subtype: 'completed',
+      tool_call: {
+        terminalToolCall: {
+          args: { command: 'OPENAI_API_KEY=secret-value Authorization: Bearer another-secret pnpm test\necho secret' },
+          result: { error: { message: 'private terminal output' } },
+        },
+      },
+    },
+  ];
+  parser.push(`${lines.map((line) => JSON.stringify(line)).join('\n')}\n`);
+  parser.flush();
+
+  assert.deepEqual(messages, [
+    'Cursor session initialized (model=Composer)',
+    '[Tool] Read: secret.txt (completed)',
+    '[Tool] Terminal (failed)',
+  ]);
+  const output = messages.join('\n');
+  for (const secret of [
+    'private prompt',
+    'secret-login-source',
+    'private detail',
+    'top secret file body',
+    'private terminal output',
+    'secret-value',
+    'another-secret',
+  ]) {
+    assert.equal(output.includes(secret), false);
+  }
+});
+
+test('Cursor parser suppresses the final assistant event when it duplicates partial output', () => {
+  const messages: string[] = [];
+  const parser = createCursorStreamJsonLineParser((entries) => messages.push(...entries.map((entry) => entry.message)));
+  const partialAssistant = (text: string, timestamp_ms: number) =>
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] }, timestamp_ms });
+  const finalAssistant = (text: string) =>
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+
+  parser.push(
+    `${partialAssistant('TRUST', 1)}\n${partialAssistant('_', 2)}\n${partialAssistant('OK', 3)}\n${finalAssistant('TRUST_OK')}\n`,
+  );
+  parser.push(`${JSON.stringify({ type: 'result', is_error: false })}\n`);
+  parser.flush();
+
+  assert.deepEqual(messages, ['TRUST_OK', '[Result] Completed']);
+});
+
+test('Cursor parser emits a final assistant event once when no partial output preceded it', () => {
+  const messages: string[] = [];
+  const parser = createCursorStreamJsonLineParser((entries) => messages.push(...entries.map((entry) => entry.message)));
+
+  parser.push(
+    `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Final response' }] } })}\n`,
+  );
+  parser.flush();
+
+  assert.deepEqual(messages, ['Final response']);
+});
+
+test('Cursor parser handles chunked NDJSON and flushes a trailing line', () => {
+  const messages: string[] = [];
+  const parser = createCursorStreamJsonLineParser((entries) => messages.push(...entries.map((entry) => entry.message)));
+  const line = JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: 'Chunked output' }] },
+  });
+  const splitAt = Math.floor(line.length / 2);
+  parser.push(line.slice(0, splitAt));
+  parser.push(line.slice(splitAt));
+  parser.flush();
+  assert.deepEqual(messages, ['Chunked output']);
 });

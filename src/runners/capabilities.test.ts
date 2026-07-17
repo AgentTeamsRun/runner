@@ -16,6 +16,7 @@ test('only claude-code and codex support fastMode', () => {
   assert.equal(RUNNER_CAPABILITIES.ANTIGRAVITY.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.AMP.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.COPILOT_CLI.fastMode, false);
+  assert.equal(RUNNER_CAPABILITIES.CURSOR_CLI.fastMode, false);
   assert.equal(runnerSupportsFastMode('CODEX'), true);
   assert.equal(runnerSupportsFastMode('OPENCODE'), false);
 });
@@ -35,6 +36,16 @@ test('Copilot CLI supports model selection but not fast mode or sub-agent delega
   assert.deepEqual(describeUnsupportedRunnerOptions('COPILOT_CLI', { model: 'gpt-5', fastMode: false }), []);
 });
 
+test('Cursor CLI supports model selection but not fast mode, effort, or sub-agent delegation', () => {
+  assert.deepEqual(getRunnerCapabilities('CURSOR_CLI'), {
+    model: true,
+    fastMode: false,
+    effort: false,
+    subAgentDelegation: false,
+  });
+  assert.deepEqual(describeUnsupportedRunnerOptions('CURSOR_CLI', { model: 'client-default', fastMode: false }), []);
+});
+
 test('only claude-code supports background sub-agent delegation', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.subAgentDelegation, true);
   assert.equal(RUNNER_CAPABILITIES.CODEX.subAgentDelegation, false);
@@ -42,6 +53,7 @@ test('only claude-code supports background sub-agent delegation', () => {
   assert.equal(RUNNER_CAPABILITIES.ANTIGRAVITY.subAgentDelegation, false);
   assert.equal(RUNNER_CAPABILITIES.AMP.subAgentDelegation, false);
   assert.equal(RUNNER_CAPABILITIES.COPILOT_CLI.subAgentDelegation, false);
+  assert.equal(RUNNER_CAPABILITIES.CURSOR_CLI.subAgentDelegation, false);
   assert.equal(runnerSupportsSubAgentDelegation('CLAUDE_CODE'), true);
   assert.equal(runnerSupportsSubAgentDelegation('OPENCODE'), false);
 });
@@ -99,6 +111,7 @@ test('only claude-code and codex support effort', () => {
   assert.equal(RUNNER_CAPABILITIES.ANTIGRAVITY.effort, false);
   assert.equal(RUNNER_CAPABILITIES.AMP.effort, false);
   assert.equal(RUNNER_CAPABILITIES.COPILOT_CLI.effort, false);
+  assert.equal(RUNNER_CAPABILITIES.CURSOR_CLI.effort, false);
   assert.equal(runnerSupportsEffort('CODEX'), true);
   assert.equal(runnerSupportsEffort('CLAUDE_CODE'), true);
   assert.equal(runnerSupportsEffort('OPENCODE'), false);
@@ -106,7 +119,7 @@ test('only claude-code and codex support effort', () => {
 });
 
 test('describeUnsupportedRunnerOptions flags effort ignored for unsupported runners', () => {
-  for (const runnerType of ['OPENCODE', 'ANTIGRAVITY', 'AMP', 'COPILOT_CLI']) {
+  for (const runnerType of ['OPENCODE', 'ANTIGRAVITY', 'AMP', 'COPILOT_CLI', 'CURSOR_CLI']) {
     const warnings = describeUnsupportedRunnerOptions(runnerType, { model: null, fastMode: false, effort: 'high' });
     assert.equal(warnings.length, 1, `${runnerType} should warn once`);
     assert.equal(warnings[0]?.option, 'effort');
