@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from '../logger.js';
 import { createTriggerHandler } from './trigger-handler.js';
+import { startPolling } from '../poller.js';
 import type { ConventionMeta, DaemonTrigger, TriggerRuntime } from '../types.js';
 import type { RunResult, Runner } from '../runners/types.js';
 
@@ -764,6 +767,341 @@ test('createTriggerHandler fails without running the runner when worktree authPa
     clientCalls.some((entry) => entry.method === 'isTriggerCancelRequested'),
     false,
   );
+});
+
+test('createTriggerHandler resolves a member repo via remoteUrl when worktree authPath is not a git repo', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const runnerInputs: Array<{ authPath: string | null }> = [];
+  const createWorktreeCalls: string[] = [];
+  const resolveCalls: Array<{ authPath: string; remoteUrl: string | null }> = [];
+  const discoveredAuthPaths: string[] = [];
+  const worktreeRuntime: TriggerRuntime = {
+    ...runtime,
+    useWorktree: true,
+    repositoryId: 'repo-1',
+    repositoryRemoteUrl: 'https://github.com/rlarua/kma-ui.git',
+    baseBranch: 'dev',
+    worktreeId: 'worktree-1',
+  };
+
+  const client = {
+    fetchTriggerRuntime: async () => worktreeRuntime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+    reportWorktreeStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'reportWorktreeStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+      onAuthPathDiscovered: (authPath) => {
+        discoveredAuthPaths.push(authPath);
+      },
+    },
+    {
+      createRunnerFactory: () => () => ({
+        run: async (input) => {
+          runnerInputs.push({ authPath: input.authPath });
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      isGitRepo: () => false,
+      resolveWorktreeAuthPath: (authPath, remoteUrl) => {
+        resolveCalls.push({ authPath, remoteUrl });
+        return { path: '/auth/path/kma-ui' };
+      },
+      createWorktree: (authPath) => {
+        createWorktreeCalls.push(authPath);
+        return '/auth/path/.kma-ui-worktrees/wt-worktree-1';
+      },
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.kma-ui-worktrees/wt-worktree-1/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, useWorktree: true, baseBranch: 'dev', worktreeId: 'worktree-1', parentTriggerId: null });
+
+  assert.deepEqual(resolveCalls, [{ authPath: '/auth/path', remoteUrl: 'https://github.com/rlarua/kma-ui.git' }]);
+  // 제거 lifecycle 계약: poller가 worktree 제거 경로를 찾을 수 있도록
+  // 해석된 멤버 repo 경로도 authPath로 등록되어야 한다.
+  assert.deepEqual(discoveredAuthPaths, ['/auth/path', '/auth/path/kma-ui']);
+  assert.deepEqual(createWorktreeCalls, ['/auth/path/kma-ui']);
+  assert.deepEqual(runnerInputs, [{ authPath: '/auth/path/.kma-ui-worktrees/wt-worktree-1' }]);
+  assert.deepEqual(clientCalls.find((entry) => entry.method === 'reportWorktreeStatus')?.args, ['trigger-1', 'ACTIVE']);
+  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'DONE', undefined]);
+});
+
+test('createTriggerHandler fails without running the runner when member repo resolution fails', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const runnerInputs: Array<{ authPath: string | null }> = [];
+  const resolutionError =
+    'Worktree requested but no member repository under /auth/path has an origin remote matching ' +
+    'https://github.com/rlarua/kma-ui.git. Turn off the runner box (worktree) option and request the run again.';
+  const worktreeRuntime: TriggerRuntime = {
+    ...runtime,
+    useWorktree: true,
+    repositoryId: 'repo-1',
+    repositoryRemoteUrl: 'https://github.com/rlarua/kma-ui.git',
+    baseBranch: 'dev',
+    worktreeId: 'worktree-1',
+  };
+
+  const client = {
+    fetchTriggerRuntime: async () => worktreeRuntime,
+    isTriggerCancelRequested: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'isTriggerCancelRequested', args });
+      return false;
+    },
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+    reportWorktreeStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'reportWorktreeStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      createRunnerFactory: () => () => ({
+        run: async (input) => {
+          runnerInputs.push({ authPath: input.authPath });
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      isGitRepo: () => false,
+      resolveWorktreeAuthPath: () => ({ error: resolutionError }),
+      readHistoryFile: async () => '',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, useWorktree: true, baseBranch: 'dev', worktreeId: 'worktree-1', parentTriggerId: null });
+
+  assert.deepEqual(runnerInputs, []);
+  assert.deepEqual(clientCalls.at(0)?.args, ['trigger-1', 'FAILED', resolutionError]);
+  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', resolutionError]);
+  assert.equal(
+    clientCalls.some((entry) => entry.method === 'isTriggerCancelRequested'),
+    false,
+  );
+});
+
+// handler↔poller lifecycle 계약 테스트(실제 git): 비-git 루트에서 멤버 repo 해석으로
+// 생성한 워크트리는 이후 REMOVE_REQUESTED 처리 시 실제 디렉터리와 worktree/* 브랜치가
+// 삭제되어야 한다. 해석 경로가 authPath로 등록되지 않으면 poller가 경로를 못 찾은 채
+// REMOVED로 보고하는 회귀를 막는다.
+test('worktrees created via member repo resolution are removed by the poller lifecycle', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'trigger-handler-lifecycle-'));
+  try {
+    // .invalid TLD는 DNS가 즉시 실패해 removeWorktree의 원격 브랜치 정리(ls-remote)가
+    // 네트워크 대기 없이 스킵된다.
+    const memberRepo = join(root, 'kma-ui');
+    execFileSync('git', ['init', memberRepo], { stdio: 'pipe' });
+    execFileSync('git', ['-C', memberRepo, 'config', 'user.email', 'test@test.com'], { stdio: 'pipe' });
+    execFileSync('git', ['-C', memberRepo, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
+    execFileSync('git', ['-C', memberRepo, 'commit', '--allow-empty', '-m', 'initial'], { stdio: 'pipe' });
+    execFileSync('git', ['-C', memberRepo, 'remote', 'add', 'origin', 'git@git.invalid:team/kma-ui.git'], {
+      stdio: 'pipe',
+    });
+
+    const discoveredAuthPaths: string[] = [];
+    const handlerWorktreeReports: Array<{ triggerId: string; status: string }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: root,
+        useWorktree: true,
+        repositoryId: 'repo-1',
+        repositoryRemoteUrl: 'https://git.invalid/team/kma-ui.git',
+        baseBranch: null,
+        worktreeId: 'lifecycle-1',
+      }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async () => undefined,
+      reportWorktreeStatus: async (triggerId: string, status: string) => {
+        handlerWorktreeReports.push({ triggerId, status });
+      },
+    };
+
+    // isGitRepo/resolveWorktreeAuthPath/createWorktree는 주입하지 않는다 — 실제 구현이
+    // 멤버 repo를 해석하고 진짜 git worktree를 만들어야 lifecycle이 검증된다.
+    const handler = createTriggerHandler(
+      {
+        config: {
+          daemonToken: 'daemon-token',
+          apiUrl: 'https://api.example',
+          pollingIntervalMs: 5000,
+          maxPollingIntervalMs: 120_000,
+          timeoutMs: 1500,
+          idleTimeoutMs: 500,
+          runnerCmd: 'opencode',
+          preventSleepWhileBusy: false,
+        },
+        client: client as never,
+        onAuthPathDiscovered: (authPath) => {
+          discoveredAuthPaths.push(authPath);
+        },
+      },
+      {
+        createRunnerFactory: () => () => ({
+          run: async () => ({ exitCode: 0 }) satisfies RunResult,
+        }),
+        createLogReporter: () => ({
+          start: () => undefined,
+          append: () => undefined,
+          stop: async () => undefined,
+        }),
+        readHistoryFile: async () => '### Summary\n- done\n',
+        resolveRunnerHistoryPaths: () => ({
+          currentHistoryPath: join(root, 'history.md'),
+          parentHistoryPath: null,
+        }),
+      },
+    );
+
+    await handler({
+      ...trigger,
+      useWorktree: true,
+      baseBranch: null,
+      worktreeId: 'lifecycle-1',
+      parentTriggerId: null,
+    });
+
+    const worktreePath = join(root, '.kma-ui-worktrees', 'wt-lifecycle-1');
+    assert.equal(existsSync(worktreePath), true);
+    assert.equal(discoveredAuthPaths.includes(memberRepo), true);
+    assert.deepEqual(handlerWorktreeReports, [{ triggerId: 'trigger-1', status: 'ACTIVE' }]);
+
+    // 데몬 재시작 후 poller가 persist된 auth path들로 제거 요청을 처리하는 상황.
+    const pollerReports: Array<{ triggerId: string; status: string; worktreeError?: string }> = [];
+    const removalTrigger: DaemonTrigger = {
+      ...trigger,
+      id: 'trigger-1',
+      useWorktree: true,
+      worktreeId: 'lifecycle-1',
+      worktreeStatus: 'REMOVE_REQUESTED',
+      parentTriggerId: null,
+    };
+
+    let keepAliveResolve: (() => void) | null = null;
+    const pollingPromise = startPolling(
+      {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      () => async () => undefined,
+      {
+        createClient: () =>
+          ({
+            fetchPollState: async () => ({
+              data: {
+                orphanedCancelRequestedTriggerIds: [],
+                pendingWorktreeRemovals: [removalTrigger],
+                pendingTrigger: null,
+              },
+            }),
+            claimTrigger: async () => ({ ok: true, conflict: false }),
+            updateTriggerStatus: async () => undefined,
+            reportWorktreeStatus: async (triggerId: string, status: string, worktreeError?: string) => {
+              pollerReports.push({ triggerId, status, worktreeError });
+            },
+            notifyUpdate: async () => undefined,
+            ackRestartRequest: async () => undefined,
+          }) as never,
+        runCleanup: async () => undefined,
+        runConventionSync: async () => undefined,
+        setTimeout: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as unknown as typeof setTimeout,
+        clearTimeout: (() => undefined) as typeof clearTimeout,
+        processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+        processExit: (() => {
+          throw new Error('should not exit');
+        }) as (code: number) => never,
+        now: () => 0,
+        loadAuthPaths: () => [...discoveredAuthPaths],
+        saveAuthPath: () => '/tmp/auth-paths.json',
+        keepAlive: () =>
+          new Promise<void>((resolve) => {
+            keepAliveResolve = resolve;
+          }),
+      },
+    );
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(pollerReports, [{ triggerId: 'trigger-1', status: 'REMOVED', worktreeError: undefined }]);
+    assert.equal(existsSync(worktreePath), false);
+    const branches = execFileSync('git', ['-C', memberRepo, 'branch', '--list', 'worktree/lifecycle-1'], {
+      encoding: 'utf8',
+    });
+    assert.equal(branches.trim(), '');
+
+    const resolveKeepAlive =
+      keepAliveResolve ??
+      (() => {
+        throw new Error('keepAlive resolver was not registered');
+      });
+    resolveKeepAlive();
+    await pollingPromise;
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('createTriggerHandler downgrades an idle-timeout to NEEDS_REVIEW when a history file was uploaded', async () => {

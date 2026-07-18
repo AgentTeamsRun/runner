@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { resolveRunnerHistoryPaths } from '../utils/runner-history.js';
 import { isGitRepo, createWorktree } from '../utils/git-worktree.js';
+import { resolveWorktreeAuthPath } from '../utils/resolve-member-repo.js';
 import { extractResultTextFromStreamJson } from '../runners/claude-code.js';
 import { runOriginIssueSafeguard } from '../utils/origin-issue-safeguard.js';
 import {
@@ -37,6 +38,7 @@ type TriggerHandlerDependencies = {
   createLogReporter?: (client: DaemonApiClient, triggerId: string) => ReporterLike;
   isGitRepo?: typeof isGitRepo;
   createWorktree?: typeof createWorktree;
+  resolveWorktreeAuthPath?: typeof resolveWorktreeAuthPath;
   readHistoryFile?: ReadHistoryFile;
   writeHistoryFile?: WriteHistoryFile;
   fetchAttachmentFile?: FetchAttachmentFile;
@@ -52,6 +54,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const createRunner = (dependencies.createRunnerFactory ?? createRunnerFactory)(config.runnerCmd);
   const checkIsGitRepo = dependencies.isGitRepo ?? isGitRepo;
   const createRunnerWorktree = dependencies.createWorktree ?? createWorktree;
+  const resolveMemberAuthPath = dependencies.resolveWorktreeAuthPath ?? resolveWorktreeAuthPath;
   const createLogReporter =
     dependencies.createLogReporter ??
     ((apiClient: DaemonApiClient, triggerId: string): ReporterLike => new TriggerLogReporter(apiClient, triggerId));
@@ -359,18 +362,50 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           throw new Error(reason);
         }
 
+        let worktreeRepoPath = runtime.authPath;
+
         if (!checkIsGitRepo(runtime.authPath)) {
-          const reason = `Not a git repository: ${runtime.authPath}`;
-          logger.warn('Worktree requested but authPath is not a git repo', {
+          // 구버전 API는 repositoryRemoteUrl 필드 자체가 없다(undefined). 그 경우
+          // 멤버 repo 해석을 시도하지 않고 기존 실패 동작을 그대로 유지한다.
+          if (runtime.repositoryRemoteUrl === undefined) {
+            const reason = `Not a git repository: ${runtime.authPath}`;
+            logger.warn('Worktree requested but authPath is not a git repo', {
+              triggerId: trigger.id,
+              authPath: runtime.authPath,
+            });
+            await reportWorktreeFailure(trigger.id, reason, activeLogReporter);
+            throw new Error(reason);
+          }
+
+          const resolution = resolveMemberAuthPath(runtime.authPath, runtime.repositoryRemoteUrl);
+          if ('error' in resolution) {
+            logger.warn('Worktree requested but member repository resolution failed', {
+              triggerId: trigger.id,
+              authPath: runtime.authPath,
+              repositoryId: runtime.repositoryId ?? null,
+            });
+            await reportWorktreeFailure(trigger.id, resolution.error, activeLogReporter);
+            throw new Error(resolution.error);
+          }
+
+          worktreeRepoPath = resolution.path;
+          // 제거 lifecycle 계약: poller는 knownAuthPaths의 각 경로에 resolveWorktreePath를
+          // 적용해 제거 대상을 찾으므로, 워크트리가 실제로 생성되는 멤버 repo 경로도
+          // 등록해야 한다. 비-git 루트만 등록하면 제거가 경로를 못 찾은 채 REMOVED로
+          // 보고되어 워크트리와 worktree/* 브랜치가 영구히 남는다.
+          if (onAuthPathDiscovered) {
+            onAuthPathDiscovered(worktreeRepoPath);
+          }
+          activeLogReporter.append('INFO', `Resolved member repository ${worktreeRepoPath} for worktree creation.`);
+          logger.info('Resolved member repository for worktree', {
             triggerId: trigger.id,
             authPath: runtime.authPath,
+            memberRepoPath: worktreeRepoPath,
           });
-          await reportWorktreeFailure(trigger.id, reason, activeLogReporter);
-          throw new Error(reason);
         }
 
         try {
-          const worktreePath = createRunnerWorktree(runtime.authPath, {
+          const worktreePath = createRunnerWorktree(worktreeRepoPath, {
             worktreeId: runtime.worktreeId ?? trigger.id,
             baseBranch: runtime.baseBranch,
           });

@@ -108,6 +108,9 @@ export type TriggerRuntime = {
   attachments?: TriggerRuntimeAttachment[];
   parentHistoryMarkdown: string | null;
   useWorktree: boolean;
+  // 구버전 API는 두 repo 신원 필드를 내려주지 않으므로 optional로 두고, 부재 시 기존 동작으로 폴백한다.
+  repositoryId?: string | null;
+  repositoryRemoteUrl?: string | null;
   baseBranch: string | null;
   worktreeId: string | null;
   conventions?: ConventionMeta[];
