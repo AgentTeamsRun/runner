@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "tsx watch src/index.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
-    "lint": "eslint \"src/**/*.ts\"",
+    "lint": "eslint \"src/**/*.ts\" --cache --cache-location .eslintcache --cache-strategy content",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "start": "node dist/index.js",
