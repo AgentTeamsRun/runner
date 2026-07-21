@@ -51,6 +51,7 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   AMP: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
   COPILOT_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
   CURSOR_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
+  KIMI_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
 };
 
 const DEFAULT_CAPABILITIES: RunnerCapabilities = {
