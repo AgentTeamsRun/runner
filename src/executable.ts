@@ -17,6 +17,8 @@ type RunExecutableSyncOptions = ExecutableDeps & {
   cwd?: string;
 };
 
+type KnownInstallBinResolver = (env: NodeJS.ProcessEnv, os: NodeJS.Platform) => string[];
+
 const getOutputLines = (output: string): string[] =>
   output
     .split(/\r?\n/u)
@@ -112,27 +114,32 @@ const resolveFromNpmGlobalBin = (name: string, deps: ExecutableDeps): string | n
   return null;
 };
 
-const getKnownWindowsBinPaths = (name: string, deps: ExecutableDeps): string[] => {
-  const env = deps.env ?? process.env;
-  const normalizedName = name.replace(/\.(?:cmd|exe|bat|com)$/iu, '');
+const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>> = {
+  agy: (env, os) => (os === 'win32' && env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, 'agy', 'bin')] : []),
+  kimi: (env, os) => {
+    const configuredHomePaths = env.KIMI_CODE_HOME ? [join(env.KIMI_CODE_HOME, 'bin')] : [];
+    const userHome = os === 'win32' ? env.USERPROFILE : env.HOME;
+    const defaultHomePaths = userHome ? [join(userHome, '.kimi-code', 'bin')] : [];
 
-  if (normalizedName !== 'agy') {
-    return [];
-  }
-
-  return env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, 'agy', 'bin')] : [];
+    return [...new Set([...configuredHomePaths, ...defaultHomePaths])];
+  },
 };
 
-const resolveFromKnownWindowsBin = (name: string, deps: ExecutableDeps): string | null => {
+const getKnownInstallBinPaths = (name: string, deps: ExecutableDeps): string[] => {
+  const env = deps.env ?? process.env;
   const os = (deps.platform ?? getPlatform)();
-  if (os !== 'win32') {
-    return null;
-  }
+  const normalizedName = getWindowsCommandBaseName(name);
+  const resolveBinPaths = knownInstallBinResolvers[normalizedName];
 
+  return resolveBinPaths?.(env, os) ?? [];
+};
+
+const resolveFromKnownInstallBin = (name: string, deps: ExecutableDeps): string | null => {
+  const os = (deps.platform ?? getPlatform)();
   const fileExists = deps.existsSync ?? existsSync;
-  const candidateNames = getWindowsExecutableNames(name, deps.env ?? process.env);
+  const candidateNames = os === 'win32' ? getWindowsExecutableNames(name, deps.env ?? process.env) : [name];
 
-  for (const binPath of getKnownWindowsBinPaths(name, deps)) {
+  for (const binPath of getKnownInstallBinPaths(name, deps)) {
     for (const candidateName of candidateNames) {
       const candidatePath = join(binPath, candidateName);
       if (fileExists(candidatePath)) {
@@ -152,15 +159,16 @@ export const buildPowerShellCommand = (executablePath: string, args: string[]): 
 };
 
 export const resolveExecutablePath = (name: string, deps: ExecutableDeps = {}): string => {
-  const os = (deps.platform ?? getPlatform)();
-
   const resolvedPath =
-    resolveFromPathLookup(name, deps) ?? resolveFromNpmGlobalBin(name, deps) ?? resolveFromKnownWindowsBin(name, deps);
+    resolveFromPathLookup(name, deps) ?? resolveFromNpmGlobalBin(name, deps) ?? resolveFromKnownInstallBin(name, deps);
   if (resolvedPath) {
     return resolvedPath;
   }
 
-  const checkedLocations = os === 'win32' ? 'PATH, npm global bin, and known app install paths' : 'PATH';
+  const checkedLocations =
+    getKnownInstallBinPaths(name, deps).length > 0
+      ? 'PATH, npm global bin, and known app install paths'
+      : 'PATH and npm global bin';
   throw new Error(
     `Cannot find '${name}' executable. Checked ${checkedLocations}. Ensure it is installed and available globally.`,
   );
@@ -175,7 +183,7 @@ export const resolveExecutablePathWithPreference = (
     const resolvedPath =
       resolveFromPathLookup(preferredName, deps) ??
       resolveFromNpmGlobalBin(preferredName, deps) ??
-      resolveFromKnownWindowsBin(preferredName, deps);
+      resolveFromKnownInstallBin(preferredName, deps);
     if (resolvedPath) {
       return resolvedPath;
     }
