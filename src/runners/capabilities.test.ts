@@ -17,6 +17,7 @@ test('only claude-code and codex support fastMode', () => {
   assert.equal(RUNNER_CAPABILITIES.AMP.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.COPILOT_CLI.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.CURSOR_CLI.fastMode, false);
+  assert.equal(RUNNER_CAPABILITIES.KIMI_CLI.fastMode, false);
   assert.equal(runnerSupportsFastMode('CODEX'), true);
   assert.equal(runnerSupportsFastMode('OPENCODE'), false);
 });
@@ -46,6 +47,16 @@ test('Cursor CLI supports model selection but not fast mode, effort, or sub-agen
   assert.deepEqual(describeUnsupportedRunnerOptions('CURSOR_CLI', { model: 'client-default', fastMode: false }), []);
 });
 
+test('Kimi CLI supports model selection but not fast mode, effort, or sub-agent delegation', () => {
+  assert.deepEqual(getRunnerCapabilities('KIMI_CLI'), {
+    model: true,
+    fastMode: false,
+    effort: false,
+    subAgentDelegation: false,
+  });
+  assert.deepEqual(describeUnsupportedRunnerOptions('KIMI_CLI', { model: 'k3', fastMode: false }), []);
+});
+
 test('only claude-code supports background sub-agent delegation', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.subAgentDelegation, true);
   assert.equal(RUNNER_CAPABILITIES.CODEX.subAgentDelegation, false);
@@ -54,6 +65,7 @@ test('only claude-code supports background sub-agent delegation', () => {
   assert.equal(RUNNER_CAPABILITIES.AMP.subAgentDelegation, false);
   assert.equal(RUNNER_CAPABILITIES.COPILOT_CLI.subAgentDelegation, false);
   assert.equal(RUNNER_CAPABILITIES.CURSOR_CLI.subAgentDelegation, false);
+  assert.equal(RUNNER_CAPABILITIES.KIMI_CLI.subAgentDelegation, false);
   assert.equal(runnerSupportsSubAgentDelegation('CLAUDE_CODE'), true);
   assert.equal(runnerSupportsSubAgentDelegation('OPENCODE'), false);
 });
@@ -119,7 +131,7 @@ test('only claude-code and codex support effort', () => {
 });
 
 test('describeUnsupportedRunnerOptions flags effort ignored for unsupported runners', () => {
-  for (const runnerType of ['OPENCODE', 'ANTIGRAVITY', 'AMP', 'COPILOT_CLI', 'CURSOR_CLI']) {
+  for (const runnerType of ['OPENCODE', 'ANTIGRAVITY', 'AMP', 'COPILOT_CLI', 'CURSOR_CLI', 'KIMI_CLI']) {
     const warnings = describeUnsupportedRunnerOptions(runnerType, { model: null, fastMode: false, effort: 'high' });
     assert.equal(warnings.length, 1, `${runnerType} should warn once`);
     assert.equal(warnings[0]?.option, 'effort');
