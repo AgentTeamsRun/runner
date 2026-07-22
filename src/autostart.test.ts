@@ -137,7 +137,7 @@ test('restartWindowsTask ends the running task before starting it again', async 
   assert.deepEqual(commands, ['schtasks /End /TN "AgentRunner"', 'schtasks /Run /TN "AgentRunner"']);
 });
 
-test('scheduleWindowsTaskRestart queues a hidden task start after the current action exits', () => {
+test('scheduleWindowsTaskRestart queues an out-of-job task restart after the current action exits', () => {
   const calls: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
   let unrefCalled = false;
 
@@ -150,7 +150,32 @@ test('scheduleWindowsTaskRestart queues a hidden task start after the current ac
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.command, 'powershell.exe');
-  assert.match(calls[0]!.args.at(-1) ?? '', /Start-Sleep -Milliseconds 500; schtasks \/Run \/TN 'AgentRunner'/u);
+  const command = calls[0]!.args.at(-1) ?? '';
+  assert.match(command, /Invoke-CimMethod/u);
+  assert.match(command, /Win32_Process/u);
+  assert.match(command, /MethodName Create/u);
+  const encodedCommand = command.match(/-EncodedCommand ([A-Za-z0-9+/=]+)/u)?.[1];
+  assert.ok(encodedCommand);
+  const restartScript = Buffer.from(encodedCommand, 'base64').toString('utf16le');
+  assert.match(restartScript, /schtasks \/Query \/TN \$taskName/u);
+  assert.match(restartScript, /do\s*\{/u);
+  assert.match(restartScript, /\$task\.State -ne 4/u);
+  assert.match(restartScript, /schtasks \/End \/TN \$taskName/u);
+  assert.match(restartScript, /schtasks \/Run \/TN \$taskName/u);
+  assert.ok(restartScript.indexOf('schtasks /End') < restartScript.indexOf('schtasks /Run'));
+  assert.doesNotMatch(restartScript, /Start-Sleep -Milliseconds 500/u);
+  // Every abort/failure path must leave a diagnostic trace in the daemon log so a
+  // silent non-recovery is diagnosable (code review P2/P3).
+  assert.match(restartScript, /function Write-RestartLog/u);
+  assert.match(restartScript, /\*>> \$logPath/u);
+  assert.match(restartScript, /trap \{/u);
+  // GetTask is wrapped so a TOCTOU deletion is logged instead of crashing silently.
+  assert.match(restartScript, /try \{\s*\$task = \$folder\.GetTask\(\$taskName\)\s*\}\s*catch \{/u);
+  // The 30s deadline and Query-failure branches log before exiting.
+  assert.match(restartScript, /after 30s deadline; aborting restart"; exit 1/u);
+  assert.match(restartScript, /schtasks \/Query failed .*; aborting restart"; exit 1/u);
+  // The outer WMI create logs its ReturnValue on failure.
+  assert.match(command, /Win32_Process\.Create failed with ReturnValue/u);
   assert.equal(calls[0]!.options.windowsHide, true);
   assert.equal(calls[0]!.options.detached, true);
   assert.equal(unrefCalled, true);
