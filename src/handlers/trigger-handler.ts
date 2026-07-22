@@ -9,8 +9,12 @@ import { homedir } from 'node:os';
 import { resolveRunnerHistoryPaths } from '../utils/runner-history.js';
 import { isGitRepo, createWorktree } from '../utils/git-worktree.js';
 import { resolveWorktreeAuthPath } from '../utils/resolve-member-repo.js';
+import { resolveDiscoveredWorktreePath } from '../utils/discovered-worktree-store.js';
+import { existsSync, realpathSync } from 'node:fs';
 import { extractResultTextFromStreamJson } from '../runners/claude-code.js';
 import { runOriginIssueSafeguard } from '../utils/origin-issue-safeguard.js';
+import { computeLocalKey, resolveRepositoryOrigin } from '../utils/worktree-discovery.js';
+import { normalizeRemoteUrl } from '../utils/resolve-member-repo.js';
 import {
   describeUnsupportedRunnerOptions,
   runnerSupportsEffort,
@@ -39,6 +43,10 @@ type TriggerHandlerDependencies = {
   isGitRepo?: typeof isGitRepo;
   createWorktree?: typeof createWorktree;
   resolveWorktreeAuthPath?: typeof resolveWorktreeAuthPath;
+  resolveDiscoveredWorktreePath?: (localKey: string) => string | null;
+  pathExists?: (path: string) => boolean;
+  realpath?: (path: string) => string;
+  resolveRepositoryOrigin?: (path: string) => string | null;
   readHistoryFile?: ReadHistoryFile;
   writeHistoryFile?: WriteHistoryFile;
   fetchAttachmentFile?: FetchAttachmentFile;
@@ -55,6 +63,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const checkIsGitRepo = dependencies.isGitRepo ?? isGitRepo;
   const createRunnerWorktree = dependencies.createWorktree ?? createWorktree;
   const resolveMemberAuthPath = dependencies.resolveWorktreeAuthPath ?? resolveWorktreeAuthPath;
+  const resolveDiscoveredPath = dependencies.resolveDiscoveredWorktreePath ?? resolveDiscoveredWorktreePath;
+  const pathExists = dependencies.pathExists ?? existsSync;
+  const resolveRealpath = dependencies.realpath ?? realpathSync;
+  const resolveOrigin = dependencies.resolveRepositoryOrigin ?? resolveRepositoryOrigin;
   const createLogReporter =
     dependencies.createLogReporter ??
     ((apiClient: DaemonApiClient, triggerId: string): ReporterLike => new TriggerLogReporter(apiClient, triggerId));
@@ -352,7 +364,50 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       let effectiveAuthPath = runtime.authPath;
 
-      if (runtime.useWorktree) {
+      if (runtime.discoveredWorktreeLocalKey) {
+        // 발견(discovered) worktree 재사용 실행.
+        // managed createWorktree/remove lifecycle을 우회하고, 로컬 매핑 경로를 재검증해 그대로 cwd로 쓴다.
+        // worktree를 새로 생성하거나 제거하지 않으며, 외부 소유권(디렉터리·브랜치)을 변경하지 않는다.
+        const mappedPath = resolveDiscoveredPath(runtime.discoveredWorktreeLocalKey);
+        const expectedRemote = runtime.repositoryRemoteUrl ? normalizeRemoteUrl(runtime.repositoryRemoteUrl) : null;
+        let canonicalPath: string | null = null;
+        try {
+          canonicalPath = mappedPath ? resolveRealpath(mappedPath) : null;
+        } catch {
+          canonicalPath = null;
+        }
+        const mappedLocalKey = canonicalPath ? computeLocalKey(canonicalPath) : null;
+        const mappedRemote = canonicalPath ? resolveOrigin(canonicalPath) : null;
+        if (
+          !mappedPath ||
+          !canonicalPath ||
+          !pathExists(canonicalPath) ||
+          !checkIsGitRepo(canonicalPath) ||
+          mappedLocalKey !== runtime.discoveredWorktreeLocalKey ||
+          !expectedRemote ||
+          mappedRemote !== expectedRemote
+        ) {
+          // 실행 직전 부재/무효 → Runner CLI 시작 전에 명확히 실패한다.
+          // (레지스트리 MISSING 전이는 다음 discovery 정합화 cycle에서 반영된다.)
+          const reason =
+            'Discovered worktree is missing on this runner (it may have been removed by another tool); run aborted before start.';
+          logger.warn('Discovered worktree missing at execution time', {
+            triggerId: trigger.id,
+            hasMapping: Boolean(mappedPath),
+            localKeyMatches: mappedLocalKey === runtime.discoveredWorktreeLocalKey,
+            repositoryMatches: Boolean(expectedRemote) && mappedRemote === expectedRemote,
+          });
+          activeLogReporter.append('ERROR', reason);
+          throw new Error(reason);
+        }
+        effectiveAuthPath = canonicalPath;
+        if (onAuthPathDiscovered) {
+          // 발견 worktree의 소유 저장소 경로도 known으로 등록해 두면 cleanup/convention sync 범위에 포함된다.
+          onAuthPathDiscovered(canonicalPath);
+        }
+        activeLogReporter.append('INFO', `Reusing discovered worktree (read-only ownership) at ${canonicalPath}.`);
+        logger.info('Reusing discovered worktree for trigger', { triggerId: trigger.id, worktreePath: canonicalPath });
+      } else if (runtime.useWorktree) {
         if (!runtime.authPath) {
           const reason = 'Worktree requested but authPath is not configured.';
           logger.warn('Worktree requested but authPath is not configured', {

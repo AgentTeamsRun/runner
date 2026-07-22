@@ -4,6 +4,7 @@ import { runCleanup } from './utils/runner-cleanup.js';
 import { runConventionSync } from './utils/convention-sync.js';
 import { loadAuthPaths, saveAuthPath } from './utils/auth-path-store.js';
 import { removeWorktree, resolveWorktreePath } from './utils/git-worktree.js';
+import { reconcileDiscoveredWorktrees } from './utils/worktree-discovery.js';
 import { existsSync } from 'node:fs';
 import type { DaemonTrigger, RuntimeConfig } from './types.js';
 import { maybeAutoUpdate } from './utils/auto-update.js';
@@ -16,6 +17,8 @@ type TriggerHandlerFactory = (
 
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CONVENTION_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// 발견 worktree 정합화 주기. 신규 linked worktree가 곧 등록되도록 짧게 두되, 매 30s 폴마다 git을 돌리지는 않는다.
+const WORKTREE_DISCOVERY_INTERVAL_MS = 60 * 1000;
 
 // 한 polling cycle의 결과.
 // - ACTIVE: 처리할 일이 있었다(pending claim/실행, 고아 취소, 워크트리 제거, restart 중 하나 이상).
@@ -24,9 +27,7 @@ const CONVENTION_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 type PollCycleOutcome = 'ACTIVE' | 'IDLE' | 'SKIPPED';
 
 type PollingDependencies = {
-  createClient?: (
-    config: RuntimeConfig,
-  ) => Pick<
+  createClient?: (config: RuntimeConfig) => Pick<
     DaemonApiClient,
     | 'fetchPollState'
     | 'claimTrigger'
@@ -34,9 +35,12 @@ type PollingDependencies = {
     | 'reportWorktreeStatus'
     | 'notifyUpdate'
     | 'ackRestartRequest'
-  >;
+  > &
+    // 발견 worktree 정합화는 선택 기능이라 기존 mock 호환을 위해 optional로 둔다.
+    Partial<Pick<DaemonApiClient, 'fetchDiscoveryRepositories' | 'syncDiscoveredWorktrees'>>;
   runCleanup?: (authPath: string) => Promise<void>;
   runConventionSync?: (authPath: string) => Promise<void>;
+  reconcileDiscoveredWorktrees?: typeof reconcileDiscoveredWorktrees;
   removeWorktree?: typeof removeWorktree;
   maybeAutoUpdate?: typeof maybeAutoUpdate;
   executeRestartRequest?: typeof executeRestartRequest;
@@ -59,6 +63,7 @@ export const startPolling = async (
   const client = dependencies.createClient?.(config) ?? new DaemonApiClient(config.apiUrl, config.daemonToken);
   const cleanupRunner = dependencies.runCleanup ?? runCleanup;
   const conventionSync = dependencies.runConventionSync ?? runConventionSync;
+  const reconcileWorktrees = dependencies.reconcileDiscoveredWorktrees ?? reconcileDiscoveredWorktrees;
   const removeWorktreeFn = dependencies.removeWorktree ?? removeWorktree;
   const autoUpdate = dependencies.maybeAutoUpdate ?? maybeAutoUpdate;
   const performRestart = dependencies.executeRestartRequest ?? executeRestartRequest;
@@ -83,6 +88,8 @@ export const startPolling = async (
 
   const knownAuthPaths = new Set<string>(loadPersistedAuthPaths());
   let lastCleanupAt = 0;
+  let lastWorktreeDiscoveryAt = 0;
+  let isDiscoveringWorktrees = false;
   const lastConventionSyncAt = new Map<string, number>();
 
   const onAuthPathDiscovered = (authPath: string): void => {
@@ -135,6 +142,39 @@ export const startPolling = async (
         });
       });
     }
+  };
+
+  // 연결 저장소의 발견 worktree를 주기적으로 정합화한다. git 실행은 fire-and-forget으로 폴링을 막지 않는다.
+  const maybeRunWorktreeDiscovery = () => {
+    const currentTime = now();
+    if (currentTime - lastWorktreeDiscoveryAt < WORKTREE_DISCOVERY_INTERVAL_MS) {
+      return;
+    }
+    const fetchDiscoveryRepositories = client.fetchDiscoveryRepositories?.bind(client);
+    const syncDiscoveredWorktrees = client.syncDiscoveredWorktrees?.bind(client);
+    if (
+      isDiscoveringWorktrees ||
+      knownAuthPaths.size === 0 ||
+      !fetchDiscoveryRepositories ||
+      !syncDiscoveredWorktrees
+    ) {
+      return;
+    }
+    lastWorktreeDiscoveryAt = currentTime;
+    isDiscoveringWorktrees = true;
+    void reconcileWorktrees({
+      fetchDiscoveryRepositories,
+      syncDiscoveredWorktrees,
+      authPaths: Array.from(knownAuthPaths),
+    })
+      .catch((error) => {
+        logger.warn('Worktree discovery failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        isDiscoveringWorktrees = false;
+      });
   };
 
   // 통합 snapshot에서 받은 고아 취소 대상 ID들을 개별 mutation으로 처리한다.
@@ -213,6 +253,7 @@ export const startPolling = async (
     try {
       maybeRunCleanup();
       maybeRunConventionSync();
+      maybeRunWorktreeDiscovery();
 
       // 한 polling cycle의 세 read(고아 취소 대상 / 워크트리 제거 대상 / pending)를 통합
       // snapshot 1회 조회로 가져온다. 실패 시 아래 catch에서 polling cycle 전체가 실패

@@ -10,6 +10,7 @@ import { createTriggerHandler } from './trigger-handler.js';
 import { startPolling } from '../poller.js';
 import type { ConventionMeta, DaemonTrigger, TriggerRuntime } from '../types.js';
 import type { RunResult, Runner } from '../runners/types.js';
+import { computeLocalKey } from '../utils/worktree-discovery.js';
 
 const trigger: DaemonTrigger = {
   id: 'trigger-1',
@@ -148,6 +149,208 @@ test('createTriggerHandler runs the runner, reports history, and marks success',
     ['fetchTriggerRuntime', 'isTriggerCancelRequested', 'updateTriggerHistory', 'updateTriggerStatus'],
   );
   assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'DONE', undefined]);
+});
+
+test('createTriggerHandler reuses a discovered worktree without managed create/remove lifecycle', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const runnerInputs: Array<{ authPath: string | null }> = [];
+  let createWorktreeCalls = 0;
+
+  const discoveredRuntime: TriggerRuntime = {
+    ...runtime,
+    useWorktree: true,
+    repositoryRemoteUrl: 'https://example.com/acme/repo.git',
+    discoveredWorktreeLocalKey: computeLocalKey('/discovered/wt'),
+  };
+
+  const client = {
+    fetchTriggerRuntime: async () => discoveredRuntime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+    reportWorktreeStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'reportWorktreeStatus', args });
+    },
+  };
+
+  const runner: Runner = {
+    run: async (input) => {
+      runnerInputs.push({ authPath: input.authPath });
+      return { exitCode: 0 };
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      createRunnerFactory: () => () => runner,
+      createLogReporter: () => ({ start: () => {}, append: () => {}, stop: async () => {} }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/discovered/wt/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: '/discovered/wt/.agentteams/runner/history/parent-1.md',
+      }),
+      resolveDiscoveredWorktreePath: () => '/discovered/wt',
+      pathExists: () => true,
+      isGitRepo: () => true,
+      realpath: (path) => path,
+      resolveRepositoryOrigin: () => 'example.com/acme/repo',
+      createWorktree: () => {
+        createWorktreeCalls += 1;
+        return '/should/not/be/called';
+      },
+    },
+  );
+
+  await handler(trigger);
+
+  // discovered 실행은 managed worktree 생성/제거 lifecycle을 타지 않는다.
+  assert.equal(createWorktreeCalls, 0);
+  // runner cwd는 매핑된 discovered 경로.
+  assert.equal(runnerInputs[0]?.authPath, '/discovered/wt');
+  // managed worktree 상태(reportWorktreeStatus)는 호출되지 않는다(외부 소유권 보존).
+  assert.equal(
+    clientCalls.some((c) => c.method === 'reportWorktreeStatus'),
+    false,
+  );
+  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'DONE', undefined]);
+});
+
+test('createTriggerHandler rejects a reused path whose repository origin no longer matches runtime identity', async () => {
+  let runnerRan = false;
+  const statusCalls: unknown[][] = [];
+  const discoveredRuntime: TriggerRuntime = {
+    ...runtime,
+    useWorktree: true,
+    repositoryRemoteUrl: 'https://example.com/expected/repo.git',
+    discoveredWorktreeLocalKey: computeLocalKey('/discovered/reused'),
+  };
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: {
+        fetchTriggerRuntime: async () => discoveredRuntime,
+        isTriggerCancelRequested: async () => false,
+        updateTriggerHistory: async () => undefined,
+        updateTriggerStatus: async (...args: unknown[]) => {
+          statusCalls.push(args);
+        },
+      } as never,
+    },
+    {
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerRan = true;
+          return { exitCode: 0 };
+        },
+      }),
+      createLogReporter: () => ({ start: () => {}, append: () => {}, stop: async () => {} }),
+      resolveDiscoveredWorktreePath: () => '/discovered/reused',
+      realpath: (path) => path,
+      pathExists: () => true,
+      isGitRepo: () => true,
+      resolveRepositoryOrigin: () => 'example.com/other/repo',
+      readHistoryFile: async () => '',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/discovered/reused/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+  assert.equal(runnerRan, false);
+  assert.equal(statusCalls.at(-1)?.[1], 'FAILED');
+});
+
+test('createTriggerHandler fails before starting the runner when a discovered worktree is missing', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  let runnerRan = false;
+  let createWorktreeCalls = 0;
+
+  const discoveredRuntime: TriggerRuntime = {
+    ...runtime,
+    useWorktree: true,
+    discoveredWorktreeLocalKey: 'gone-key',
+  };
+
+  const client = {
+    fetchTriggerRuntime: async () => discoveredRuntime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const runner: Runner = {
+    run: async () => {
+      runnerRan = true;
+      return { exitCode: 0 };
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      createRunnerFactory: () => () => runner,
+      createLogReporter: () => ({ start: () => {}, append: () => {}, stop: async () => {} }),
+      resolveDiscoveredWorktreePath: () => null, // 매핑 부재 → MISSING
+      pathExists: () => false,
+      isGitRepo: () => false,
+      createWorktree: () => {
+        createWorktreeCalls += 1;
+        return '/should/not/be/called';
+      },
+    },
+  );
+
+  await handler(trigger);
+
+  // Runner CLI를 시작하지 않고, managed 생성도 하지 않으며, FAILED로 보고한다.
+  assert.equal(runnerRan, false);
+  assert.equal(createWorktreeCalls, 0);
+  const lastStatus = clientCalls.filter((c) => c.method === 'updateTriggerStatus').at(-1);
+  assert.equal((lastStatus?.args as unknown[])[1], 'FAILED');
 });
 
 test('createTriggerHandler preserves the local history file and still marks success when history upload fails', async () => {
