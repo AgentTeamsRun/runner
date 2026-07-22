@@ -579,11 +579,54 @@ type ScheduleWindowsTaskRestartDeps = {
   spawn?: typeof spawn;
 };
 
-// A task cannot run a second instance while its current action is still alive.
-// Queue the explicit start in a detached helper so it runs after this daemon exits
-// cleanly, rather than consuming Task Scheduler's failure-restart budget.
+// Task Scheduler keeps every process spawned by an action in the same Job Object.
+// Ask WMI to create the restart helper outside that Job so IgnoreNew cannot discard
+// the explicit start while this daemon is exiting.
 export const scheduleWindowsTaskRestart = (deps: ScheduleWindowsTaskRestartDeps = {}): void => {
   const resolvedSpawn = deps.spawn ?? spawn;
+  const logPath = getWindowsLogPath();
+  // Every failure path appends a diagnostic line to the daemon log so a restart
+  // that never brings the runner back up leaves a trace instead of dying silently.
+  const restartScript = `
+$taskName = '${TASK_NAME}'
+$logPath = '${escapeForPowerShellString(logPath)}'
+function Write-RestartLog($message) {
+  try { "[web-restart] $((Get-Date).ToString('s')) $message" *>> $logPath } catch { }
+}
+trap { Write-RestartLog "unhandled error during restart: $($_.Exception.Message)"; exit 1 }
+$deadline = (Get-Date).AddSeconds(30)
+$service = New-Object -ComObject 'Schedule.Service'
+$service.Connect()
+$folder = $service.GetFolder('\\')
+do {
+  schtasks /Query /TN $taskName *> $null
+  if ($LASTEXITCODE -ne 0) { Write-RestartLog "schtasks /Query failed with exit $LASTEXITCODE; aborting restart"; exit 1 }
+  try {
+    $task = $folder.GetTask($taskName)
+  } catch {
+    Write-RestartLog "GetTask threw before restart: $($_.Exception.Message); aborting restart"
+    exit 1
+  }
+  if ($task.State -ne 4) { break }
+  Start-Sleep -Milliseconds 250
+} while ((Get-Date) -lt $deadline)
+if ($task.State -eq 4) { Write-RestartLog "task still running after 30s deadline; aborting restart"; exit 1 }
+schtasks /End /TN $taskName *>> $logPath
+schtasks /Run /TN $taskName *>> $logPath
+if ($LASTEXITCODE -ne 0) { Write-RestartLog "schtasks /Run failed with exit $LASTEXITCODE"; exit $LASTEXITCODE }
+Write-RestartLog "restart triggered successfully"
+`.trim();
+  const encodedRestartScript = Buffer.from(restartScript, 'utf16le').toString('base64');
+  const restartCommandLine =
+    `powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass ` +
+    `-EncodedCommand ${encodedRestartScript}`;
+  const createCommand =
+    `$logPath = '${escapeForPowerShellString(logPath)}'; ` +
+    `$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create ` +
+    `-Arguments @{ CommandLine = '${escapeForPowerShellString(restartCommandLine)}' }; ` +
+    `if ($result.ReturnValue -ne 0) { ` +
+    `try { "[web-restart] $((Get-Date).ToString('s')) Win32_Process.Create failed with ReturnValue $($result.ReturnValue)" *>> $logPath } catch { }; ` +
+    `exit $result.ReturnValue }`;
   const child = resolvedSpawn(
     'powershell.exe',
     [
@@ -594,7 +637,7 @@ export const scheduleWindowsTaskRestart = (deps: ScheduleWindowsTaskRestartDeps 
       '-ExecutionPolicy',
       'Bypass',
       '-Command',
-      `Start-Sleep -Milliseconds 500; schtasks /Run /TN '${TASK_NAME}'`,
+      createCommand,
     ],
     {
       detached: true,
