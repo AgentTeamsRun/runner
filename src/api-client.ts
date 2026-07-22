@@ -2,6 +2,8 @@ import { createRequire } from 'node:module';
 import type {
   ClaimResult,
   DaemonInfo,
+  DiscoveredWorktreeSyncRepository,
+  DiscoveryRepository,
   InjectedConventionRecord,
   OsType,
   PollStateResponse,
@@ -264,6 +266,37 @@ export class DaemonApiClient {
 
     if (!response.ok) {
       throw new Error(`Failed to record injected conventions (${response.status})`);
+    }
+  }
+
+  // discovery 대상 저장소(연결 범위) 조회. 데몬은 이 목록에 속한 repository만 스캔한다.
+  async fetchDiscoveryRepositories(): Promise<DiscoveryRepository[]> {
+    const response = await this.requestWithRetry('/api/daemon-triggers/discovery-repositories', {
+      method: 'GET',
+      headers: this.daemonHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch discovery repositories (${response.status})`);
+    }
+
+    const payload = (await response.json()) as { data: { repositories: DiscoveryRepository[] } };
+    return payload.data.repositories;
+  }
+
+  // 발견 worktree full snapshot을 서버로 보고한다(멱등 정합화).
+  async syncDiscoveredWorktrees(repositories: DiscoveredWorktreeSyncRepository[]): Promise<void> {
+    const response = await this.requestWithRetry('/api/daemon-triggers/discovered-worktrees/sync', {
+      method: 'POST',
+      headers: {
+        ...this.daemonHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ repositories }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to sync discovered worktrees (${response.status})`);
     }
   }
 

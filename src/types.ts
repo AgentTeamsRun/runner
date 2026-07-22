@@ -113,6 +113,8 @@ export type TriggerRuntime = {
   repositoryRemoteUrl?: string | null;
   baseBranch: string | null;
   worktreeId: string | null;
+  // 발견 worktree 재사용 실행 시 소유 daemon에만 전달되는 opaque localKey. managed 실행에는 null/부재.
+  discoveredWorktreeLocalKey?: string | null;
   conventions?: ConventionMeta[];
   planType?: string | null;
   userConventionIds?: string[];
@@ -132,4 +134,26 @@ export type TriggerLogLevel = 'INFO' | 'WARN' | 'ERROR';
 export type TriggerLogInput = {
   level: TriggerLogLevel;
   message: string;
+};
+
+// discovery 대상 저장소(연결 범위). API가 내려주는 repository 신원.
+export type DiscoveryRepository = {
+  id: string;
+  projectId: string;
+  remoteUrl: string | null;
+};
+
+// full snapshot sync에 담는 worktree 한 건. localKey는 절대 경로를 노출하지 않는 opaque 식별자다.
+export type DiscoveredWorktreeSyncItem = {
+  localKey: string;
+  branch: string | null;
+  headSha: string | null;
+  displayName: string | null;
+};
+
+// repository 단위 스냅샷. ok=false면 서버가 기존 상태를 보존한다(오탐 MISSING 방지).
+export type DiscoveredWorktreeSyncRepository = {
+  repositoryId: string;
+  ok: boolean;
+  worktrees: DiscoveredWorktreeSyncItem[];
 };
