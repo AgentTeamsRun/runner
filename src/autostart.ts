@@ -1,7 +1,8 @@
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, execSync, spawn } from 'node:child_process';
 import { chmodSync, existsSync, promises as fs } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { resolveExecutablePath } from './executable.js';
 import { logger } from './logger.js';
 
@@ -313,7 +314,10 @@ export const getAutostartStatus = (deps: AutostartStatusDeps = {}): { registered
 
   if (os === 'win32') {
     try {
-      resolvedExecSync(`schtasks /Query /TN "${TASK_NAME}"`, { windowsHide: true });
+      // Suppress schtasks' stderr: an unregistered task makes it print
+      // "ERROR: The system cannot find the file specified." which would
+      // otherwise leak to the console during `agentrunner restart`.
+      resolvedExecSync(`schtasks /Query /TN "${TASK_NAME}" 2>nul`, { windowsHide: true });
       return { registered: true, platform: 'task-scheduler' };
     } catch {
       return { registered: false, platform: 'task-scheduler' };
@@ -544,11 +548,55 @@ export const unregisterWindowsTask = async (deps: WindowsAutostartDeps = {}): Pr
   }
 };
 
+// Schedule.Service task states — 4 means the task is currently running.
+const TASK_STATE_RUNNING = 4;
+const taskStopPollIntervalMs = 250;
+const taskStopDeadlineMs = 30_000;
+
+type WindowsTaskExecSync = (command: string, options: { windowsHide: boolean }) => unknown;
+
+// Build a locale-independent task-state probe. Parsing `schtasks /Query` output
+// is unreliable because the Status column is localized (e.g. "실행 중" on Korean
+// Windows), so read the numeric State via the Schedule.Service COM object and
+// pass it as an EncodedCommand to sidestep all shell-quoting concerns.
+export const buildWindowsTaskStateQueryCommand = (): string => {
+  const script = [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    "$service = New-Object -ComObject 'Schedule.Service'",
+    '$service.Connect()',
+    `try { ($service.GetFolder('\\').GetTask('${TASK_NAME}')).State } catch { -1 }`,
+  ].join('\n');
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return `powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+};
+
+type WindowsTaskState = 'running' | 'stopped' | 'unknown';
+
+// Probe the task state as a tri-state. Crucially, a failed COM/PowerShell query
+// is 'unknown' — NOT 'stopped'. Treating a query error as stopped would let the
+// caller fire `/Run` while the old instance is possibly still alive, and
+// MultipleInstancesPolicy=IgnoreNew would silently discard it.
+const getWindowsTaskState = (execSyncFn: WindowsTaskExecSync): WindowsTaskState => {
+  let output: string;
+  try {
+    output = String(execSyncFn(buildWindowsTaskStateQueryCommand(), { windowsHide: true })).trim();
+  } catch {
+    return 'unknown';
+  }
+  const state = Number.parseInt(output, 10);
+  if (!Number.isFinite(state) || state < 0) {
+    return 'unknown';
+  }
+  return state === TASK_STATE_RUNNING ? 'running' : 'stopped';
+};
+
 type RestartWindowsTaskDeps = {
-  execSync?: (command: string, options: { windowsHide: boolean }) => unknown;
+  execSync?: WindowsTaskExecSync;
   writeFile?: (path: string, data: string, encoding: BufferEncoding) => Promise<void>;
   chmodSync?: (path: string, mode: number) => void;
   daemonPath?: string;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
 };
 
 export const restartWindowsTask = async (
@@ -556,6 +604,8 @@ export const restartWindowsTask = async (
   deps: RestartWindowsTaskDeps = {},
 ): Promise<void> => {
   const resolvedExecSync = deps.execSync ?? execSync;
+  const resolvedSleep = deps.sleep ?? ((milliseconds: number) => delay(milliseconds));
+  const resolvedNow = deps.now ?? (() => Date.now());
   if (config) {
     const wrapperPath = getWindowsWrapperPath();
     await (deps.writeFile ?? fs.writeFile)(
@@ -568,22 +618,50 @@ export const restartWindowsTask = async (
   }
 
   try {
-    resolvedExecSync(`schtasks /End /TN "${TASK_NAME}"`, { windowsHide: true });
+    // A task that isn't currently running makes schtasks /End emit an error to
+    // stderr; suppress it since we ignore the failure and continue anyway.
+    resolvedExecSync(`schtasks /End /TN "${TASK_NAME}" 2>nul`, { windowsHide: true });
   } catch {
     // The task may already be stopped — continue with an explicit run.
   }
+
+  // `schtasks /End` only *signals* termination; the instance keeps running for a
+  // moment. The task uses MultipleInstancesPolicy=IgnoreNew, so a `/Run` fired
+  // while the old instance is still alive is silently discarded — leaving the
+  // runner stopped. Wait until the task is confirmed stopped before starting it.
+  const stopDeadline = resolvedNow() + taskStopDeadlineMs;
+  let taskState = getWindowsTaskState(resolvedExecSync);
+  while (taskState !== 'stopped' && resolvedNow() < stopDeadline) {
+    await resolvedSleep(taskStopPollIntervalMs);
+    taskState = getWindowsTaskState(resolvedExecSync);
+  }
+
+  if (taskState !== 'stopped') {
+    // Still running or the state is unverifiable. Firing `/Run` now would be
+    // discarded by IgnoreNew and falsely report success, so fail loudly instead
+    // so the caller (CLI/restart) surfaces a non-zero result.
+    throw new Error(
+      `AgentRunner task did not reach a stopped state before restart (last state: ${taskState}); ` +
+        'aborting /Run to avoid a silent IgnoreNew discard.',
+    );
+  }
+
   resolvedExecSync(`schtasks /Run /TN "${TASK_NAME}"`, { windowsHide: true });
 };
 
 type ScheduleWindowsTaskRestartDeps = {
-  spawn?: typeof spawn;
+  execFileSync?: typeof execFileSync;
 };
 
 // Task Scheduler keeps every process spawned by an action in the same Job Object.
 // Ask WMI to create the restart helper outside that Job so IgnoreNew cannot discard
 // the explicit start while this daemon is exiting.
-export const scheduleWindowsTaskRestart = (deps: ScheduleWindowsTaskRestartDeps = {}): void => {
-  const resolvedSpawn = deps.spawn ?? spawn;
+//
+// Returns whether the helper was created. Callers MUST NOT exit the daemon when
+// this returns false — doing so would terminate the current runner with no
+// replacement coming up.
+export const scheduleWindowsTaskRestart = (deps: ScheduleWindowsTaskRestartDeps = {}): boolean => {
+  const runSync = deps.execFileSync ?? execFileSync;
   const logPath = getWindowsLogPath();
   // Every failure path appends a diagnostic line to the daemon log so a restart
   // that never brings the runner back up leaves a trace instead of dying silently.
@@ -627,26 +705,38 @@ Write-RestartLog "restart triggered successfully"
     `if ($result.ReturnValue -ne 0) { ` +
     `try { "[web-restart] $((Get-Date).ToString('s')) Win32_Process.Create failed with ReturnValue $($result.ReturnValue)" *>> $logPath } catch { }; ` +
     `exit $result.ReturnValue }`;
-  const child = resolvedSpawn(
-    'powershell.exe',
-    [
-      '-NoProfile',
-      '-NonInteractive',
-      '-WindowStyle',
-      'Hidden',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      createCommand,
-    ],
-    {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-      env: process.env,
-    },
-  );
-  child.unref();
+  // Run the WMI create SYNCHRONOUSLY. A detached `spawn(..., { detached: true })`
+  // never executes its -Command on Windows (DETACHED_PROCESS leaves powershell
+  // created but idle), and a non-detached async spawn would race this daemon's
+  // own exit / Task Scheduler job teardown. Blocking here guarantees the helper
+  // — created by WMI, so it lives outside this task's Job Object — exists before
+  // the daemon exits. The helper itself keeps running independently afterwards.
+  try {
+    runSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        createCommand,
+      ],
+      {
+        stdio: 'ignore',
+        windowsHide: true,
+        env: process.env,
+      },
+    );
+    return true;
+  } catch (error) {
+    logger.warn('Failed to schedule Windows task restart helper', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
 };
 
 // --- Windows hidden launcher (manual, unregistered start) ---
@@ -660,11 +750,16 @@ export const launchWindowsHiddenDaemon = (deps: LaunchWindowsHiddenDeps = {}): v
   const resolvedSpawn = deps.spawn ?? spawn;
   const daemonPath = (deps.resolveExecutablePath ?? resolveExecutablePath)('agentrunner');
   const command = `& '${escapeForPowerShellString(daemonPath)}' start`;
+  // NOTE: do NOT pass `detached: true` here. On Windows that sets the
+  // DETACHED_PROCESS creation flag, and spawning powershell.exe that way (with
+  // stdio ignored) leaves it created but never running its `-Command` — the
+  // runner silently never starts. Windows does not terminate child processes
+  // when the parent exits, so `windowsHide` + `unref()` already lets the hidden
+  // runner keep running in the background after this CLI process is gone.
   const child = resolvedSpawn(
     'powershell.exe',
     ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-Command', command],
     {
-      detached: true,
       stdio: 'ignore',
       windowsHide: true,
       env: process.env,

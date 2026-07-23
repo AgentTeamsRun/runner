@@ -38,6 +38,9 @@ const getWindowsPathFileName = (path: string): string => {
   return parts[parts.length - 1]?.toLowerCase() ?? '';
 };
 
+// Extensions the PowerShell `&` launcher (and CreateProcess) can actually run.
+const WINDOWS_RUNNABLE_EXTENSION = /\.(?:cmd|exe|bat|com|ps1)$/iu;
+
 const selectPathLookupResult = (name: string, output: string, os: NodeJS.Platform): string | null => {
   if (os !== 'win32') {
     return getFirstOutputLine(output);
@@ -51,6 +54,15 @@ const selectPathLookupResult = (name: string, output: string, os: NodeJS.Platfor
     if (cmdShim) {
       return cmdShim;
     }
+  }
+
+  // `where` lists the extensionless POSIX shim (a `#!/bin/sh` file that npm
+  // installs next to the .cmd/.exe) first, but the PowerShell `&` launcher used
+  // to spawn runners cannot execute it — it exits 0 without running node. Prefer
+  // a Windows-runnable extension whenever one is present.
+  const runnableExecutable = lines.find((line) => WINDOWS_RUNNABLE_EXTENSION.test(line));
+  if (runnableExecutable) {
+    return runnableExecutable;
   }
 
   return lines[0] ?? null;

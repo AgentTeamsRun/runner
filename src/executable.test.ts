@@ -41,6 +41,37 @@ test('resolveExecutablePath prefers npm.cmd when Windows PATH lookup returns npm
   assert.equal(resolved, 'C:\\nvm4w\\nodejs\\npm.cmd');
 });
 
+test('resolveExecutablePath prefers a runnable extension over the extensionless POSIX shim on Windows', () => {
+  const resolved = resolveExecutablePath('agentrunner', {
+    platform: () => 'win32',
+    execFileSync: ((command: string, args: string[]) => {
+      if (command === 'where' && args[0] === 'agentrunner') {
+        // `where` lists the #!/bin/sh shim first, then the runnable .cmd.
+        return 'C:\\nvm4w\\nodejs\\agentrunner\nC:\\nvm4w\\nodejs\\agentrunner.cmd\n';
+      }
+
+      throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+    }) as typeof import('node:child_process').execFileSync,
+  });
+
+  assert.equal(resolved, 'C:\\nvm4w\\nodejs\\agentrunner.cmd');
+});
+
+test('resolveExecutablePath keeps the extensionless result when no runnable extension exists on Windows', () => {
+  const resolved = resolveExecutablePath('mytool', {
+    platform: () => 'win32',
+    execFileSync: ((command: string, args: string[]) => {
+      if (command === 'where' && args[0] === 'mytool') {
+        return 'C:\\tools\\mytool\n';
+      }
+
+      throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+    }) as typeof import('node:child_process').execFileSync,
+  });
+
+  assert.equal(resolved, 'C:\\tools\\mytool');
+});
+
 test('resolveExecutablePath falls back to Antigravity local app bin on Windows', () => {
   const resolved = resolveExecutablePath('agy', {
     env: {

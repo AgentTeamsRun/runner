@@ -62,7 +62,7 @@ test('getAutostartStatus queries Task Scheduler with hidden execution on Windows
 
   assert.deepEqual(status, { registered: true, platform: 'task-scheduler' });
   assert.equal(calls.length, 1);
-  assert.match(calls[0]!.command, /schtasks \/Query \/TN "AgentRunner"/u);
+  assert.match(calls[0]!.command, /schtasks \/Query \/TN "AgentRunner" 2>nul/u);
   assert.equal(calls[0]!.windowsHide, true);
 });
 
@@ -124,30 +124,116 @@ test('unregisterWindowsTask deletes the task and all generated or legacy artifac
   assert.ok(removed.some((path) => path.endsWith('agentrunner-start.vbs')));
 });
 
-test('restartWindowsTask ends the running task before starting it again', async () => {
+test('restartWindowsTask ends the task, probes its state, then starts it again', async () => {
   const commands: string[] = [];
   await restartWindowsTask(null, {
     execSync: (command, options) => {
       commands.push(command);
       assert.equal(options.windowsHide, true);
-      return Buffer.from('');
+      // State 3 (Ready) → confirmed stopped, so the wait loop exits immediately.
+      return Buffer.from(/-EncodedCommand/u.test(command) ? '3' : '');
     },
   });
 
-  assert.deepEqual(commands, ['schtasks /End /TN "AgentRunner"', 'schtasks /Run /TN "AgentRunner"']);
+  const schtasksCommands = commands.filter((command) => command.startsWith('schtasks'));
+  assert.deepEqual(schtasksCommands, ['schtasks /End /TN "AgentRunner" 2>nul', 'schtasks /Run /TN "AgentRunner"']);
+  // A locale-independent state probe runs between End and Run.
+  assert.ok(commands.some((command) => /powershell\.exe .*-EncodedCommand/u.test(command)));
 });
 
-test('scheduleWindowsTaskRestart queues an out-of-job task restart after the current action exits', () => {
-  const calls: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
-  let unrefCalled = false;
+test('restartWindowsTask waits while the task is still running before starting it again', async () => {
+  const commands: string[] = [];
+  const sleeps: number[] = [];
+  let stateQueries = 0;
 
-  scheduleWindowsTaskRestart({
-    spawn: ((command: string, args: readonly string[], options: Record<string, unknown>) => {
-      calls.push({ command, args, options });
-      return { unref: () => (unrefCalled = true) };
-    }) as unknown as typeof import('node:child_process').spawn,
+  await restartWindowsTask(null, {
+    execSync: (command, options) => {
+      commands.push(command);
+      assert.equal(options.windowsHide, true);
+      if (/-EncodedCommand/u.test(command)) {
+        stateQueries += 1;
+        // State 4 (Running) for the first two probes, then 3 (Ready).
+        return Buffer.from(stateQueries < 3 ? '4' : '3');
+      }
+      return Buffer.from('');
+    },
+    sleep: async (milliseconds) => {
+      sleeps.push(milliseconds);
+    },
+    now: () => 0,
   });
 
+  // Polled twice while the old instance was still running, then ran once stopped.
+  assert.equal(sleeps.length, 2);
+  assert.equal(stateQueries, 3);
+  const schtasksCommands = commands.filter((command) => command.startsWith('schtasks'));
+  assert.deepEqual(schtasksCommands, ['schtasks /End /TN "AgentRunner" 2>nul', 'schtasks /Run /TN "AgentRunner"']);
+});
+
+test('restartWindowsTask aborts /Run (throws) when the task never reaches a stopped state', async () => {
+  const commands: string[] = [];
+  let clock = 0;
+
+  await assert.rejects(
+    restartWindowsTask(null, {
+      execSync: (command) => {
+        commands.push(command);
+        // Always reports State 4 (Running) — the old instance never stops.
+        return Buffer.from(/-EncodedCommand/u.test(command) ? '4' : '');
+      },
+      sleep: async () => undefined,
+      now: () => {
+        const value = clock;
+        clock += 16_000; // crosses the 30s deadline after two probes
+        return value;
+      },
+    }),
+    /did not reach a stopped state/u,
+  );
+
+  // /End ran, but /Run must NOT — IgnoreNew would discard it while still running.
+  assert.ok(commands.some((command) => command.startsWith('schtasks /End')));
+  assert.ok(!commands.some((command) => command.startsWith('schtasks /Run')));
+});
+
+test('restartWindowsTask aborts /Run (throws) when the task state cannot be determined', async () => {
+  const commands: string[] = [];
+  let clock = 0;
+
+  await assert.rejects(
+    restartWindowsTask(null, {
+      execSync: (command) => {
+        commands.push(command);
+        // State probe fails → 'unknown'; must not be treated as stopped.
+        if (/-EncodedCommand/u.test(command)) {
+          throw new Error('COM query failed');
+        }
+        return Buffer.from('');
+      },
+      sleep: async () => undefined,
+      now: () => {
+        const value = clock;
+        clock += 16_000;
+        return value;
+      },
+    }),
+    /did not reach a stopped state/u,
+  );
+
+  assert.ok(!commands.some((command) => command.startsWith('schtasks /Run')));
+});
+
+test('scheduleWindowsTaskRestart creates the out-of-job restart helper synchronously', () => {
+  const calls: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
+
+  const scheduled = scheduleWindowsTaskRestart({
+    execFileSync: ((command: string, args: readonly string[], options: Record<string, unknown>) => {
+      calls.push({ command, args, options });
+      return Buffer.from('');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+  });
+
+  assert.equal(scheduled, true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.command, 'powershell.exe');
   const command = calls[0]!.args.at(-1) ?? '';
@@ -177,8 +263,20 @@ test('scheduleWindowsTaskRestart queues an out-of-job task restart after the cur
   // The outer WMI create logs its ReturnValue on failure.
   assert.match(command, /Win32_Process\.Create failed with ReturnValue/u);
   assert.equal(calls[0]!.options.windowsHide, true);
-  assert.equal(calls[0]!.options.detached, true);
-  assert.equal(unrefCalled, true);
+  // Runs synchronously (blocking) so the helper exists before the daemon exits —
+  // must NOT be a detached spawn, which never executes its -Command on Windows.
+  assert.notEqual(calls[0]!.options.detached, true);
+});
+
+test('scheduleWindowsTaskRestart returns false when the helper cannot be created', () => {
+  const scheduled = scheduleWindowsTaskRestart({
+    execFileSync: (() => {
+      throw new Error('Win32_Process.Create failed');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+  });
+
+  // Callers rely on false to keep the daemon alive instead of exiting with no replacement.
+  assert.equal(scheduled, false);
 });
 
 test('buildPlistContent injects CODEX_SANDBOX_LEVEL=off', () => {
@@ -200,7 +298,7 @@ test('buildSystemdContent injects CODEX_SANDBOX_LEVEL=off', () => {
   assert.match(content, /Environment="CODEX_SANDBOX_LEVEL=off"/u);
 });
 
-test('launchWindowsHiddenDaemon starts a detached hidden PowerShell process without VBS', () => {
+test('launchWindowsHiddenDaemon starts a hidden PowerShell process without detaching it', () => {
   const calls: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
   let unrefCalled = false;
 
@@ -222,6 +320,8 @@ test('launchWindowsHiddenDaemon starts a detached hidden PowerShell process with
   assert.ok(calls[0]!.args.includes('Hidden'));
   assert.match(calls[0]!.args.at(-1) ?? '', /agentrunner\.cmd.* start/u);
   assert.equal(calls[0]!.options.windowsHide, true);
-  assert.equal(calls[0]!.options.detached, true);
+  // Must NOT be detached: DETACHED_PROCESS leaves the hidden powershell created
+  // but never running its command on Windows, so the runner never starts.
+  assert.notEqual(calls[0]!.options.detached, true);
   assert.equal(unrefCalled, true);
 });

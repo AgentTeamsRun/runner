@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { executeRestartRequest, restartDaemon } from './daemon-control.js';
+import { executeRestartRequest, restartDaemon, waitForDaemonToStart } from './daemon-control.js';
 
 test('restartDaemon stops running daemon and restarts via autostart when registered', async () => {
   const signals: Array<{ pid: number; signal: string | number | undefined }> = [];
@@ -74,6 +74,47 @@ test('restartDaemon delegates Windows task restart without signaling the daemon 
   assert.deepEqual(events, ['task-restart']);
 });
 
+test('waitForDaemonToStart returns once the runner reports running', async () => {
+  let checks = 0;
+  const sleeps: number[] = [];
+
+  const status = await waitForDaemonToStart({
+    getDaemonStatus: async () => {
+      checks += 1;
+      // Runner is still booting for the first two polls, then writes its PID.
+      return checks < 3 ? { running: false, pid: null } : { running: true, pid: 999 };
+    },
+    sleep: async (milliseconds) => {
+      sleeps.push(milliseconds);
+    },
+    now: () => 0,
+  });
+
+  assert.deepEqual(status, { running: true, pid: 999 });
+  assert.equal(checks, 3);
+  assert.equal(sleeps.length, 2);
+});
+
+test('waitForDaemonToStart gives up after the deadline and reports not running', async () => {
+  let checks = 0;
+  const now = [0, 5, 10, 20];
+  let tick = 0;
+
+  const status = await waitForDaemonToStart({
+    getDaemonStatus: async () => {
+      checks += 1;
+      return { running: false, pid: null };
+    },
+    sleep: async () => undefined,
+    now: () => now[Math.min(tick++, now.length - 1)] ?? 0,
+    timeoutMs: 15,
+  });
+
+  assert.equal(status.running, false);
+  // Stops polling once now() passes the deadline instead of looping forever.
+  assert.ok(checks >= 1);
+});
+
 test('executeRestartRequest exits non-zero when supervised by launchd', () => {
   const exitCodes: number[] = [];
   let spawned = false;
@@ -125,6 +166,7 @@ test('executeRestartRequest schedules an explicit restart and exits cleanly for 
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
     scheduleWindowsTaskRestart: () => {
       scheduled = true;
+      return true;
     },
     spawnDetachedDaemon: () => {
       spawned = true;
@@ -140,6 +182,24 @@ test('executeRestartRequest schedules an explicit restart and exits cleanly for 
   assert.equal(spawned, false);
   assert.equal(scheduled, true);
   assert.deepEqual(exitCodes, [0]);
+});
+
+test('executeRestartRequest keeps the daemon alive when the Windows restart helper fails to schedule', () => {
+  const exitCodes: number[] = [];
+
+  executeRestartRequest({
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    // Helper creation failed — must NOT exit, or the runner dies with no replacement.
+    scheduleWindowsTaskRestart: () => false,
+    platform: () => 'win32',
+    processExit: ((code: number) => {
+      exitCodes.push(code);
+      return undefined as never;
+    }) as (code: number) => never,
+    logger: { info: () => undefined },
+  });
+
+  assert.deepEqual(exitCodes, [], 'daemon must not exit when the restart helper could not be created');
 });
 
 test('executeRestartRequest spawns a detached daemon when running manually on macOS', () => {
