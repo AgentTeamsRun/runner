@@ -40,6 +40,33 @@ type ExecuteRestartDeps = {
 
 const restartPollIntervalMs = 100;
 const stopTimeoutMs = 10_000;
+const startTimeoutMs = 15_000;
+
+type WaitForStartDeps = {
+  getDaemonStatus?: () => Promise<RunningDaemonStatus>;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  timeoutMs?: number;
+};
+
+// A restart only *triggers* the replacement runner (a detached spawn, a
+// Task Scheduler `/Run`, or a supervised respawn); the new process needs a
+// moment to boot and write its PID file. Poll until it reports running so the
+// command can report accurately instead of racing an async startup.
+export const waitForDaemonToStart = async (deps: WaitForStartDeps = {}): Promise<RunningDaemonStatus> => {
+  const resolvedGetDaemonStatus = deps.getDaemonStatus ?? getDaemonStatus;
+  const resolvedSleep = deps.sleep ?? ((milliseconds: number) => delay(milliseconds));
+  const resolvedNow = deps.now ?? (() => Date.now());
+  const timeoutMs = deps.timeoutMs ?? startTimeoutMs;
+
+  const deadline = resolvedNow() + timeoutMs;
+  let status = await resolvedGetDaemonStatus();
+  while (!status.running && resolvedNow() < deadline) {
+    await resolvedSleep(restartPollIntervalMs);
+    status = await resolvedGetDaemonStatus();
+  }
+  return status;
+};
 
 const waitForDaemonToStop = async (
   pid: number,
@@ -92,7 +119,14 @@ export const executeRestartRequest = (deps: ExecuteRestartDeps = {}): void => {
   const autostartStatus = resolvedGetAutostartStatus();
   if (autostartStatus.registered && autostartStatus.platform === 'task-scheduler') {
     resolvedLogger.info('Restart requested — scheduling explicit Task Scheduler restart');
-    resolvedScheduleWindowsTaskRestart();
+    const scheduled = resolvedScheduleWindowsTaskRestart();
+    if (!scheduled) {
+      // The restart helper was not created. Exiting now would kill this runner
+      // with nothing to bring it back up, so keep the daemon alive instead — the
+      // failure is already logged by scheduleWindowsTaskRestart.
+      resolvedLogger.info('Restart helper creation failed — keeping the current runner alive instead of exiting');
+      return;
+    }
     exitProcess(0);
     return;
   }
