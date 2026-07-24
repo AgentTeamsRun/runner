@@ -98,7 +98,6 @@ test('resolveExecutablePath falls back to Antigravity local app bin on Windows',
 });
 
 test('resolveExecutablePath falls back to the Kimi install bin outside Windows', () => {
-  const kimiPath = '/Users/justin/.kimi-code/bin/kimi';
   const resolved = resolveExecutablePath('kimi', {
     env: {
       HOME: '/Users/justin',
@@ -107,14 +106,14 @@ test('resolveExecutablePath falls back to the Kimi install bin outside Windows',
     execFileSync: (() => {
       throw new Error('not found');
     }) as unknown as typeof import('node:child_process').execFileSync,
-    existsSync: ((path: string) => path === kimiPath) as typeof import('node:fs').existsSync,
+    existsSync: ((path: string) =>
+      /^[/\\]Users[/\\]justin[/\\]\.kimi-code[/\\]bin[/\\]kimi$/u.test(path)) as typeof import('node:fs').existsSync,
   });
 
-  assert.equal(resolved, kimiPath);
+  assert.match(resolved, /^[/\\]Users[/\\]justin[/\\]\.kimi-code[/\\]bin[/\\]kimi$/u);
 });
 
 test('resolveExecutablePath falls back to the Kimi install bin on Windows', () => {
-  const kimiPath = 'C:\\Users\\justin/.kimi-code/bin/kimi.cmd';
   const resolved = resolveExecutablePath('kimi', {
     env: {
       PATHEXT: '.COM;.EXE;.BAT;.CMD',
@@ -124,10 +123,13 @@ test('resolveExecutablePath falls back to the Kimi install bin on Windows', () =
     execFileSync: (() => {
       throw new Error('not found');
     }) as unknown as typeof import('node:child_process').execFileSync,
-    existsSync: ((path: string) => path === kimiPath) as typeof import('node:fs').existsSync,
+    existsSync: ((path: string) =>
+      /^C:[/\\]Users[/\\]justin[/\\]\.kimi-code[/\\]bin[/\\]kimi\.cmd$/u.test(
+        path,
+      )) as typeof import('node:fs').existsSync,
   });
 
-  assert.equal(resolved, kimiPath);
+  assert.match(resolved, /^C:[/\\]Users[/\\]justin[/\\]\.kimi-code[/\\]bin[/\\]kimi\.cmd$/u);
 });
 
 test('resolveExecutablePath keeps the missing Kimi executable error when the install bin is absent', () => {
@@ -148,7 +150,6 @@ test('resolveExecutablePath keeps the missing Kimi executable error when the ins
 });
 
 test('resolveExecutablePathWithPreference falls back to the Kimi install bin', () => {
-  const kimiPath = '/Users/justin/.kimi-code/bin/kimi';
   const resolved = resolveExecutablePathWithPreference('kimi', ['kimi'], {
     env: {
       HOME: '/Users/justin',
@@ -157,10 +158,11 @@ test('resolveExecutablePathWithPreference falls back to the Kimi install bin', (
     execFileSync: (() => {
       throw new Error('not found');
     }) as unknown as typeof import('node:child_process').execFileSync,
-    existsSync: ((path: string) => path === kimiPath) as typeof import('node:fs').existsSync,
+    existsSync: ((path: string) =>
+      /^[/\\]Users[/\\]justin[/\\]\.kimi-code[/\\]bin[/\\]kimi$/u.test(path)) as typeof import('node:fs').existsSync,
   });
 
-  assert.equal(resolved, kimiPath);
+  assert.match(resolved, /^[/\\]Users[/\\]justin[/\\]\.kimi-code[/\\]bin[/\\]kimi$/u);
 });
 
 test('resolveExecutablePath prefers PATH lookup results', () => {

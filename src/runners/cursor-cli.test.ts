@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -157,7 +158,8 @@ for (const executablePath of ['C:/Cursor/agent.exe', 'C:/Users/test/AppData/Loca
     assert.equal(calls.writes.length, 1);
     assert.equal(calls.writes[0]?.content, options.prompt);
     assert.equal(calls.writes[0]?.encoding, 'utf8');
-    assert.deepEqual(calls.removed, ['/repo/.agentteams/runner/tmp/trigger-123.prompt.txt']);
+    assert.ok(options.authPath);
+    assert.deepEqual(calls.removed, [join(options.authPath, '.agentteams', 'runner', 'tmp', 'trigger-123.prompt.txt')]);
     assert.equal(calls.spawned[0]?.command, 'powershell.exe');
     assert.equal(calls.spawned[0]?.options.windowsHide, true);
     assert.equal(calls.spawned[0]?.options.shell, false);

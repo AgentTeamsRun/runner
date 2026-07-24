@@ -85,7 +85,7 @@ test('findMemberRepoCandidates matches the CLI findMemberRepos judgement contrac
     writeFileSync(join(root, 'README.md'), '# root');
 
     // Excluded: symlinked directory pointing at a real git repo
-    symlinkSync(join(root, 'repo-a'), join(root, 'linked-repo'), 'dir');
+    symlinkSync(join(root, 'repo-a'), join(root, 'linked-repo'), process.platform === 'win32' ? 'junction' : 'dir');
 
     // Excluded: directory that is merely inside another repository's work tree
     mkdirSync(join(root, 'repo-a', 'nested'));

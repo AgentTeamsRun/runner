@@ -271,20 +271,21 @@ export const startPolling = async (
       const trigger = pollState.data.pendingTrigger;
 
       // 웹에서 요청된 재시작은 pending 작업 유무와 무관하게 우선 처리한다.
-      // 서버는 ack가 도착할 때까지 플래그를 유지하므로, ack 실패 시에는 다음 폴링에서
-      // 다시 시도되어 요청이 조용히 소실되지 않는다.
+      // 준비 → ACK → 종료의 전체 계약은 restart orchestrator가 소유한다.
+      // 준비 또는 ACK 실패는 retryable result로 돌아오며 서버 플래그가 남으므로,
+      // 현재 러너가 살아 있는 상태에서 다음 폴링이 빠르게 재시도한다.
       if (pollState.meta?.restartRequested) {
-        try {
-          await client.ackRestartRequest();
-        } catch (error) {
-          logger.warn('Failed to ack restart request — will retry on next poll', {
-            error: error instanceof Error ? error.message : String(error),
+        const restartResult = await performRestart({
+          processExit: exitProcess,
+          acknowledgeRestart: () => client.ackRestartRequest(),
+          config,
+        });
+        if (restartResult.status === 'retryable-failure') {
+          logger.warn('Restart handoff was not completed — will retry on next poll', {
+            reason: restartResult.reason,
+            error: restartResult.error,
           });
-          // ack 재시도를 base 간격으로 빠르게 잇기 위해 활동으로 취급한다.
-          return 'ACTIVE';
         }
-
-        performRestart({ processExit: exitProcess });
         return 'ACTIVE';
       }
 

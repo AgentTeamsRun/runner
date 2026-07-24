@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { executeRestartRequest, restartDaemon, waitForDaemonToStart } from './daemon-control.js';
+import {
+  executeRestartRequest,
+  prepareDetachedRestartHandoff,
+  restartDaemon,
+  waitForDaemonToStart,
+} from './daemon-control.js';
 
 test('restartDaemon stops running daemon and restarts via autostart when registered', async () => {
   const signals: Array<{ pid: number; signal: string | number | undefined }> = [];
@@ -115,20 +120,19 @@ test('waitForDaemonToStart gives up after the deadline and reports not running',
   assert.ok(checks >= 1);
 });
 
-test('executeRestartRequest exits non-zero when supervised by launchd', () => {
+test('executeRestartRequest exits non-zero when supervised by launchd', async () => {
   const exitCodes: number[] = [];
   let spawned = false;
 
-  executeRestartRequest({
+  await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'launchd' }),
     spawnDetachedDaemon: () => {
       spawned = true;
     },
     platform: () => 'darwin',
-    processExit: ((code: number) => {
+    processExit: (code) => {
       exitCodes.push(code);
-      return undefined as never;
-    }) as (code: number) => never,
+    },
     logger: { info: () => undefined },
   });
 
@@ -136,20 +140,19 @@ test('executeRestartRequest exits non-zero when supervised by launchd', () => {
   assert.equal(spawned, false);
 });
 
-test('executeRestartRequest exits non-zero when supervised by systemd', () => {
+test('executeRestartRequest exits non-zero when supervised by systemd', async () => {
   const exitCodes: number[] = [];
   let spawned = false;
 
-  executeRestartRequest({
+  await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'systemd' }),
     spawnDetachedDaemon: () => {
       spawned = true;
     },
     platform: () => 'linux',
-    processExit: ((code: number) => {
+    processExit: (code) => {
       exitCodes.push(code);
-      return undefined as never;
-    }) as (code: number) => never,
+    },
     logger: { info: () => undefined },
   });
 
@@ -157,25 +160,33 @@ test('executeRestartRequest exits non-zero when supervised by systemd', () => {
   assert.equal(spawned, false);
 });
 
-test('executeRestartRequest schedules an explicit restart and exits cleanly for Windows Task Scheduler', () => {
+test('executeRestartRequest schedules an explicit restart and exits cleanly for Windows Task Scheduler', async () => {
   const exitCodes: number[] = [];
   let spawned = false;
   let scheduled = false;
 
-  executeRestartRequest({
+  await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    scheduleWindowsTaskRestart: () => {
+    scheduleWindowsTaskRestart: async () => {
       scheduled = true;
-      return true;
+      return {
+        status: 'prepared',
+        handoffId: 'windows-success',
+        markerPath: '/tmp/restart-handoff-windows-success.json',
+        replacementPid: 9002,
+        replacementReady: true,
+        acknowledged: false,
+        retryableFailure: false,
+      };
     },
     spawnDetachedDaemon: () => {
       spawned = true;
     },
     platform: () => 'win32',
-    processExit: ((code: number) => {
+    acknowledgePreparedHandoff: async () => true,
+    processExit: (code) => {
       exitCodes.push(code);
-      return undefined as never;
-    }) as (code: number) => never,
+    },
     logger: { info: () => undefined },
   });
 
@@ -184,41 +195,236 @@ test('executeRestartRequest schedules an explicit restart and exits cleanly for 
   assert.deepEqual(exitCodes, [0]);
 });
 
-test('executeRestartRequest keeps the daemon alive when the Windows restart helper fails to schedule', () => {
+test('executeRestartRequest keeps the daemon alive when the Windows restart helper fails to schedule', async () => {
   const exitCodes: number[] = [];
 
-  executeRestartRequest({
+  await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
     // Helper creation failed — must NOT exit, or the runner dies with no replacement.
-    scheduleWindowsTaskRestart: () => false,
+    scheduleWindowsTaskRestart: async () => ({
+      status: 'retryable-failure',
+      handoffId: 'windows-failure',
+      replacementReady: false,
+      acknowledged: false,
+      retryableFailure: true,
+      reason: 'helper-preparation-failed',
+      error: 'helper creation failed',
+    }),
     platform: () => 'win32',
-    processExit: ((code: number) => {
+    processExit: (code) => {
       exitCodes.push(code);
-      return undefined as never;
-    }) as (code: number) => never,
+    },
     logger: { info: () => undefined },
   });
 
   assert.deepEqual(exitCodes, [], 'daemon must not exit when the restart helper could not be created');
 });
 
-test('executeRestartRequest spawns a detached daemon when running manually on macOS', () => {
-  const exitCodes: number[] = [];
-  let spawned = false;
+test('executeRestartRequest acks and exits only after a manual replacement is prepared', async () => {
+  const events: string[] = [];
 
-  executeRestartRequest({
+  await executeRestartRequest({
     getAutostartStatus: () => ({ registered: false, platform: 'launchd' }),
-    spawnDetachedDaemon: () => {
-      spawned = true;
+    prepareDetachedDaemon: async () => {
+      events.push('prepared');
+      return {
+        status: 'prepared',
+        handoffId: 'manual-success',
+        markerPath: '/tmp/restart-handoff-manual-success.json',
+        replacementPid: 9002,
+        replacementReady: true,
+        acknowledged: false,
+        retryableFailure: false,
+      };
+    },
+    acknowledgeRestart: async () => {
+      events.push('ack');
+    },
+    acknowledgePreparedHandoff: async () => {
+      events.push('commit');
+      return true;
     },
     platform: () => 'darwin',
-    processExit: ((code: number) => {
-      exitCodes.push(code);
-      return undefined as never;
-    }) as (code: number) => never,
+    processExit: (code) => {
+      events.push(`exit:${code}`);
+    },
     logger: { info: () => undefined },
   });
 
-  assert.equal(spawned, true);
-  assert.deepEqual(exitCodes, [0]);
+  assert.deepEqual(events, ['prepared', 'ack', 'commit', 'exit:0']);
+});
+
+test('executeRestartRequest keeps the daemon alive when the prepared standby disappears during acknowledgement', async () => {
+  const events: string[] = [];
+
+  const result = await executeRestartRequest({
+    getAutostartStatus: () => ({ registered: false, platform: 'manual' }),
+    prepareDetachedDaemon: async () => ({
+      status: 'prepared',
+      handoffId: 'manual-disappeared',
+      markerPath: '/tmp/restart-handoff-manual-disappeared.json',
+      replacementPid: 9002,
+      replacementReady: true,
+      acknowledged: false,
+      retryableFailure: false,
+    }),
+    acknowledgeRestart: async () => {
+      events.push('ack');
+    },
+    acknowledgePreparedHandoff: async () => {
+      events.push('commit-failed');
+      return false;
+    },
+    processExit: (code) => {
+      events.push(`exit:${code}`);
+    },
+    platform: () => 'darwin',
+    logger: { info: () => undefined },
+  });
+
+  assert.deepEqual(events, ['ack', 'commit-failed']);
+  assert.equal(result.status, 'retryable-failure');
+});
+
+test('prepareDetachedRestartHandoff reports spawn failure without waiting for readiness', async () => {
+  let waited = false;
+
+  const result = await prepareDetachedRestartHandoff({
+    handoffId: 'manual-spawn-failure',
+    parentPid: 4321,
+    markerPath: '/tmp/restart-handoff.json',
+    unlink: async () => undefined,
+    spawnDetachedDaemon: () => {
+      throw new Error('spawn failed');
+    },
+    waitForPreparedRestartHandoff: async () => {
+      waited = true;
+      throw new Error('should not wait');
+    },
+  });
+
+  assert.equal(result.status, 'retryable-failure');
+  assert.equal(result.reason, 'replacement-preparation-failed');
+  assert.equal(waited, false);
+});
+
+test('executeRestartRequest keeps supervised runners alive when acknowledgement fails', async () => {
+  const exitCodes: number[] = [];
+
+  const result = await executeRestartRequest({
+    getAutostartStatus: () => ({ registered: true, platform: 'systemd' }),
+    acknowledgeRestart: async () => {
+      throw new Error('network down');
+    },
+    platform: () => 'linux',
+    processExit: (code) => {
+      exitCodes.push(code);
+    },
+    logger: { info: () => undefined },
+  });
+
+  assert.equal(result.status, 'retryable-failure');
+  assert.equal(result.reason, 'acknowledgement-failed');
+  assert.deepEqual(exitCodes, []);
+});
+
+test('executeRestartRequest preserves the current runner and request when the Windows helper reports a post-create failure', async () => {
+  const events: string[] = [];
+
+  const result = await executeRestartRequest({
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    scheduleWindowsTaskRestart: async () => ({
+      status: 'retryable-failure',
+      handoffId: 'handoff-query-failure',
+      replacementReady: false,
+      acknowledged: false,
+      retryableFailure: true,
+      reason: 'helper-preparation-failed',
+      error: 'schtasks /Query failed with exit 1',
+    }),
+    acknowledgeRestart: async () => {
+      events.push('ack');
+    },
+    spawnDetachedDaemon: () => {
+      events.push('spawn');
+    },
+    processExit: (code) => {
+      events.push(`exit:${code}`);
+    },
+    platform: () => 'win32',
+    logger: { info: () => undefined },
+  });
+
+  assert.deepEqual(events, [], 'a post-create helper failure must not ack or terminate the current runner');
+  assert.equal(result.status, 'retryable-failure');
+});
+
+test('executeRestartRequest repairs a missing Windows scheduled task before preparing handoff', async () => {
+  const events: string[] = [];
+
+  const result = await executeRestartRequest({
+    getAutostartStatus: () => ({ registered: false, platform: 'task-scheduler' }),
+    registerWindowsTask: async () => {
+      events.push('register');
+      return { registered: true, servicePath: 'task.xml', platform: 'task-scheduler' };
+    },
+    scheduleWindowsTaskRestart: async () => {
+      events.push('prepare');
+      return {
+        status: 'retryable-failure',
+        handoffId: 'handoff-after-repair',
+        replacementReady: false,
+        acknowledged: false,
+        retryableFailure: true,
+        reason: 'helper-preparation-failed',
+        error: 'replacement did not become ready',
+      };
+    },
+    acknowledgeRestart: async () => {
+      events.push('ack');
+    },
+    spawnDetachedDaemon: () => {
+      events.push('spawn');
+    },
+    processExit: (code) => {
+      events.push(`exit:${code}`);
+    },
+    platform: () => 'win32',
+    config: { daemonToken: 'secret-token', apiUrl: 'https://api.example' },
+    logger: { info: () => undefined },
+  });
+
+  assert.deepEqual(events, ['register', 'prepare']);
+  assert.equal(result.status, 'retryable-failure');
+});
+
+test('executeRestartRequest does not ack or exit when a manual replacement never becomes ready', async () => {
+  const events: string[] = [];
+
+  const result = await executeRestartRequest({
+    getAutostartStatus: () => ({ registered: false, platform: 'manual' }),
+    prepareDetachedDaemon: async () => ({
+      status: 'retryable-failure',
+      handoffId: 'manual-timeout',
+      replacementReady: false,
+      acknowledged: false,
+      retryableFailure: true,
+      reason: 'replacement-preparation-failed',
+      error: 'replacement readiness timed out',
+    }),
+    acknowledgeRestart: async () => {
+      events.push('ack');
+    },
+    spawnDetachedDaemon: () => {
+      events.push('spawn');
+    },
+    processExit: (code) => {
+      events.push(`exit:${code}`);
+    },
+    platform: () => 'darwin',
+    logger: { info: () => undefined },
+  });
+
+  assert.deepEqual(events, [], 'spawn success alone must not ack or terminate the current runner');
+  assert.equal(result.status, 'retryable-failure');
 });

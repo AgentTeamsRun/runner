@@ -690,7 +690,7 @@ test('startPolling reports FAILED when worktree removal throws after matching a 
   fsModule.rmSync(tempRoot, { recursive: true, force: true });
 });
 
-test('startPolling acks and runs restart when meta.restartRequested is true with no pending trigger', async () => {
+test('startPolling delegates acknowledgement and runtime config to the restart orchestrator', async () => {
   let ackCalled = 0;
   let restartCalled = 0;
   let keepAliveResolve: (() => void) | null = null;
@@ -708,8 +708,18 @@ test('startPolling acks and runs restart when meta.restartRequested is true with
     maybeAutoUpdate: async () => {
       throw new Error('auto-update must be skipped while restarting');
     },
-    executeRestartRequest: () => {
+    executeRestartRequest: async (deps) => {
       restartCalled += 1;
+      assert.ok(deps);
+      assert.equal(deps.config, config);
+      await deps.acknowledgeRestart?.();
+      return {
+        status: 'acknowledged',
+        handoffId: 'poller-restart',
+        replacementReady: true,
+        acknowledged: true,
+        retryableFailure: false,
+      };
     },
     setTimeout: (() => ({}) as NodeJS.Timeout) as unknown as typeof setTimeout,
     clearTimeout: (() => undefined) as typeof clearTimeout,
@@ -765,8 +775,17 @@ test('startPolling restarts even when a pending trigger is present, ignoring the
           },
         }),
       runCleanup: async () => undefined,
-      executeRestartRequest: () => {
+      executeRestartRequest: async (deps) => {
         restartCalled += 1;
+        assert.ok(deps);
+        await deps.acknowledgeRestart?.();
+        return {
+          status: 'acknowledged',
+          handoffId: 'poller-restart',
+          replacementReady: true,
+          acknowledged: true,
+          retryableFailure: false,
+        };
       },
       setTimeout: (() => ({}) as NodeJS.Timeout) as unknown as typeof setTimeout,
       clearTimeout: (() => undefined) as typeof clearTimeout,
@@ -783,7 +802,7 @@ test('startPolling restarts even when a pending trigger is present, ignoring the
   );
 
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(ackCalled, 1, 'ack should run before restart');
+  assert.equal(ackCalled, 1, 'the restart orchestrator should own acknowledgement');
   assert.equal(restartCalled, 1, 'restart should run even with a pending trigger');
   assert.equal(claimCalled, 0, 'trigger must not be claimed while restarting');
 
@@ -796,7 +815,8 @@ test('startPolling restarts even when a pending trigger is present, ignoring the
   await pollingPromise;
 });
 
-test('startPolling skips restart and leaves the flag for retry when ack fails', async () => {
+test('startPolling leaves restart ownership with the orchestrator when acknowledgement fails', async () => {
+  let ackCalled = 0;
   let restartCalled = 0;
   let keepAliveResolve: (() => void) | null = null;
 
@@ -806,12 +826,34 @@ test('startPolling skips restart and leaves the flag for retry when ack fails', 
         fetchPollState: async () =>
           pollState({}, { cliLatestVersion: null, runnerLatestVersion: null, restartRequested: true }),
         ackRestartRequest: async () => {
+          ackCalled += 1;
           throw new Error('network down');
         },
       }),
     runCleanup: async () => undefined,
-    executeRestartRequest: () => {
+    executeRestartRequest: async (deps) => {
       restartCalled += 1;
+      assert.ok(deps);
+      try {
+        await deps.acknowledgeRestart?.();
+      } catch (error) {
+        return {
+          status: 'retryable-failure',
+          handoffId: 'poller-restart',
+          replacementReady: false,
+          acknowledged: false,
+          retryableFailure: true,
+          reason: 'acknowledgement-failed',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      return {
+        status: 'acknowledged',
+        handoffId: 'poller-restart',
+        replacementReady: true,
+        acknowledged: true,
+        retryableFailure: false,
+      };
     },
     setTimeout: (() => ({}) as NodeJS.Timeout) as unknown as typeof setTimeout,
     clearTimeout: (() => undefined) as typeof clearTimeout,
@@ -827,7 +869,8 @@ test('startPolling skips restart and leaves the flag for retry when ack fails', 
   });
 
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(restartCalled, 0, 'restart must not run when ack fails');
+  assert.equal(restartCalled, 1, 'restart orchestrator should receive every restart request');
+  assert.equal(ackCalled, 1, 'acknowledgement should be attempted through the injected callback');
 
   const resolveKeepAlive =
     keepAliveResolve ??

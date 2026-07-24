@@ -5,6 +5,7 @@ import { createTriggerHandler } from '../handlers/trigger-handler.js';
 import { writePidFile, removePidFile } from '../pid.js';
 import { logger } from '../logger.js';
 import { refreshWindowsPathFromRegistry } from '../windows-path.js';
+import { activatePreparedRestartHandoff } from '../restart-handoff.js';
 
 /**
  * The Windows Task Scheduler wrapper injects a PATH snapshot
@@ -37,6 +38,10 @@ const ensureCodexSandboxDefault = (): void => {
 export const runStartCommand = async (): Promise<void> => {
   refreshExecutablePath();
   ensureCodexSandboxDefault();
+  const activatedHandoff = await activatePreparedRestartHandoff();
+  if (activatedHandoff) {
+    logger.info('Replacement runner activated after restart handoff');
+  }
   await writePidFile();
 
   const cleanup = async () => {
