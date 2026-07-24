@@ -1,10 +1,18 @@
 import { execFileSync, execSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, promises as fs } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { resolveExecutablePath } from './executable.js';
 import { logger } from './logger.js';
+import { isProcessRunning } from './pid.js';
+import {
+  getRestartHandoffPath,
+  restartHandoffAcknowledgementTimeoutMs,
+  waitForPreparedRestartHandoff,
+  type RestartHandoffPreparation,
+} from './restart-handoff.js';
 
 const SERVICE_LABEL = 'run.agentteams.runner';
 const TASK_NAME = 'AgentRunner';
@@ -456,6 +464,7 @@ type WindowsAutostartDeps = {
   chmodSync?: (path: string, mode: number) => void;
   daemonPath?: string;
   userId?: string;
+  startImmediately?: boolean;
 };
 
 export const registerWindowsTask = async (
@@ -494,7 +503,9 @@ export const registerWindowsTask = async (
     buildWindowsPowerShellWrapper(config, deps.daemonPath ?? resolveExecutablePath('agentrunner')),
     'utf8',
   );
-  await resolvedWriteFile(taskXmlPath, buildWindowsTaskXmlContent(userId, wrapperPath), 'utf16le');
+  // schtasks requires a BOM to recognize the UTF-16LE XML encoding. Node's
+  // writeFile('utf16le') does not add one automatically.
+  await resolvedWriteFile(taskXmlPath, `\uFEFF${buildWindowsTaskXmlContent(userId, wrapperPath)}`, 'utf16le');
   resolvedChmodSync(wrapperPath, 0o600);
   resolvedChmodSync(taskXmlPath, 0o600);
 
@@ -509,11 +520,15 @@ export const registerWindowsTask = async (
 
   resolvedExecSync(`schtasks /Create /TN "${TASK_NAME}" /XML "${taskXmlPath}" /F`, { windowsHide: true });
 
-  // Start the registered task immediately.
-  try {
-    resolvedExecSync(`schtasks /Run /TN "${TASK_NAME}"`, { windowsHide: true });
-  } catch {
-    logger.warn('Autostart registered but immediate start failed. It will start at next logon.');
+  // Normal init starts the task immediately. A live daemon repairing a missing
+  // registration suppresses this step so it does not create a second poller
+  // before the restart handoff is prepared.
+  if (deps.startImmediately ?? true) {
+    try {
+      resolvedExecSync(`schtasks /Run /TN "${TASK_NAME}"`, { windowsHide: true });
+    } catch {
+      logger.warn('Autostart registered but immediate start failed. It will start at next logon.');
+    }
   }
 
   logger.info('Registered Windows Task Scheduler autostart', { taskXmlPath });
@@ -651,48 +666,165 @@ export const restartWindowsTask = async (
 
 type ScheduleWindowsTaskRestartDeps = {
   execFileSync?: typeof execFileSync;
+  readFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
+  unlink?: (path: string) => Promise<void>;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  isProcessRunning?: (pid: number) => boolean;
+  handoffId?: string;
+  parentPid?: number;
+  daemonPath?: string;
 };
 
 // Task Scheduler keeps every process spawned by an action in the same Job Object.
 // Ask WMI to create the restart helper outside that Job so IgnoreNew cannot discard
 // the explicit start while this daemon is exiting.
 //
-// Returns whether the helper was created. Callers MUST NOT exit the daemon when
-// this returns false — doing so would terminate the current runner with no
-// replacement coming up.
-export const scheduleWindowsTaskRestart = (deps: ScheduleWindowsTaskRestartDeps = {}): boolean => {
+// The helper writes a correlation-scoped ready marker before the caller may ACK
+// and exit. After acknowledgement and a bounded parent-exit grace period, it
+// retries Task Scheduler and falls back to a direct runner launch, so every
+// acknowledged request already has a live recovery subject outside the current
+// task's Job Object.
+export const scheduleWindowsTaskRestart = async (
+  deps: ScheduleWindowsTaskRestartDeps = {},
+): Promise<RestartHandoffPreparation> => {
   const runSync = deps.execFileSync ?? execFileSync;
+  const readFile = deps.readFile ?? fs.readFile;
+  const unlink = deps.unlink ?? fs.unlink;
+  const sleep = deps.sleep ?? ((milliseconds: number) => delay(milliseconds));
+  const now = deps.now ?? (() => Date.now());
+  const processIsRunning = deps.isProcessRunning ?? isProcessRunning;
+  const handoffId = deps.handoffId ?? randomUUID();
+  const parentPid = deps.parentPid ?? process.pid;
+  const daemonPath = deps.daemonPath ?? resolveExecutablePath('agentrunner');
   const logPath = getWindowsLogPath();
+  const handoffPath = getRestartHandoffPath(handoffId);
+
+  try {
+    await unlink(handoffPath);
+  } catch {
+    // Missing or stale marker is fine.
+  }
+
   // Every failure path appends a diagnostic line to the daemon log so a restart
   // that never brings the runner back up leaves a trace instead of dying silently.
   const restartScript = `
 $taskName = '${TASK_NAME}'
 $logPath = '${escapeForPowerShellString(logPath)}'
+$handoffPath = '${escapeForPowerShellString(handoffPath)}'
+$handoffId = '${escapeForPowerShellString(handoffId)}'
+$parentPid = ${parentPid}
+$daemonPath = '${escapeForPowerShellString(daemonPath)}'
 function Write-RestartLog($message) {
   try { "[web-restart] $((Get-Date).ToString('s')) $message" *>> $logPath } catch { }
 }
-trap { Write-RestartLog "unhandled error during restart: $($_.Exception.Message)"; exit 1 }
-$deadline = (Get-Date).AddSeconds(30)
+function Get-HandoffMarker {
+  try {
+    if (-not (Test-Path -LiteralPath $handoffPath)) { return $null }
+    return Get-Content -LiteralPath $handoffPath -Raw | ConvertFrom-Json
+  } catch {
+    return $null
+  }
+}
+function Test-HandoffOwned([string]$requiredState = '') {
+  $marker = Get-HandoffMarker
+  if ($null -eq $marker) { return $false }
+  if ($marker.handoffId -ne $handoffId -or [int]$marker.replacementPid -ne $PID) { return $false }
+  return ((-not $requiredState) -or ($marker.state -eq $requiredState))
+}
+function Test-HandoffAcknowledged {
+  return Test-HandoffOwned 'acknowledged'
+}
+function Remove-HandoffIfOwned {
+  if (Test-HandoffOwned) {
+    Remove-Item -LiteralPath $handoffPath -Force -ErrorAction SilentlyContinue
+  }
+}
+function Start-DirectFallback {
+  if (-not (Test-HandoffAcknowledged)) {
+    Write-RestartLog "handoff $handoffId is no longer acknowledged; skipping direct fallback"
+    exit 2
+  }
+  try {
+    Write-RestartLog "Task Scheduler restart failed; starting direct fallback"
+    Remove-HandoffIfOwned
+    & $daemonPath start *>> $logPath
+    exit $LASTEXITCODE
+  } catch {
+    Write-RestartLog "direct fallback failed: $($_.Exception.Message)"
+    exit 1
+  }
+}
+$isAcknowledged = $false
+trap {
+  Write-RestartLog "unhandled error during restart: $($_.Exception.Message)"
+  if ($isAcknowledged) { Start-DirectFallback }
+  Remove-HandoffIfOwned
+  exit 1
+}
+New-Item -ItemType Directory -Path (Split-Path -Parent $handoffPath) -Force *> $null
+@{ handoffId = $handoffId; replacementPid = $PID; state = 'prepared' } |
+  ConvertTo-Json -Compress |
+  Set-Content -LiteralPath $handoffPath -Encoding UTF8
+Write-RestartLog "restart handoff $handoffId prepared by helper $PID"
+$handoffDeadline = (Get-Date).AddSeconds(${Math.floor(restartHandoffAcknowledgementTimeoutMs / 1_000)})
+while ((Get-Date) -lt $handoffDeadline) {
+  $marker = Get-HandoffMarker
+  if ($null -ne $marker -and ($marker.handoffId -ne $handoffId -or [int]$marker.replacementPid -ne $PID)) {
+    Write-RestartLog "restart handoff $handoffId was superseded"
+    exit 2
+  }
+  if ($null -ne $marker -and $marker.state -eq 'acknowledged') {
+    $isAcknowledged = $true
+    break
+  }
+  Start-Sleep -Milliseconds 100
+}
+if (-not $isAcknowledged) {
+  Write-RestartLog "restart handoff $handoffId was not acknowledged before its deadline"
+  Remove-HandoffIfOwned
+  exit 2
+}
+$parentDeadline = (Get-Date).AddSeconds(5)
+while ((Get-Process -Id $parentPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $parentDeadline)) {
+  Start-Sleep -Milliseconds 100
+}
 $service = New-Object -ComObject 'Schedule.Service'
 $service.Connect()
 $folder = $service.GetFolder('\\')
-do {
+for ($attempt = 1; $attempt -le 20; $attempt++) {
+  if (-not (Test-HandoffAcknowledged)) {
+    Write-RestartLog "restart handoff $handoffId was superseded before Task Scheduler activation"
+    exit 2
+  }
   schtasks /Query /TN $taskName *> $null
-  if ($LASTEXITCODE -ne 0) { Write-RestartLog "schtasks /Query failed with exit $LASTEXITCODE; aborting restart"; exit 1 }
+  if ($LASTEXITCODE -ne 0) {
+    Write-RestartLog "schtasks /Query failed with exit $LASTEXITCODE on attempt $attempt"
+    Start-Sleep -Milliseconds 250
+    continue
+  }
   try {
     $task = $folder.GetTask($taskName)
   } catch {
-    Write-RestartLog "GetTask threw before restart: $($_.Exception.Message); aborting restart"
-    exit 1
+    Write-RestartLog "GetTask threw on attempt \${attempt}: $($_.Exception.Message)"
+    Start-Sleep -Milliseconds 250
+    continue
   }
-  if ($task.State -ne 4) { break }
+  if ($task.State -eq 4) {
+    Write-RestartLog "task still running on attempt $attempt"
+    Start-Sleep -Milliseconds 250
+    continue
+  }
+  schtasks /Run /TN $taskName *>> $logPath
+  if ($LASTEXITCODE -eq 0) {
+    Write-RestartLog "restart triggered successfully on attempt $attempt"
+    Remove-HandoffIfOwned
+    exit 0
+  }
+  Write-RestartLog "schtasks /Run failed with exit $LASTEXITCODE on attempt $attempt"
   Start-Sleep -Milliseconds 250
-} while ((Get-Date) -lt $deadline)
-if ($task.State -eq 4) { Write-RestartLog "task still running after 30s deadline; aborting restart"; exit 1 }
-schtasks /End /TN $taskName *>> $logPath
-schtasks /Run /TN $taskName *>> $logPath
-if ($LASTEXITCODE -ne 0) { Write-RestartLog "schtasks /Run failed with exit $LASTEXITCODE"; exit $LASTEXITCODE }
-Write-RestartLog "restart triggered successfully"
+}
+Start-DirectFallback
 `.trim();
   const encodedRestartScript = Buffer.from(restartScript, 'utf16le').toString('base64');
   const restartCommandLine =
@@ -730,12 +862,36 @@ Write-RestartLog "restart triggered successfully"
         env: process.env,
       },
     );
-    return true;
+    const preparation = await waitForPreparedRestartHandoff(
+      { handoffId, parentPid, markerPath: handoffPath },
+      {
+        readFile,
+        sleep,
+        now,
+        isProcessRunning: processIsRunning,
+        timeoutMs: 20_000,
+      },
+    );
+    return preparation.status === 'prepared'
+      ? preparation
+      : {
+          ...preparation,
+          reason: 'helper-preparation-failed',
+          error: 'Timed out waiting for the Windows restart helper readiness marker.',
+        };
   } catch (error) {
     logger.warn('Failed to schedule Windows task restart helper', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return false;
+    return {
+      status: 'retryable-failure',
+      handoffId,
+      replacementReady: false,
+      acknowledged: false,
+      retryableFailure: true,
+      reason: 'helper-preparation-failed',
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 };
 
@@ -744,6 +900,7 @@ Write-RestartLog "restart triggered successfully"
 type LaunchWindowsHiddenDeps = {
   spawn?: typeof spawn;
   resolveExecutablePath?: typeof resolveExecutablePath;
+  env?: NodeJS.ProcessEnv;
 };
 
 export const launchWindowsHiddenDaemon = (deps: LaunchWindowsHiddenDeps = {}): void => {
@@ -762,7 +919,7 @@ export const launchWindowsHiddenDaemon = (deps: LaunchWindowsHiddenDeps = {}): v
     {
       stdio: 'ignore',
       windowsHide: true,
-      env: process.env,
+      env: deps.env ?? process.env,
     },
   );
   child.unref();

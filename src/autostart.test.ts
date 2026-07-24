@@ -95,12 +95,41 @@ test('registerWindowsTask writes scheduler assets, removes legacy files, and cre
   assert.equal(result.platform, 'task-scheduler');
   assert.equal(writes.length, 2);
   assert.ok(writes.some((write) => write.path.endsWith('agentrunner-start.ps1') && write.encoding === 'utf8'));
-  assert.ok(writes.some((write) => write.path.endsWith('agentrunner-task.xml') && write.encoding === 'utf16le'));
+  assert.ok(
+    writes.some(
+      (write) =>
+        write.path.endsWith('agentrunner-task.xml') && write.encoding === 'utf16le' && write.data.startsWith('\uFEFF'),
+    ),
+  );
   assert.ok(removed.some((path) => path.endsWith('agentrunner-start.vbs')));
   assert.ok(removed.some((path) => path.endsWith('agentrunner-restart.vbs')));
   assert.match(commands[0]!, /schtasks \/Delete/u);
   assert.match(commands[1]!, /schtasks \/Create .* \/XML .* \/F/u);
   assert.match(commands[2]!, /schtasks \/Run/u);
+});
+
+test('registerWindowsTask can repair registration without starting a duplicate runner', async () => {
+  const commands: string[] = [];
+
+  await registerWindowsTask(
+    { token: 'token', apiUrl: 'https://api.example' },
+    {
+      userId: 'DOMAIN\\runner',
+      daemonPath: 'C:\\Tools\\agentrunner.cmd',
+      startImmediately: false,
+      mkdir: async () => undefined,
+      writeFile: async () => undefined,
+      unlink: async () => undefined,
+      chmodSync: () => undefined,
+      execSync: (command) => {
+        commands.push(command);
+        return Buffer.from('');
+      },
+    },
+  );
+
+  assert.ok(commands.some((command) => command.startsWith('schtasks /Create')));
+  assert.ok(!commands.some((command) => command.startsWith('schtasks /Run')));
 });
 
 test('unregisterWindowsTask deletes the task and all generated or legacy artifacts idempotently', async () => {
@@ -223,17 +252,25 @@ test('restartWindowsTask aborts /Run (throws) when the task state cannot be dete
   assert.ok(!commands.some((command) => command.startsWith('schtasks /Run')));
 });
 
-test('scheduleWindowsTaskRestart creates the out-of-job restart helper synchronously', () => {
+test('scheduleWindowsTaskRestart creates the out-of-job restart helper and verifies its correlated ready marker', async () => {
   const calls: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
 
-  const scheduled = scheduleWindowsTaskRestart({
+  const scheduled = await scheduleWindowsTaskRestart({
+    handoffId: 'active-handoff',
+    parentPid: 4321,
+    daemonPath: 'C:\\Tools\\agentrunner.cmd',
     execFileSync: ((command: string, args: readonly string[], options: Record<string, unknown>) => {
       calls.push({ command, args, options });
       return Buffer.from('');
     }) as unknown as typeof import('node:child_process').execFileSync,
+    readFile: async () =>
+      `\uFEFF${JSON.stringify({ handoffId: 'active-handoff', replacementPid: 9876, state: 'prepared' })}`,
+    unlink: async () => undefined,
+    isProcessRunning: (pid) => pid === 9876,
   });
 
-  assert.equal(scheduled, true);
+  assert.equal(scheduled.status, 'prepared');
+  assert.equal(scheduled.handoffId, 'active-handoff');
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.command, 'powershell.exe');
   const command = calls[0]!.args.at(-1) ?? '';
@@ -243,23 +280,26 @@ test('scheduleWindowsTaskRestart creates the out-of-job restart helper synchrono
   const encodedCommand = command.match(/-EncodedCommand ([A-Za-z0-9+/=]+)/u)?.[1];
   assert.ok(encodedCommand);
   const restartScript = Buffer.from(encodedCommand, 'base64').toString('utf16le');
+  assert.match(restartScript, /Set-Content -LiteralPath \$handoffPath/u);
+  assert.match(restartScript, /handoffId = \$handoffId; replacementPid = \$PID; state = 'prepared'/u);
+  assert.match(restartScript, /state -eq 'acknowledged'/u);
+  assert.match(restartScript, /AddSeconds\(180\)/u);
+  assert.match(restartScript, /Test-HandoffAcknowledged/u);
   assert.match(restartScript, /schtasks \/Query \/TN \$taskName/u);
-  assert.match(restartScript, /do\s*\{/u);
-  assert.match(restartScript, /\$task\.State -ne 4/u);
-  assert.match(restartScript, /schtasks \/End \/TN \$taskName/u);
+  assert.match(restartScript, /for \(\$attempt = 1; \$attempt -le 20; \$attempt\+\+\)/u);
+  assert.match(restartScript, /\$task\.State -eq 4/u);
   assert.match(restartScript, /schtasks \/Run \/TN \$taskName/u);
-  assert.ok(restartScript.indexOf('schtasks /End') < restartScript.indexOf('schtasks /Run'));
-  assert.doesNotMatch(restartScript, /Start-Sleep -Milliseconds 500/u);
+  assert.match(restartScript, /Start-DirectFallback/u);
+  assert.match(restartScript, /& \$daemonPath start/u);
   // Every abort/failure path must leave a diagnostic trace in the daemon log so a
   // silent non-recovery is diagnosable (code review P2/P3).
   assert.match(restartScript, /function Write-RestartLog/u);
   assert.match(restartScript, /\*>> \$logPath/u);
   assert.match(restartScript, /trap \{/u);
-  // GetTask is wrapped so a TOCTOU deletion is logged instead of crashing silently.
+  // GetTask is wrapped so a TOCTOU deletion is retried instead of crashing silently.
   assert.match(restartScript, /try \{\s*\$task = \$folder\.GetTask\(\$taskName\)\s*\}\s*catch \{/u);
-  // The 30s deadline and Query-failure branches log before exiting.
-  assert.match(restartScript, /after 30s deadline; aborting restart"; exit 1/u);
-  assert.match(restartScript, /schtasks \/Query failed .*; aborting restart"; exit 1/u);
+  assert.match(restartScript, /schtasks \/Query failed with exit \$LASTEXITCODE on attempt \$attempt/u);
+  assert.match(restartScript, /schtasks \/Run failed with exit \$LASTEXITCODE on attempt \$attempt/u);
   // The outer WMI create logs its ReturnValue on failure.
   assert.match(command, /Win32_Process\.Create failed with ReturnValue/u);
   assert.equal(calls[0]!.options.windowsHide, true);
@@ -268,15 +308,39 @@ test('scheduleWindowsTaskRestart creates the out-of-job restart helper synchrono
   assert.notEqual(calls[0]!.options.detached, true);
 });
 
-test('scheduleWindowsTaskRestart returns false when the helper cannot be created', () => {
-  const scheduled = scheduleWindowsTaskRestart({
+test('scheduleWindowsTaskRestart returns a retryable failure when the helper cannot be created', async () => {
+  const scheduled = await scheduleWindowsTaskRestart({
+    handoffId: 'create-failure',
     execFileSync: (() => {
       throw new Error('Win32_Process.Create failed');
     }) as unknown as typeof import('node:child_process').execFileSync,
+    unlink: async () => undefined,
   });
 
-  // Callers rely on false to keep the daemon alive instead of exiting with no replacement.
-  assert.equal(scheduled, false);
+  assert.equal(scheduled.status, 'retryable-failure');
+  assert.equal(scheduled.handoffId, 'create-failure');
+  assert.equal(scheduled.reason, 'helper-preparation-failed');
+});
+
+test('scheduleWindowsTaskRestart rejects a stale ready marker and times out safely', async () => {
+  let clock = 0;
+  const scheduled = await scheduleWindowsTaskRestart({
+    handoffId: 'current-handoff',
+    execFileSync: (() => Buffer.from('')) as unknown as typeof import('node:child_process').execFileSync,
+    readFile: async () => JSON.stringify({ handoffId: 'stale-handoff', replacementPid: 9876, state: 'prepared' }),
+    unlink: async () => undefined,
+    isProcessRunning: () => true,
+    sleep: async () => undefined,
+    now: () => {
+      const value = clock;
+      clock += 3_000;
+      return value;
+    },
+  });
+
+  assert.equal(scheduled.status, 'retryable-failure');
+  assert.equal(scheduled.handoffId, 'current-handoff');
+  assert.ok(clock >= 20_000, 'Windows helper preparation should allow at least 20 seconds');
 });
 
 test('buildPlistContent injects CODEX_SANDBOX_LEVEL=off', () => {

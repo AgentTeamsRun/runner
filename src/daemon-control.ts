@@ -1,14 +1,26 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
 import { platform as getPlatform } from 'node:os';
 import {
   getAutostartStatus,
   launchWindowsHiddenDaemon,
+  registerWindowsTask,
   restartAutostartService,
   scheduleWindowsTaskRestart,
 } from './autostart.js';
 import { logger } from './logger.js';
 import { getDaemonStatus } from './pid.js';
 import { spawnExecutable } from './executable.js';
+import {
+  acknowledgePreparedRestartHandoff,
+  buildRestartHandoffEnv,
+  getRestartHandoffPath,
+  waitForPreparedRestartHandoff,
+  type RestartExecutionResult,
+  type RestartHandoffLaunch,
+  type RestartHandoffPreparation,
+} from './restart-handoff.js';
+import { promises as fs } from 'node:fs';
 
 type RunningDaemonStatus = {
   running: boolean;
@@ -16,6 +28,7 @@ type RunningDaemonStatus = {
 };
 
 type DetachedChildProcess = {
+  pid?: number;
   unref: () => void;
 };
 
@@ -23,7 +36,7 @@ type RestartDeps = {
   getDaemonStatus?: () => Promise<RunningDaemonStatus>;
   getAutostartStatus?: typeof getAutostartStatus;
   restartAutostartService?: typeof restartAutostartService;
-  spawnDetachedDaemon?: () => DetachedChildProcess | void;
+  spawnDetachedDaemon?: (launch?: RestartHandoffLaunch) => DetachedChildProcess | void;
   kill?: typeof process.kill;
   sleep?: (milliseconds: number) => Promise<void>;
   logger?: Pick<typeof logger, 'info'>;
@@ -32,9 +45,14 @@ type RestartDeps = {
 type ExecuteRestartDeps = {
   getAutostartStatus?: typeof getAutostartStatus;
   scheduleWindowsTaskRestart?: typeof scheduleWindowsTaskRestart;
-  spawnDetachedDaemon?: () => DetachedChildProcess | void;
+  registerWindowsTask?: typeof registerWindowsTask;
+  prepareDetachedDaemon?: () => Promise<RestartHandoffPreparation>;
+  spawnDetachedDaemon?: (launch?: RestartHandoffLaunch) => DetachedChildProcess | void;
+  acknowledgeRestart?: () => Promise<void>;
+  acknowledgePreparedHandoff?: typeof acknowledgePreparedRestartHandoff;
+  config?: { daemonToken: string; apiUrl: string };
   platform?: typeof getPlatform;
-  processExit?: (code: number) => never;
+  processExit?: (code: number) => void;
   logger?: Pick<typeof logger, 'info'>;
 };
 
@@ -86,68 +104,246 @@ const waitForDaemonToStop = async (
   throw new Error(`Timed out waiting for AgentRunner process ${pid} to stop.`);
 };
 
-export const spawnDetachedDaemon = (): DetachedChildProcess | void => {
+export const spawnDetachedDaemon = (launch?: RestartHandoffLaunch): DetachedChildProcess | void => {
+  const env = launch ? buildRestartHandoffEnv(launch) : process.env;
   // On Windows, use the dedicated hidden PowerShell launcher so the `.cmd`
   // shim never creates a visible console host.
   if (getPlatform() === 'win32') {
-    launchWindowsHiddenDaemon();
+    launchWindowsHiddenDaemon({ env });
     return;
   }
 
   const child = spawnExecutable('agentrunner', ['start'], {
     detached: true,
     stdio: 'ignore',
-    env: process.env,
+    env,
     cwd: process.cwd(),
   });
   child.unref();
   return child;
 };
 
+type PrepareDetachedRestartDeps = {
+  spawnDetachedDaemon?: (launch: RestartHandoffLaunch) => DetachedChildProcess | void;
+  waitForPreparedRestartHandoff?: typeof waitForPreparedRestartHandoff;
+  unlink?: (path: string) => Promise<void>;
+  handoffId?: string;
+  parentPid?: number;
+  markerPath?: string;
+};
+
+export const prepareDetachedRestartHandoff = async (
+  deps: PrepareDetachedRestartDeps = {},
+): Promise<RestartHandoffPreparation> => {
+  const handoffId = deps.handoffId ?? randomUUID();
+  const parentPid = deps.parentPid ?? process.pid;
+  const markerPath = deps.markerPath ?? getRestartHandoffPath(handoffId);
+  const launch = { handoffId, parentPid, markerPath };
+
+  try {
+    await (deps.unlink ?? fs.unlink)(markerPath);
+  } catch {
+    // Missing or stale marker is fine.
+  }
+
+  let child: DetachedChildProcess | void;
+  try {
+    child = (deps.spawnDetachedDaemon ?? spawnDetachedDaemon)(launch);
+  } catch (error) {
+    return {
+      status: 'retryable-failure',
+      handoffId,
+      replacementReady: false,
+      acknowledged: false,
+      retryableFailure: true,
+      reason: 'replacement-preparation-failed',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  if (!child?.pid) {
+    return {
+      status: 'retryable-failure',
+      handoffId,
+      replacementReady: false,
+      acknowledged: false,
+      retryableFailure: true,
+      reason: 'replacement-preparation-failed',
+      error: 'Replacement runner process did not expose a PID.',
+    };
+  }
+
+  return (deps.waitForPreparedRestartHandoff ?? waitForPreparedRestartHandoff)(launch);
+};
+
 // Run from within the daemon itself when a web restart request is received.
 // We can't call restartDaemon() here because that would SIGTERM our own PID
 // before we get a chance to spawn the replacement; instead we either exit and
 // let the OS supervisor restart us, or spawn a replacement and exit cleanly.
-export const executeRestartRequest = (deps: ExecuteRestartDeps = {}): void => {
+export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Promise<RestartExecutionResult> => {
   const resolvedGetAutostartStatus = deps.getAutostartStatus ?? getAutostartStatus;
   const resolvedScheduleWindowsTaskRestart = deps.scheduleWindowsTaskRestart ?? scheduleWindowsTaskRestart;
+  const resolvedRegisterWindowsTask = deps.registerWindowsTask ?? registerWindowsTask;
   const resolvedSpawnDetachedDaemon = deps.spawnDetachedDaemon ?? spawnDetachedDaemon;
+  const acknowledgeRestart = deps.acknowledgeRestart ?? (async () => undefined);
+  const acknowledgePreparedHandoff = deps.acknowledgePreparedHandoff ?? acknowledgePreparedRestartHandoff;
   const resolvedPlatform = (deps.platform ?? getPlatform)();
   const exitProcess = deps.processExit ?? ((code: number) => process.exit(code));
   const resolvedLogger = deps.logger ?? logger;
 
-  const autostartStatus = resolvedGetAutostartStatus();
-  if (autostartStatus.registered && autostartStatus.platform === 'task-scheduler') {
-    resolvedLogger.info('Restart requested — scheduling explicit Task Scheduler restart');
-    const scheduled = resolvedScheduleWindowsTaskRestart();
-    if (!scheduled) {
-      // The restart helper was not created. Exiting now would kill this runner
-      // with nothing to bring it back up, so keep the daemon alive instead — the
-      // failure is already logged by scheduleWindowsTaskRestart.
-      resolvedLogger.info('Restart helper creation failed — keeping the current runner alive instead of exiting');
-      return;
+  let autostartStatus = resolvedGetAutostartStatus();
+  if (resolvedPlatform === 'win32' || autostartStatus.platform === 'task-scheduler') {
+    if (!autostartStatus.registered) {
+      if (!deps.config) {
+        return {
+          status: 'retryable-failure',
+          handoffId: randomUUID(),
+          replacementReady: false,
+          acknowledged: false,
+          retryableFailure: true,
+          reason: 'autostart-repair-failed',
+          error: 'Windows Task Scheduler autostart is missing and runtime configuration is unavailable.',
+        };
+      }
+
+      try {
+        resolvedLogger.info('Windows Task Scheduler autostart is missing — repairing it before restart');
+        await resolvedRegisterWindowsTask(
+          { token: deps.config.daemonToken, apiUrl: deps.config.apiUrl },
+          { startImmediately: false },
+        );
+        autostartStatus = { registered: true, platform: 'task-scheduler' };
+      } catch (error) {
+        return {
+          status: 'retryable-failure',
+          handoffId: randomUUID(),
+          replacementReady: false,
+          acknowledged: false,
+          retryableFailure: true,
+          reason: 'autostart-repair-failed',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
     }
+
+    resolvedLogger.info('Restart requested — preparing an out-of-job Task Scheduler handoff');
+    const preparation = await resolvedScheduleWindowsTaskRestart();
+    if (preparation.status === 'retryable-failure') {
+      resolvedLogger.info('Restart handoff preparation failed — keeping the current runner alive for retry');
+      return preparation;
+    }
+
+    try {
+      await acknowledgeRestart();
+    } catch (error) {
+      return {
+        status: 'retryable-failure',
+        handoffId: preparation.handoffId,
+        replacementReady: false,
+        acknowledged: false,
+        retryableFailure: true,
+        reason: 'acknowledgement-failed',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    if (!(await acknowledgePreparedHandoff(preparation))) {
+      return {
+        status: 'retryable-failure',
+        handoffId: preparation.handoffId,
+        replacementReady: false,
+        acknowledged: false,
+        retryableFailure: true,
+        reason: 'replacement-confirmation-failed',
+        error: 'The prepared Windows restart helper was no longer available after acknowledgement.',
+      };
+    }
+
     exitProcess(0);
-    return;
+    return {
+      status: 'acknowledged',
+      handoffId: preparation.handoffId,
+      replacementReady: true,
+      acknowledged: true,
+      retryableFailure: false,
+    };
   }
   const supervisedRespawn =
     autostartStatus.registered && (autostartStatus.platform === 'launchd' || autostartStatus.platform === 'systemd');
 
   if (supervisedRespawn) {
+    const handoffId = randomUUID();
+    try {
+      await acknowledgeRestart();
+    } catch (error) {
+      return {
+        status: 'retryable-failure',
+        handoffId,
+        replacementReady: false,
+        acknowledged: false,
+        retryableFailure: true,
+        reason: 'acknowledgement-failed',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
     resolvedLogger.info('Restart requested — exiting non-zero so the OS supervisor restarts the daemon', {
       platform: autostartStatus.platform,
     });
     exitProcess(1);
-    return;
+    return {
+      status: 'acknowledged',
+      handoffId,
+      replacementReady: true,
+      acknowledged: true,
+      retryableFailure: false,
+    };
   }
 
-  resolvedLogger.info('Restart requested — spawning new daemon and exiting', {
+  resolvedLogger.info('Restart requested — preparing a detached replacement runner', {
     platform: autostartStatus.platform,
     registered: autostartStatus.registered,
     osPlatform: resolvedPlatform,
   });
-  resolvedSpawnDetachedDaemon();
+  const preparation = await (
+    deps.prepareDetachedDaemon ??
+    (() => prepareDetachedRestartHandoff({ spawnDetachedDaemon: resolvedSpawnDetachedDaemon }))
+  )();
+  if (preparation.status === 'retryable-failure') {
+    return preparation;
+  }
+
+  try {
+    await acknowledgeRestart();
+  } catch (error) {
+    return {
+      status: 'retryable-failure',
+      handoffId: preparation.handoffId,
+      replacementReady: false,
+      acknowledged: false,
+      retryableFailure: true,
+      reason: 'acknowledgement-failed',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (!(await acknowledgePreparedHandoff(preparation))) {
+    return {
+      status: 'retryable-failure',
+      handoffId: preparation.handoffId,
+      replacementReady: false,
+      acknowledged: false,
+      retryableFailure: true,
+      reason: 'replacement-confirmation-failed',
+      error: 'The prepared replacement runner was no longer available after acknowledgement.',
+    };
+  }
   exitProcess(0);
+  return {
+    status: 'acknowledged',
+    handoffId: preparation.handoffId,
+    replacementReady: true,
+    acknowledged: true,
+    retryableFailure: false,
+  };
 };
 
 export const restartDaemon = async (deps: RestartDeps = {}): Promise<void> => {
