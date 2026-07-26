@@ -5,6 +5,7 @@ import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference } from '../executable.js';
 import { logger } from '../logger.js';
+import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 
@@ -182,6 +183,7 @@ export class KimiCliRunner implements Runner {
     child.stderr?.pipe(logStream);
 
     let lastOutput = '';
+    let lastErrorOutput = '';
     let outputText = '';
     const appendOutputText = (chunk: string): void => {
       if (outputText.length < OUTPUT_CAPTURE_MAX) {
@@ -205,6 +207,7 @@ export class KimiCliRunner implements Runner {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
       const output = toOutputPreview(rawOutput);
       if (output.length > 0) {
+        lastErrorOutput = output;
         idleTimer.reset();
         // Kimi sends thinking/tool progress to stderr during successful print-mode runs.
         // Keep the raw stream in the runner log, but do not expose it as an error or result.
@@ -298,7 +301,7 @@ export class KimiCliRunner implements Runner {
           exitCode: code ?? 1,
           lastOutput,
           outputText: finalizedOutputText,
-          errorMessage: code === 0 ? undefined : `Runner exited with code ${code ?? 1}`,
+          errorMessage: selectRunnerFailureMessage({ exitCode: code, lastErrorOutput, lastOutput }),
         });
       });
     });

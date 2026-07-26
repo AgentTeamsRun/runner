@@ -5,6 +5,7 @@ import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
+import { selectRunnerFailureMessage } from './failure-message.js';
 import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
@@ -405,8 +406,7 @@ export class ClaudeCodeRunner implements Runner {
           exitCode: code ?? 1,
           lastOutput,
           outputText: finalizeOutputText(),
-          errorMessage:
-            code === 0 ? undefined : lastErrorOutput || lastOutput || `Runner exited with code ${code ?? 1}`,
+          errorMessage: selectRunnerFailureMessage({ exitCode: code, lastErrorOutput, lastOutput }),
         });
       });
     });

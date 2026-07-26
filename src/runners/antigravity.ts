@@ -5,6 +5,7 @@ import { platform } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
+import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 
@@ -617,8 +618,7 @@ export class AntigravityRunner implements Runner {
             exitCode: code ?? 1,
             lastOutput,
             outputText: outputText.trim() || undefined,
-            errorMessage:
-              code === 0 ? undefined : lastErrorOutput || lastOutput || `Runner exited with code ${code ?? 1}`,
+            errorMessage: selectRunnerFailureMessage({ exitCode: code, lastErrorOutput, lastOutput }),
           });
         });
       });

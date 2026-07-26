@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePath } from '../executable.js';
 import { logger } from '../logger.js';
 import { extractResultTextFromStreamJson } from './claude-code.js';
+import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import { createCursorStreamJsonLineParser, createResultLineCapturer } from './stream-json-parser.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
@@ -315,8 +316,7 @@ export class CursorCliRunner implements Runner {
           exitCode: code ?? 1,
           lastOutput,
           outputText: finalizedOutputText,
-          errorMessage:
-            code === 0 ? undefined : lastErrorOutput || lastOutput || `Runner exited with code ${code ?? 1}`,
+          errorMessage: selectRunnerFailureMessage({ exitCode: code, lastErrorOutput, lastOutput }),
         });
       });
     });
