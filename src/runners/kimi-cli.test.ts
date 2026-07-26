@@ -96,12 +96,14 @@ test('KimiCliRunner launches print mode and captures text output', async () => {
 
   assert.equal(result.exitCode, 0);
   assert.equal(result.outputText, 'Kimi result');
+  assert.equal(result.lastOutput, 'Kimi result');
+  assert.equal(result.errorMessage, undefined);
   assert.equal(spawned[0]?.command, '/usr/local/bin/kimi');
   assert.deepEqual(spawned[0]?.args, ['-p', 'hello', '-m', 'k3']);
   assert.equal(spawned[0]?.options.windowsHide, true);
 });
 
-test('does not use Kimi stderr progress as fallback output or error', async () => {
+test('uses Kimi stderr only as the failure message when the process exits unsuccessfully', async () => {
   const child = createFakeChild();
   const runner = new KimiCliRunner({
     platform: () => 'linux',
@@ -139,5 +141,44 @@ test('does not use Kimi stderr progress as fallback output or error', async () =
 
   assert.equal(result.outputText, undefined);
   assert.equal(result.lastOutput, '');
-  assert.equal(result.errorMessage, 'Runner exited with code 17');
+  assert.equal(result.errorMessage, 'resuming session');
+});
+
+test('returns the last Kimi stderr preview when the process exits unsuccessfully', async () => {
+  const child = createFakeChild();
+  const runner = new KimiCliRunner({
+    platform: () => 'linux',
+    resolveExecutablePathWithPreference: (() => '/usr/local/bin/kimi') as never,
+    describeExecutableResolution: (() => ({
+      requestedCommand: 'kimi',
+      resolvedExecutablePath: '/usr/local/bin/kimi',
+      platform: 'linux',
+      shell: false,
+    })) as never,
+    mkdir: (async () => undefined) as never,
+    createWriteStream: (() => new PassThrough()) as never,
+    setupCloseWatchdog: (() => ({ cancel: () => {} })) as never,
+    spawn: (() => {
+      queueMicrotask(() => {
+        child.stderr.emit('data', Buffer.from('No model configured'));
+        child.emit('close', 1);
+      });
+      return child;
+    }) as never,
+  });
+
+  const result = await runner.run({
+    triggerId: 'trigger-kimi-stderr-error',
+    prompt: 'hello',
+    authPath: '/repo',
+    apiKey: 'key',
+    apiUrl: 'https://api.example.com',
+    teamId: 'team',
+    projectId: 'project',
+    timeoutMs: 1_000,
+    idleTimeoutMs: 1_000,
+    agentConfigId: 'agent',
+  });
+
+  assert.equal(result.errorMessage, 'No model configured');
 });
