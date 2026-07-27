@@ -11,6 +11,7 @@ import {
   restartWindowsTask,
   scheduleWindowsTaskRestart,
   unregisterWindowsTask,
+  windowsTaskNeedsNativeLauncherMigration,
 } from './autostart.js';
 
 const originalPath = process.env.PATH;
@@ -21,14 +22,27 @@ test.afterEach(() => {
 });
 
 test('buildWindowsTaskXmlContent configures supervised hidden logon startup', () => {
-  const content = buildWindowsTaskXmlContent('DOMAIN\\runner', 'C:\\Users\\runner\\.agentteams\\agentrunner-start.ps1');
+  const content = buildWindowsTaskXmlContent(
+    'DOMAIN\\runner',
+    'C:\\Users\\runner\\.agentteams\\bin\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe',
+    'C:\\Users\\runner\\.agentteams\\agentrunner-start.ps1',
+    'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+  );
 
   assert.match(content, /<LogonTrigger>/u);
   assert.match(content, /<UserId>DOMAIN\\runner<\/UserId>/u);
   assert.match(content, /<Hidden>true<\/Hidden>/u);
   assert.match(content, /<MultipleInstancesPolicy>IgnoreNew<\/MultipleInstancesPolicy>/u);
   assert.match(content, /<RestartOnFailure>\s*<Interval>PT1M<\/Interval>\s*<Count>3<\/Count>/u);
-  assert.match(content, /<Command>powershell\.exe<\/Command>/u);
+  assert.match(content, /<Command>.*agentrunner-launcher-0\.0\.107-a1b2c3d4e5f6\.exe<\/Command>/u);
+  assert.doesNotMatch(content, /<Command>powershell\.exe<\/Command>/u);
+  // The launcher's own argv[0] is separated with an explicit delimiter so a
+  // profile path containing a space cannot truncate the child command line.
+  assert.match(content, /<Arguments>--exec /u);
+  // The first child of the integrity-verified launcher must be an absolute path,
+  // not a name resolved through the executable search order.
+  assert.match(content, /--exec &quot;C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe&quot; /u);
+  assert.match(content, /<WorkingDirectory>C:\\Windows\\System32\\WindowsPowerShell\\v1\.0<\/WorkingDirectory>/u);
   assert.match(content, /-WindowStyle Hidden/u);
 });
 
@@ -76,6 +90,7 @@ test('registerWindowsTask writes scheduler assets, removes legacy files, and cre
     {
       userId: 'DOMAIN\\runner',
       daemonPath: 'C:\\Tools\\agentrunner.cmd',
+      launcherPath: 'C:\\Users\\runner\\.agentteams\\bin\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe',
       mkdir: async () => undefined,
       writeFile: async (path, data, encoding) => {
         writes.push({ path, data, encoding });
@@ -103,9 +118,48 @@ test('registerWindowsTask writes scheduler assets, removes legacy files, and cre
   );
   assert.ok(removed.some((path) => path.endsWith('agentrunner-start.vbs')));
   assert.ok(removed.some((path) => path.endsWith('agentrunner-restart.vbs')));
-  assert.match(commands[0]!, /schtasks \/Delete/u);
-  assert.match(commands[1]!, /schtasks \/Create .* \/XML .* \/F/u);
-  assert.match(commands[2]!, /schtasks \/Run/u);
+  assert.ok(!commands.some((command) => command.startsWith('schtasks /Delete')));
+  assert.ok(commands.some((command) => /schtasks \/Create .* \/XML .* \/F/u.test(command)));
+  assert.ok(commands.some((command) => /schtasks \/Run/u.test(command)));
+  // chmod cannot restrict a Windows ACL, so the plaintext-token wrapper is locked
+  // down with icacls instead.
+  assert.ok(
+    commands.some(
+      (command) =>
+        /^icacls ".*agentrunner-start\.ps1" \/inheritance:r/u.test(command) &&
+        command.includes('/grant:r "DOMAIN\\runner:(F)"'),
+    ),
+  );
+  // The successful path leaves no rollback backup behind.
+  assert.ok(removed.some((path) => path.endsWith('agentrunner-task-backup.xml')));
+});
+
+test('registerWindowsTask verifies the live task by ASCII file name so non-ASCII profiles still register', async () => {
+  // `schtasks /Query /XML` emits console-code-page bytes. Simulate a CP949 host
+  // whose profile directory is `C:\Users\홍길동`: String(Buffer) mangles the path
+  // into U+FFFD, but the ASCII launcher file name survives.
+  const launcherPath = 'C:\\Users\\홍길동\\.agentteams\\bin\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe';
+  const liveXml = Buffer.from(
+    `<?xml version="1.0" encoding="UTF-16"?><Task><Actions><Exec><Command>C:\\Users\\\xC8\xAB\xB1\xE6\xB5\xBF\\.agentteams\\bin\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe</Command></Exec></Actions></Task>`,
+    'binary',
+  );
+
+  const result = await registerWindowsTask(
+    { token: 'token', apiUrl: 'https://api.example' },
+    {
+      userId: 'DOMAIN\\홍길동',
+      daemonPath: 'C:\\Tools\\agentrunner.cmd',
+      launcherPath,
+      startImmediately: false,
+      mkdir: async () => undefined,
+      writeFile: async () => undefined,
+      unlink: async () => undefined,
+      chmodSync: () => undefined,
+      execSync: (command) => (command.includes('/Query') && command.includes('/XML') ? liveXml : Buffer.from('')),
+    },
+  );
+
+  assert.equal(result.registered, true);
 });
 
 test('registerWindowsTask can repair registration without starting a duplicate runner', async () => {
@@ -116,6 +170,7 @@ test('registerWindowsTask can repair registration without starting a duplicate r
     {
       userId: 'DOMAIN\\runner',
       daemonPath: 'C:\\Tools\\agentrunner.cmd',
+      launcherPath: 'C:\\Users\\runner\\.agentteams\\bin\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe',
       startImmediately: false,
       mkdir: async () => undefined,
       writeFile: async () => undefined,
@@ -132,10 +187,89 @@ test('registerWindowsTask can repair registration without starting a duplicate r
   assert.ok(!commands.some((command) => command.startsWith('schtasks /Run')));
 });
 
+test('registerWindowsTask restores the previous task from an unmangled backup file when creation fails', async () => {
+  const commands: string[] = [];
+  const createCommands: string[] = [];
+
+  await assert.rejects(
+    registerWindowsTask(
+      { token: 'token', apiUrl: 'https://api.example' },
+      {
+        userId: 'DOMAIN\\runner',
+        daemonPath: 'C:\\Tools\\agentrunner.cmd',
+        launcherPath: 'C:\\Users\\runner\\.agentteams\\bin\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe',
+        startImmediately: false,
+        mkdir: async () => undefined,
+        writeFile: async () => undefined,
+        unlink: async () => undefined,
+        chmodSync: () => undefined,
+        execSync: (command) => {
+          commands.push(command);
+          if (command.startsWith('schtasks /Create')) {
+            createCommands.push(command);
+            if (createCommands.length === 1) {
+              throw new Error('candidate create failed');
+            }
+          }
+          return Buffer.from('');
+        },
+      },
+    ),
+    /candidate create failed/u,
+  );
+
+  // The backup is exported by the ScheduledTasks module straight to a UTF-16LE
+  // file, so the rollback never round-trips XML through a JS string.
+  const backupCommand = commands.find((command) => command.includes('-EncodedCommand'));
+  assert.ok(backupCommand, 'the previous task is exported before the candidate /Create');
+  const backupScript = Buffer.from(
+    backupCommand.match(/-EncodedCommand ([A-Za-z0-9+/=]+)/u)?.[1] ?? '',
+    'base64',
+  ).toString('utf16le');
+  assert.match(backupScript, /try \{ \$xml = Export-ScheduledTask -TaskName 'AgentRunner' \} catch \{ exit 1 \}/u);
+  assert.match(backupScript, /\[Text\.UnicodeEncoding\]::new\(\$false, \$true\)/u);
+  assert.match(backupScript, /agentrunner-task-backup\.xml/u);
+  // A fresh install has no prior task; its expected failure must not print a
+  // CLIXML error blob into the console.
+  assert.match(backupScript, /\$ProgressPreference = 'SilentlyContinue'/u);
+  assert.match(backupCommand, /-EncodedCommand [A-Za-z0-9+/=]+ 2>nul$/u);
+
+  assert.equal(createCommands.length, 2, 'the second /Create restores the previous XML');
+  assert.match(createCommands[1]!, /schtasks \/Create \/TN "AgentRunner" \/XML ".*agentrunner-task-backup\.xml" \/F/u);
+  assert.ok(!commands.some((command) => command.startsWith('schtasks /Delete')));
+});
+
+test('windowsTaskNeedsNativeLauncherMigration detects a legacy action and stays quiet when unreadable', () => {
+  assert.equal(
+    windowsTaskNeedsNativeLauncherMigration({
+      execSync: () => Buffer.from('<Task><Actions><Exec><Command>powershell.exe</Command></Exec></Actions></Task>'),
+    }),
+    true,
+  );
+  assert.equal(
+    windowsTaskNeedsNativeLauncherMigration({
+      execSync: () =>
+        Buffer.from(
+          '<Task><Actions><Exec><Command>C:\\x\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe</Command></Exec></Actions></Task>',
+        ),
+    }),
+    false,
+  );
+  assert.equal(
+    windowsTaskNeedsNativeLauncherMigration({
+      execSync: () => {
+        throw new Error('task not found');
+      },
+    }),
+    false,
+  );
+});
+
 test('unregisterWindowsTask deletes the task and all generated or legacy artifacts idempotently', async () => {
   const commands: string[] = [];
   const removed: string[] = [];
   await unregisterWindowsTask({
+    cleanupLaunchers: async () => undefined,
     execSync: (command, options) => {
       commands.push(command);
       assert.equal(options.windowsHide, true);
@@ -259,6 +393,7 @@ test('scheduleWindowsTaskRestart creates the out-of-job restart helper and verif
     handoffId: 'active-handoff',
     parentPid: 4321,
     daemonPath: 'C:\\Tools\\agentrunner.cmd',
+    launcherPath: 'C:\\Users\\runner\\.agentteams\\bin\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe',
     execFileSync: ((command: string, args: readonly string[], options: Record<string, unknown>) => {
       calls.push({ command, args, options });
       return Buffer.from('');
@@ -277,6 +412,11 @@ test('scheduleWindowsTaskRestart creates the out-of-job restart helper and verif
   assert.match(command, /Invoke-CimMethod/u);
   assert.match(command, /Win32_Process/u);
   assert.match(command, /MethodName Create/u);
+  assert.match(command, /agentrunner-launcher-/u);
+  // Same launcher contract as the scheduled task: explicit `--exec` delimiter and
+  // an absolute powershell.exe so the verified chain does not depend on PATH.
+  assert.match(command, /agentrunner-launcher-[^ ]+\.exe" --exec "[A-Za-z]:\\/u);
+  assert.match(command, /WindowsPowerShell\\v1\.0\\powershell\.exe" -NoProfile/u);
   const encodedCommand = command.match(/-EncodedCommand ([A-Za-z0-9+/=]+)/u)?.[1];
   assert.ok(encodedCommand);
   const restartScript = Buffer.from(encodedCommand, 'base64').toString('utf16le');
@@ -311,6 +451,7 @@ test('scheduleWindowsTaskRestart creates the out-of-job restart helper and verif
 test('scheduleWindowsTaskRestart returns a retryable failure when the helper cannot be created', async () => {
   const scheduled = await scheduleWindowsTaskRestart({
     handoffId: 'create-failure',
+    launcherPath: 'C:\\Users\\runner\\.agentteams\\bin\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe',
     execFileSync: (() => {
       throw new Error('Win32_Process.Create failed');
     }) as unknown as typeof import('node:child_process').execFileSync,
@@ -322,10 +463,33 @@ test('scheduleWindowsTaskRestart returns a retryable failure when the helper can
   assert.equal(scheduled.reason, 'helper-preparation-failed');
 });
 
+test('scheduleWindowsTaskRestart returns a retryable failure when the launcher cannot be installed', async () => {
+  let created = false;
+
+  const scheduled = await scheduleWindowsTaskRestart({
+    handoffId: 'launcher-failure',
+    installLauncher: async () => {
+      throw new Error('The packaged Windows launcher failed SHA-256 verification.');
+    },
+    execFileSync: (() => {
+      created = true;
+      return Buffer.from('');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    unlink: async () => undefined,
+  });
+
+  assert.equal(scheduled.status, 'retryable-failure');
+  assert.equal(scheduled.handoffId, 'launcher-failure');
+  assert.equal(scheduled.reason, 'helper-preparation-failed');
+  assert.match(scheduled.error ?? '', /SHA-256/u);
+  assert.equal(created, false, 'no helper is created when the launcher itself is unusable');
+});
+
 test('scheduleWindowsTaskRestart rejects a stale ready marker and times out safely', async () => {
   let clock = 0;
   const scheduled = await scheduleWindowsTaskRestart({
     handoffId: 'current-handoff',
+    launcherPath: 'C:\\Users\\runner\\.agentteams\\bin\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe',
     execFileSync: (() => Buffer.from('')) as unknown as typeof import('node:child_process').execFileSync,
     readFile: async () => JSON.stringify({ handoffId: 'stale-handoff', replacementPid: 9876, state: 'prepared' }),
     unlink: async () => undefined,

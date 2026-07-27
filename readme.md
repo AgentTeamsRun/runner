@@ -176,6 +176,22 @@ If a process is already running for the same `agentConfigId`, new triggers are `
 
 ### Windows recovery checks
 
+Windows Task Scheduler uses a signed or explicitly unsigned native GUI launcher
+instead of starting `powershell.exe` directly. The launcher is integrity-checked
+and installed under
+`%USERPROFILE%\.agentteams\bin\agentrunner-launcher-<version>-<sha12>.exe`.
+Legacy tasks migrate during restart — both `agentrunner restart` and a restart
+requested from the web UI (the path `agentrunner update` takes) re-register the
+task whenever the live definition still points at a console-bound action. The
+migration never deletes the previous registration first; a failed migration
+restores the prior task XML from an exported backup.
+
+Windows x64 and Windows 11 ARM64 (through x64 emulation) are supported. Windows
+10 ARM64 is not supported and fails closed instead of falling back to a visible
+PowerShell process. Because the scheduled task points at the content-addressed
+user copy, a running Runner does not lock the executable inside the npm package
+during a global update.
+
 The `AgentRunner` scheduled task ignores duplicate starts and retries failed exits up to three times at one-minute intervals. Inspect it and follow the append-only daemon log with:
 
 ```powershell
@@ -185,7 +201,7 @@ Get-Content "$env:USERPROFILE\.agentteams\agentrunner.log" -Wait
 
 For a release smoke test on a disposable Windows test machine:
 
-1. Run `agentrunner restart` and verify the scheduled task gets a new runner PID without opening a console window.
+1. Run `agentrunner restart`, query `schtasks /Query /TN "AgentRunner" /XML`, and verify the action points at `agentrunner-launcher-*.exe`, the task gets one new runner PID, and no console window appears.
 2. End the runner process unexpectedly and verify Task Scheduler starts it again after the configured delay.
 3. Disconnect and reconnect the network, or suspend and resume Windows. API requests that remain stalled are aborted after 30 seconds and retried; verify a later poll attempt or successful poll appears in the log.
 4. Run `agentrunner status`, then `agentrunner stop`. Verify the current task instance stops and does not immediately respawn.
