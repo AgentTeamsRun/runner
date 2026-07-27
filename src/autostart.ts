@@ -2,11 +2,15 @@ import { execFileSync, execSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, promises as fs } from 'node:fs';
 import { homedir, platform } from 'node:os';
-import { dirname, join } from 'node:path';
+// Windows-shaped paths are parsed with the win32 helpers explicitly: these values
+// are Windows paths even when the unit tests run on Linux or macOS.
+import { dirname, join, win32 as winPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { resolveExecutablePath } from './executable.js';
+import { readDaemonConfigFile } from './config.js';
 import { logger } from './logger.js';
 import { isProcessRunning } from './pid.js';
+import { cleanupInstalledWindowsLaunchers, installWindowsLauncher } from './windows-launcher.js';
 import {
   getRestartHandoffPath,
   restartHandoffAcknowledgementTimeoutMs,
@@ -17,6 +21,11 @@ import {
 const SERVICE_LABEL = 'run.agentteams.runner';
 const TASK_NAME = 'AgentRunner';
 const WINDOWS_LOG_MAX_BYTES = 10 * 1024 * 1024;
+// Explicit separator between the launcher's own argv[0] and the child command
+// line. Task Scheduler does not quote `<Command>`, so a profile path containing
+// a space (C:\Users\John Doe\...) would otherwise make the launcher's own tail
+// parsing cut the child command in the middle of the path.
+const LAUNCHER_EXEC_DELIMITER = '--exec';
 
 // --- Path helpers ---
 
@@ -31,6 +40,15 @@ const getWindowsVbsPath = (): string => join(homedir(), '.agentteams', 'agentrun
 const getWindowsRestartVbsPath = (): string => join(homedir(), '.agentteams', 'agentrunner-restart.vbs');
 
 const getWindowsTaskXmlPath = (): string => join(homedir(), '.agentteams', 'agentrunner-task.xml');
+
+const getWindowsTaskBackupXmlPath = (): string => join(homedir(), '.agentteams', 'agentrunner-task-backup.xml');
+
+// Resolve powershell.exe absolutely. The launcher hands its command-line tail to
+// CreateProcessW with lpApplicationName=NULL, so an unqualified `powershell.exe`
+// would be resolved through the application/current directory search order —
+// that would break the SHA-256-verified launch chain right at its first child.
+const getWindowsPowerShellPath = (): string =>
+  winPath.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
 const getWindowsWrapperPath = (): string => join(homedir(), '.agentteams', 'agentrunner-start.ps1');
 
@@ -162,11 +180,23 @@ export const buildWindowsPowerShellWrapper = (
   ].join('\r\n');
 };
 
-export const buildWindowsTaskXmlContent = (userId: string, wrapperPath: string): string => {
+export const buildWindowsChildPowerShellCommand = (
+  trailingArguments: string,
+  powerShellPath: string = getWindowsPowerShellPath(),
+): string =>
+  `${LAUNCHER_EXEC_DELIMITER} "${powerShellPath}" -NoProfile -NonInteractive -WindowStyle Hidden ` +
+  `-ExecutionPolicy Bypass ${trailingArguments}`;
+
+export const buildWindowsTaskXmlContent = (
+  userId: string,
+  launcherPath: string,
+  wrapperPath: string,
+  powerShellPath: string = getWindowsPowerShellPath(),
+): string => {
   const escapedUserId = escapeForXml(userId);
-  const argumentsValue = escapeForXml(
-    `-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${wrapperPath}"`,
-  );
+  const escapedLauncherPath = escapeForXml(launcherPath);
+  const argumentsValue = escapeForXml(buildWindowsChildPowerShellCommand(`-File "${wrapperPath}"`, powerShellPath));
+  const workingDirectory = escapeForXml(winPath.dirname(powerShellPath));
 
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -198,8 +228,9 @@ export const buildWindowsTaskXmlContent = (userId: string, wrapperPath: string):
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>powershell.exe</Command>
+      <Command>${escapedLauncherPath}</Command>
       <Arguments>${argumentsValue}</Arguments>
+      <WorkingDirectory>${workingDirectory}</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>`;
@@ -269,7 +300,11 @@ export const unregisterAutostart = async (): Promise<void> => {
 
 export const restartAutostartService = async (): Promise<void> => {
   const os = platform();
-  const config = getAutostartConfigFromEnv();
+  let config = getAutostartConfigFromEnv();
+  if (!config) {
+    const fileConfig = await readDaemonConfigFile();
+    config = fileConfig ? { token: fileConfig.daemonToken, apiUrl: fileConfig.apiUrl } : null;
+  }
 
   if (os === 'darwin') {
     await restartLaunchd(config);
@@ -456,6 +491,63 @@ const restartSystemd = async (config: AutostartConfig | null): Promise<void> => 
 
 // --- Windows Task Scheduler ---
 
+// `schtasks /Query /XML` writes its XML through the console output code page, so
+// on a non-English Windows the bytes Node receives are CP949/CP932/... — not
+// UTF-8 and not UTF-16. Round-tripping that text through JS would mangle every
+// non-ASCII character (a `C:\Users\홍길동\...` launcher path becomes U+FFFD
+// noise), which used to break both the post-create verification and the rollback
+// XML. Export through the ScheduledTasks module instead and write UTF-16LE with
+// a BOM straight to disk, so the rollback never passes through a JS string.
+export const buildWindowsTaskBackupCommand = (backupPath: string): string => {
+  const script = [
+    // A fresh install has no prior task, so Export-ScheduledTask failing is the
+    // normal case. Swallow it (and the module-loading progress stream) instead of
+    // dumping a CLIXML error blob into the user's `agentrunner init` output.
+    "$ErrorActionPreference = 'Stop'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    `try { $xml = Export-ScheduledTask -TaskName '${escapeForPowerShellString(TASK_NAME)}' } catch { exit 1 }`,
+    'if (-not $xml) { exit 1 }',
+    `[IO.File]::WriteAllText('${escapeForPowerShellString(backupPath)}', $xml, [Text.UnicodeEncoding]::new($false, $true))`,
+  ].join('\n');
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return (
+    `powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass ` +
+    `-EncodedCommand ${encoded} 2>nul`
+  );
+};
+
+// `chmodSync` only toggles the read-only attribute on Windows — it does not
+// restrict the ACL, so the wrapper's plaintext daemon token stayed readable by
+// every other account on the machine. Break inheritance and grant only the
+// owning user (plus SYSTEM, by SID so it is locale-independent).
+export const buildWindowsWrapperAclCommand = (wrapperPath: string, userId: string): string =>
+  `icacls "${wrapperPath}" /inheritance:r /grant:r "${userId}:(F)" /grant:r "*S-1-5-18:(F)"`;
+
+// ASCII-only probe: the launcher file name is `agentrunner-launcher-<version>-<sha12>.exe`,
+// so it survives any console code page that `schtasks /Query /XML` may have used.
+const NATIVE_LAUNCHER_COMMAND_PATTERN = /<Command>[^<]*agentrunner-launcher-[^<]*\.exe<\/Command>/u;
+
+type WindowsTaskMigrationDeps = {
+  execSync?: (command: string, options: { windowsHide: boolean }) => unknown;
+};
+
+// True only when the live task definition is readable AND demonstrably still
+// points at a non-native action. An unreadable task returns false so a transient
+// query failure never triggers a needless re-registration.
+export const windowsTaskNeedsNativeLauncherMigration = (deps: WindowsTaskMigrationDeps = {}): boolean => {
+  const resolvedExecSync = deps.execSync ?? execSync;
+  let liveTaskXml: string;
+  try {
+    liveTaskXml = String(resolvedExecSync(`schtasks /Query /TN "${TASK_NAME}" /XML`, { windowsHide: true }));
+  } catch {
+    return false;
+  }
+  if (!liveTaskXml.includes('<Command>')) {
+    return false;
+  }
+  return !NATIVE_LAUNCHER_COMMAND_PATTERN.test(liveTaskXml);
+};
+
 type WindowsAutostartDeps = {
   execSync?: (command: string, options: { windowsHide: boolean }) => unknown;
   mkdir?: (path: string, options: { recursive: boolean }) => Promise<unknown>;
@@ -465,6 +557,8 @@ type WindowsAutostartDeps = {
   daemonPath?: string;
   userId?: string;
   startImmediately?: boolean;
+  launcherPath?: string;
+  cleanupLaunchers?: () => Promise<void>;
 };
 
 export const registerWindowsTask = async (
@@ -477,20 +571,15 @@ export const registerWindowsTask = async (
   const resolvedUnlink = deps.unlink ?? fs.unlink;
   const resolvedChmodSync = deps.chmodSync ?? chmodSync;
   const taskXmlPath = getWindowsTaskXmlPath();
+  const backupXmlPath = getWindowsTaskBackupXmlPath();
   const wrapperPath = getWindowsWrapperPath();
   const startupVbsPath = getWindowsStartupVbsPath();
   const legacyVbsPath = getWindowsVbsPath();
   const legacyBatPath = getWindowsBatPath();
   const restartVbsPath = getWindowsRestartVbsPath();
+  const launcherPath = deps.launcherPath ?? (await installWindowsLauncher());
 
   await resolvedMkdir(dirname(taskXmlPath), { recursive: true });
-
-  // Remove legacy Task Scheduler entry if any.
-  try {
-    resolvedExecSync(`schtasks /Delete /TN "${TASK_NAME}" /F 2>nul`, { windowsHide: true });
-  } catch {
-    // Not registered — that's fine.
-  }
 
   const userName = process.env.USERNAME ?? process.env.USER ?? '';
   const userId = deps.userId ?? (process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${userName}` : userName);
@@ -505,9 +594,23 @@ export const registerWindowsTask = async (
   );
   // schtasks requires a BOM to recognize the UTF-16LE XML encoding. Node's
   // writeFile('utf16le') does not add one automatically.
-  await resolvedWriteFile(taskXmlPath, `\uFEFF${buildWindowsTaskXmlContent(userId, wrapperPath)}`, 'utf16le');
+  await resolvedWriteFile(
+    taskXmlPath,
+    `\uFEFF${buildWindowsTaskXmlContent(userId, launcherPath, wrapperPath)}`,
+    'utf16le',
+  );
   resolvedChmodSync(wrapperPath, 0o600);
   resolvedChmodSync(taskXmlPath, 0o600);
+  try {
+    resolvedExecSync(buildWindowsWrapperAclCommand(wrapperPath, userId), { windowsHide: true });
+  } catch (error) {
+    // Registration must not fail because ACL hardening is unavailable, but the
+    // token file then stays broadly readable, so say so instead of failing silently.
+    logger.warn('Failed to restrict the AgentRunner wrapper ACL; the daemon token file stays broadly readable', {
+      wrapperPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   // Clean up legacy files.
   for (const legacyPath of [startupVbsPath, legacyVbsPath, legacyBatPath, restartVbsPath]) {
@@ -518,7 +621,40 @@ export const registerWindowsTask = async (
     }
   }
 
-  resolvedExecSync(`schtasks /Create /TN "${TASK_NAME}" /XML "${taskXmlPath}" /F`, { windowsHide: true });
+  let backedUp = false;
+  try {
+    resolvedExecSync(buildWindowsTaskBackupCommand(backupXmlPath), { windowsHide: true });
+    backedUp = true;
+  } catch {
+    // Fresh registration has no prior task to preserve.
+  }
+  try {
+    resolvedExecSync(`schtasks /Create /TN "${TASK_NAME}" /XML "${taskXmlPath}" /F`, { windowsHide: true });
+    const liveTaskXml = String(resolvedExecSync(`schtasks /Query /TN "${TASK_NAME}" /XML`, { windowsHide: true }));
+    // Compare the ASCII-only launcher file name, never the full path: the query
+    // output arrives in the console code page, so a non-ASCII profile directory
+    // would otherwise never match.
+    if (liveTaskXml && !liveTaskXml.includes(winPath.basename(launcherPath))) {
+      throw new Error('The live AgentRunner task does not reference the verified native launcher.');
+    }
+  } catch (primaryError) {
+    if (backedUp) {
+      try {
+        resolvedExecSync(`schtasks /Create /TN "${TASK_NAME}" /XML "${backupXmlPath}" /F`, { windowsHide: true });
+      } catch (rollbackError) {
+        throw new Error(
+          `Failed to register the native AgentRunner task and rollback also failed: ` +
+            `${String(primaryError)}; rollback: ${String(rollbackError)}`,
+        );
+      }
+    }
+    throw primaryError;
+  }
+  try {
+    await resolvedUnlink(backupXmlPath);
+  } catch {
+    // The backup is absent on a fresh registration.
+  }
 
   // Normal init starts the task immediately. A live daemon repairing a missing
   // registration suppresses this step so it does not create a second poller
@@ -543,6 +679,7 @@ export const unregisterWindowsTask = async (deps: WindowsAutostartDeps = {}): Pr
   const legacyBatPath = getWindowsBatPath();
   const restartVbsPath = getWindowsRestartVbsPath();
   const taskXmlPath = getWindowsTaskXmlPath();
+  const backupXmlPath = getWindowsTaskBackupXmlPath();
   const wrapperPath = getWindowsWrapperPath();
 
   // Remove legacy Task Scheduler entry if any.
@@ -553,7 +690,15 @@ export const unregisterWindowsTask = async (deps: WindowsAutostartDeps = {}): Pr
   }
 
   // Remove Startup folder VBS and legacy files.
-  for (const filePath of [startupVbsPath, legacyVbsPath, legacyBatPath, restartVbsPath, taskXmlPath, wrapperPath]) {
+  for (const filePath of [
+    startupVbsPath,
+    legacyVbsPath,
+    legacyBatPath,
+    restartVbsPath,
+    taskXmlPath,
+    backupXmlPath,
+    wrapperPath,
+  ]) {
     try {
       await resolvedUnlink(filePath);
       logger.info('Removed autostart file', { filePath });
@@ -561,6 +706,7 @@ export const unregisterWindowsTask = async (deps: WindowsAutostartDeps = {}): Pr
       // File may not exist.
     }
   }
+  await (deps.cleanupLaunchers ?? cleanupInstalledWindowsLaunchers)();
 };
 
 // Schedule.Service task states — 4 means the task is currently running.
@@ -612,6 +758,8 @@ type RestartWindowsTaskDeps = {
   daemonPath?: string;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
+  registerWindowsTask?: typeof registerWindowsTask;
+  launcherPath?: string;
 };
 
 export const restartWindowsTask = async (
@@ -622,14 +770,15 @@ export const restartWindowsTask = async (
   const resolvedSleep = deps.sleep ?? ((milliseconds: number) => delay(milliseconds));
   const resolvedNow = deps.now ?? (() => Date.now());
   if (config) {
-    const wrapperPath = getWindowsWrapperPath();
-    await (deps.writeFile ?? fs.writeFile)(
-      wrapperPath,
-      buildWindowsPowerShellWrapper(config, deps.daemonPath ?? resolveExecutablePath('agentrunner')),
-      'utf8',
-    );
-    (deps.chmodSync ?? chmodSync)(wrapperPath, 0o600);
-    logger.info('Regenerated Windows task wrapper before restart', { wrapperPath });
+    await (deps.registerWindowsTask ?? registerWindowsTask)(config, {
+      execSync: resolvedExecSync,
+      writeFile: deps.writeFile,
+      chmodSync: deps.chmodSync,
+      daemonPath: deps.daemonPath,
+      launcherPath: deps.launcherPath,
+      startImmediately: false,
+    });
+    logger.info('Migrated and verified the Windows task before restart');
   }
 
   try {
@@ -674,6 +823,8 @@ type ScheduleWindowsTaskRestartDeps = {
   handoffId?: string;
   parentPid?: number;
   daemonPath?: string;
+  launcherPath?: string;
+  installLauncher?: () => Promise<string>;
 };
 
 // Task Scheduler keeps every process spawned by an action in the same Job Object.
@@ -699,6 +850,28 @@ export const scheduleWindowsTaskRestart = async (
   const daemonPath = deps.daemonPath ?? resolveExecutablePath('agentrunner');
   const logPath = getWindowsLogPath();
   const handoffPath = getRestartHandoffPath(handoffId);
+
+  // Installing the launcher can throw (missing manifest, SHA-256 mismatch,
+  // unsupported architecture, file lock). Keep it inside the structured contract
+  // so the caller sees a retryable failure instead of an exception escaping into
+  // the poller's generic catch.
+  let launcherPath: string;
+  try {
+    launcherPath = deps.launcherPath ?? (await (deps.installLauncher ?? installWindowsLauncher)());
+  } catch (error) {
+    logger.warn('Failed to prepare the native Windows launcher for the restart handoff', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      status: 'retryable-failure',
+      handoffId,
+      replacementReady: false,
+      acknowledged: false,
+      retryableFailure: true,
+      reason: 'helper-preparation-failed',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 
   try {
     await unlink(handoffPath);
@@ -827,9 +1000,7 @@ for ($attempt = 1; $attempt -le 20; $attempt++) {
 Start-DirectFallback
 `.trim();
   const encodedRestartScript = Buffer.from(restartScript, 'utf16le').toString('base64');
-  const restartCommandLine =
-    `powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass ` +
-    `-EncodedCommand ${encodedRestartScript}`;
+  const restartCommandLine = `"${launcherPath}" ${buildWindowsChildPowerShellCommand(`-EncodedCommand ${encodedRestartScript}`)}`;
   const createCommand =
     `$logPath = '${escapeForPowerShellString(logPath)}'; ` +
     `$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create ` +

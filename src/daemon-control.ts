@@ -7,6 +7,7 @@ import {
   registerWindowsTask,
   restartAutostartService,
   scheduleWindowsTaskRestart,
+  windowsTaskNeedsNativeLauncherMigration,
 } from './autostart.js';
 import { logger } from './logger.js';
 import { getDaemonStatus } from './pid.js';
@@ -46,6 +47,7 @@ type ExecuteRestartDeps = {
   getAutostartStatus?: typeof getAutostartStatus;
   scheduleWindowsTaskRestart?: typeof scheduleWindowsTaskRestart;
   registerWindowsTask?: typeof registerWindowsTask;
+  windowsTaskNeedsNativeLauncherMigration?: typeof windowsTaskNeedsNativeLauncherMigration;
   prepareDetachedDaemon?: () => Promise<RestartHandoffPreparation>;
   spawnDetachedDaemon?: (launch?: RestartHandoffLaunch) => DetachedChildProcess | void;
   acknowledgeRestart?: () => Promise<void>;
@@ -184,6 +186,8 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
   const resolvedGetAutostartStatus = deps.getAutostartStatus ?? getAutostartStatus;
   const resolvedScheduleWindowsTaskRestart = deps.scheduleWindowsTaskRestart ?? scheduleWindowsTaskRestart;
   const resolvedRegisterWindowsTask = deps.registerWindowsTask ?? registerWindowsTask;
+  const resolvedNeedsLauncherMigration =
+    deps.windowsTaskNeedsNativeLauncherMigration ?? windowsTaskNeedsNativeLauncherMigration;
   const resolvedSpawnDetachedDaemon = deps.spawnDetachedDaemon ?? spawnDetachedDaemon;
   const acknowledgeRestart = deps.acknowledgeRestart ?? (async () => undefined);
   const acknowledgePreparedHandoff = deps.acknowledgePreparedHandoff ?? acknowledgePreparedRestartHandoff;
@@ -193,7 +197,13 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
 
   let autostartStatus = resolvedGetAutostartStatus();
   if (resolvedPlatform === 'win32' || autostartStatus.platform === 'task-scheduler') {
-    if (!autostartStatus.registered) {
+    // A web restart (and therefore `agentrunner update`'s auto-update flow) is the
+    // only path most existing installs ever take. Without this check they would
+    // keep their legacy `<Command>powershell.exe</Command>` action forever, so
+    // re-register whenever the live definition is not the native launcher.
+    const missingRegistration = !autostartStatus.registered;
+    const needsLauncherMigration = !missingRegistration && resolvedNeedsLauncherMigration();
+    if (missingRegistration || needsLauncherMigration) {
       if (!deps.config) {
         return {
           status: 'retryable-failure',
@@ -202,12 +212,18 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
           acknowledged: false,
           retryableFailure: true,
           reason: 'autostart-repair-failed',
-          error: 'Windows Task Scheduler autostart is missing and runtime configuration is unavailable.',
+          error: missingRegistration
+            ? 'Windows Task Scheduler autostart is missing and runtime configuration is unavailable.'
+            : 'Windows Task Scheduler autostart still uses a console-bound action and runtime configuration is unavailable.',
         };
       }
 
       try {
-        resolvedLogger.info('Windows Task Scheduler autostart is missing — repairing it before restart');
+        resolvedLogger.info(
+          missingRegistration
+            ? 'Windows Task Scheduler autostart is missing — repairing it before restart'
+            : 'Windows Task Scheduler autostart still uses a console-bound action — migrating it to the native launcher',
+        );
         await resolvedRegisterWindowsTask(
           { token: deps.config.daemonToken, apiUrl: deps.config.apiUrl },
           { startImmediately: false },
@@ -227,7 +243,23 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
     }
 
     resolvedLogger.info('Restart requested — preparing an out-of-job Task Scheduler handoff');
-    const preparation = await resolvedScheduleWindowsTaskRestart();
+    let preparation: RestartHandoffPreparation;
+    try {
+      preparation = await resolvedScheduleWindowsTaskRestart();
+    } catch (error) {
+      // Defensive: scheduleWindowsTaskRestart owns a structured contract, but a
+      // thrown error here must not escalate into a whole failed poll cycle.
+      resolvedLogger.info('Restart handoff preparation threw — keeping the current runner alive for retry');
+      return {
+        status: 'retryable-failure',
+        handoffId: randomUUID(),
+        replacementReady: false,
+        acknowledged: false,
+        retryableFailure: true,
+        reason: 'helper-preparation-failed',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
     if (preparation.status === 'retryable-failure') {
       resolvedLogger.info('Restart handoff preparation failed — keeping the current runner alive for retry');
       return preparation;

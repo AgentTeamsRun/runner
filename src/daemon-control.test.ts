@@ -167,6 +167,7 @@ test('executeRestartRequest schedules an explicit restart and exits cleanly for 
 
   await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => false,
     scheduleWindowsTaskRestart: async () => {
       scheduled = true;
       return {
@@ -200,6 +201,7 @@ test('executeRestartRequest keeps the daemon alive when the Windows restart help
 
   await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => false,
     // Helper creation failed — must NOT exit, or the runner dies with no replacement.
     scheduleWindowsTaskRestart: async () => ({
       status: 'retryable-failure',
@@ -333,6 +335,7 @@ test('executeRestartRequest preserves the current runner and request when the Wi
 
   const result = await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => false,
     scheduleWindowsTaskRestart: async () => ({
       status: 'retryable-failure',
       handoffId: 'handoff-query-failure',
@@ -396,6 +399,100 @@ test('executeRestartRequest repairs a missing Windows scheduled task before prep
 
   assert.deepEqual(events, ['register', 'prepare']);
   assert.equal(result.status, 'retryable-failure');
+});
+
+test('executeRestartRequest migrates a registered but console-bound Windows task before preparing handoff', async () => {
+  const events: string[] = [];
+
+  const result = await executeRestartRequest({
+    // Already registered — the legacy `<Command>powershell.exe</Command>` action
+    // is exactly what auto-update + web restart never used to replace.
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => true,
+    registerWindowsTask: async (_config, deps) => {
+      events.push(`register:startImmediately=${String(deps?.startImmediately)}`);
+      return { registered: true, servicePath: 'task.xml', platform: 'task-scheduler' };
+    },
+    scheduleWindowsTaskRestart: async () => {
+      events.push('prepare');
+      return {
+        status: 'retryable-failure',
+        handoffId: 'handoff-after-migration',
+        replacementReady: false,
+        acknowledged: false,
+        retryableFailure: true,
+        reason: 'helper-preparation-failed',
+        error: 'replacement did not become ready',
+      };
+    },
+    processExit: (code) => {
+      events.push(`exit:${code}`);
+    },
+    platform: () => 'win32',
+    config: { daemonToken: 'secret-token', apiUrl: 'https://api.example' },
+    logger: { info: () => undefined },
+  });
+
+  assert.deepEqual(events, ['register:startImmediately=false', 'prepare']);
+  assert.equal(result.status, 'retryable-failure');
+});
+
+test('executeRestartRequest leaves an already-native Windows task untouched', async () => {
+  const events: string[] = [];
+
+  await executeRestartRequest({
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => false,
+    registerWindowsTask: async () => {
+      events.push('register');
+      return { registered: true, servicePath: 'task.xml', platform: 'task-scheduler' };
+    },
+    scheduleWindowsTaskRestart: async () => {
+      events.push('prepare');
+      return {
+        status: 'prepared',
+        handoffId: 'handoff-native',
+        markerPath: '/tmp/restart-handoff-native.json',
+        replacementPid: 9101,
+        replacementReady: true,
+        acknowledged: false,
+        retryableFailure: false,
+      };
+    },
+    acknowledgePreparedHandoff: async () => true,
+    processExit: (code) => {
+      events.push(`exit:${code}`);
+    },
+    platform: () => 'win32',
+    config: { daemonToken: 'secret-token', apiUrl: 'https://api.example' },
+    logger: { info: () => undefined },
+  });
+
+  assert.deepEqual(events, ['prepare', 'exit:0']);
+});
+
+test('executeRestartRequest keeps the runner alive when Windows handoff preparation throws', async () => {
+  const events: string[] = [];
+
+  const result = await executeRestartRequest({
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => false,
+    scheduleWindowsTaskRestart: async () => {
+      throw new Error('launcher manifest is missing');
+    },
+    acknowledgeRestart: async () => {
+      events.push('ack');
+    },
+    processExit: (code) => {
+      events.push(`exit:${code}`);
+    },
+    platform: () => 'win32',
+    logger: { info: () => undefined },
+  });
+
+  assert.deepEqual(events, [], 'a thrown preparation must not ack or terminate the current runner');
+  assert.equal(result.status, 'retryable-failure');
+  assert.equal(result.reason, 'helper-preparation-failed');
 });
 
 test('executeRestartRequest does not ack or exit when a manual replacement never becomes ready', async () => {

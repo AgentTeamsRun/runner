@@ -172,6 +172,58 @@ daemon/
 | Linux   | systemd (user) | `~/.config/systemd/user/agentrunner.service`               |
 | Windows | Task Scheduler | 태스크 `AgentRunner`, `~/.agentteams/agentrunner-task.xml` |
 
+Windows 예약 작업은 `powershell.exe`를 직접 실행하지 않습니다. npm 패키지의
+`native/bin/win32-x64/agentrunner-launcher.exe`를 SHA-256으로 검증한 뒤
+`%USERPROFILE%\.agentteams\bin\agentrunner-launcher-<version>-<sha12>.exe`에
+원자 설치하고, 이 GUI subsystem 런처가 PowerShell wrapper를 `CREATE_NO_WINDOW`로
+실행합니다. 런처가 wrapper 종료까지 기다리므로 Task Scheduler의 `/End`,
+`IgnoreNew`, `RestartOnFailure` 감독 의미가 유지됩니다.
+
+기존 PowerShell action은 새 launcher XML을 `/Create /F`로 등록하고 live XML을
+검증한 뒤에만 기존 instance를 종료합니다. 등록 또는 검증이 실패하면 백업 XML을
+복원합니다. Web restart helper도 WMI가 launcher를 첫 프로세스로 만들지만 기존
+marker/ACK와 direct recovery 계약은 유지합니다.
+
+마이그레이션은 `agentrunner init`/`agentrunner restart`뿐 아니라 **웹 재시작
+경로**(=자동 업데이트가 사용하는 경로)에서도 일어납니다. `executeRestartRequest`는
+등록 여부와 무관하게 live task XML이 네이티브 런처를 참조하는지
+(`windowsTaskNeedsNativeLauncherMigration`) 확인하고, 레거시 action이면
+`registerWindowsTask(..., { startImmediately: false })`로 재등록한 뒤 handoff를
+진행합니다. 실패는 기존 `autostart-repair-failed` retryable 결과로 보고됩니다.
+
+live XML 검증·마이그레이션 판정은 항상 **ASCII 토큰**(`agentrunner-launcher-*.exe`)
+으로만 비교합니다. `schtasks /Query /XML`은 콘솔 출력 코드페이지로 텍스트를 내보내기
+때문에, 비ASCII 프로필 경로(`C:\Users\홍길동\...`)를 전체 경로로 비교하면 항상
+불일치합니다. 롤백 백업도 문자열 왕복 없이 `Export-ScheduledTask` 결과를
+`agentrunner-task-backup.xml`에 UTF-16LE(BOM)로 직접 기록합니다.
+
+wrapper(`agentrunner-start.ps1`)에는 데몬 토큰이 평문으로 들어가므로 등록 직후
+`icacls <path> /inheritance:r /grant:r "<user>:(F)" /grant:r "*S-1-5-18:(F)"`로 ACL을
+제한합니다. Windows의 `chmod`는 읽기 전용 속성만 토글할 뿐 ACL을 바꾸지 않습니다.
+
+```powershell
+pnpm --filter @agentteams/runner run build:native:win
+pnpm --filter @agentteams/runner run test:native:win
+schtasks /Query /TN "AgentRunner" /XML
+```
+
+native build에는 Windows SDK와 MSVC x64가 필요합니다. 생성된 `native/bin/`은
+커밋하지 않으며, 최종 서명 바이트의 `manifest.json`과 함께 배포 artifact로
+조립합니다. `prepublishOnly`가 `verify-package.mjs`를 실행하므로, 네이티브
+산출물이 없는 패키지는 `npm publish` 자체가 실패합니다.
+
+### 릴리스 체크리스트 (Windows 네이티브 런처)
+
+`daemon/` 릴리스를 진행하기 전에 다음을 **명시적으로** 확인합니다.
+
+- [ ] GitHub Actions secret `WIN_CSC_LINK`(base64 PFX)와 `WIN_CSC_KEY_PASSWORD`가
+      구성되어 있는가? 미구성이면 `sync-runner-public.yml`이 `::warning::`과 job
+      summary(`### ⚠️ Windows launcher is unsigned`)만 남기고 **미서명 런처를 배포**합니다.
+- [ ] 미서명 배포를 의도한 것이라면 릴리스 PR 본문에 그 사실을 기록했는가?
+      (사용자 프로필의 무서명 exe가 PowerShell을 기동하므로 SmartScreen/EDR 오탐 위험이 있음)
+- [ ] `windows-native` 잡이 성공했고 `verify-package.mjs`가 버전·SHA-256·
+      `schemaVersion`·산출물 디렉터리 내용까지 통과했는가?
+
 ### 서비스 디버깅
 
 ```bash

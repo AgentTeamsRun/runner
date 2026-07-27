@@ -1,0 +1,29 @@
+#include <windows.h>
+#include "version.h"
+
+1 VERSIONINFO
+FILEVERSION VERSION_COMMA
+PRODUCTVERSION VERSION_COMMA
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "AgentTeams\0"
+      VALUE "FileDescription", "AgentTeams Runner background launcher\0"
+      VALUE "FileVersion", VERSION_STRING "\0"
+      VALUE "InternalName", "agentrunner-launcher\0"
+      VALUE "OriginalFilename", "agentrunner-launcher.exe\0"
+      VALUE "ProductName", "AgentTeams Runner\0"
+      VALUE "ProductVersion", VERSION_STRING "\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END
+
