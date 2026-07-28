@@ -6,6 +6,7 @@ import { writePidFile, removePidFile } from '../pid.js';
 import { logger } from '../logger.js';
 import { refreshWindowsPathFromRegistry } from '../windows-path.js';
 import { activatePreparedRestartHandoff } from '../restart-handoff.js';
+import { migrateWindowsAutostartOnBoot } from '../autostart.js';
 
 /**
  * The Windows Task Scheduler wrapper injects a PATH snapshot
@@ -35,27 +36,45 @@ const ensureCodexSandboxDefault = (): void => {
   }
 };
 
-export const runStartCommand = async (): Promise<void> => {
-  refreshExecutablePath();
-  ensureCodexSandboxDefault();
-  const activatedHandoff = await activatePreparedRestartHandoff();
+type StartCommandDeps = {
+  refreshExecutablePath?: () => void;
+  ensureCodexSandboxDefault?: () => void;
+  activatePreparedRestartHandoff?: typeof activatePreparedRestartHandoff;
+  writePidFile?: typeof writePidFile;
+  removePidFile?: typeof removePidFile;
+  migrateWindowsAutostartOnBoot?: () => Promise<void>;
+  processOn?: (event: 'SIGINT' | 'SIGTERM' | 'exit', listener: () => void) => void;
+  resolveRuntimeConfig?: typeof resolveRuntimeConfig;
+  startPolling?: typeof startPolling;
+  logger?: Pick<typeof logger, 'info'>;
+};
+
+export const runStartCommand = async (deps: StartCommandDeps = {}): Promise<void> => {
+  const resolvedLogger = deps.logger ?? logger;
+  (deps.refreshExecutablePath ?? refreshExecutablePath)();
+  (deps.ensureCodexSandboxDefault ?? ensureCodexSandboxDefault)();
+  const activatedHandoff = await (deps.activatePreparedRestartHandoff ?? activatePreparedRestartHandoff)();
   if (activatedHandoff) {
-    logger.info('Replacement runner activated after restart handoff');
+    resolvedLogger.info('Replacement runner activated after restart handoff');
   }
-  await writePidFile();
+  await (deps.writePidFile ?? writePidFile)();
+  await (deps.migrateWindowsAutostartOnBoot ?? migrateWindowsAutostartOnBoot)();
 
   const cleanup = async () => {
-    await removePidFile();
+    await (deps.removePidFile ?? removePidFile)();
   };
 
-  process.on('SIGINT', () => void cleanup());
-  process.on('SIGTERM', () => void cleanup());
-  process.on('exit', () => {
+  const processOn = deps.processOn ?? ((event, listener) => process.on(event, listener));
+  processOn('SIGINT', () => void cleanup());
+  processOn('SIGTERM', () => void cleanup());
+  processOn('exit', () => {
     // Synchronous best-effort — PID file may already be removed by signal handler.
   });
 
-  const config = await resolveRuntimeConfig();
+  const config = await (deps.resolveRuntimeConfig ?? resolveRuntimeConfig)();
   const client = new DaemonApiClient(config.apiUrl, config.daemonToken);
 
-  await startPolling(config, (onAuthPathDiscovered) => createTriggerHandler({ config, client, onAuthPathDiscovered }));
+  await (deps.startPolling ?? startPolling)(config, (onAuthPathDiscovered) =>
+    createTriggerHandler({ config, client, onAuthPathDiscovered }),
+  );
 };

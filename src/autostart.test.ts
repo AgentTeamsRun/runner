@@ -7,6 +7,7 @@ import {
   buildWindowsTaskXmlContent,
   getAutostartStatus,
   launchWindowsHiddenDaemon,
+  migrateWindowsAutostartOnBoot,
   registerWindowsTask,
   restartWindowsTask,
   scheduleWindowsTaskRestart,
@@ -239,6 +240,45 @@ test('registerWindowsTask restores the previous task from an unmangled backup fi
   assert.ok(!commands.some((command) => command.startsWith('schtasks /Delete')));
 });
 
+test('registerWindowsTask preserves legacy task executables when candidate creation fails', async () => {
+  const createCommands: string[] = [];
+  const removed: string[] = [];
+
+  await assert.rejects(
+    registerWindowsTask(
+      { token: 'token', apiUrl: 'https://api.example' },
+      {
+        userId: 'DOMAIN\\runner',
+        daemonPath: 'C:\\Tools\\agentrunner.cmd',
+        launcherPath: 'C:\\Users\\runner\\.agentteams\\bin\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe',
+        startImmediately: false,
+        mkdir: async () => undefined,
+        writeFile: async () => undefined,
+        unlink: async (path) => {
+          removed.push(path);
+        },
+        chmodSync: () => undefined,
+        execSync: (command) => {
+          if (command.startsWith('schtasks /Create')) {
+            createCommands.push(command);
+            if (createCommands.length === 1) {
+              throw new Error('candidate create failed');
+            }
+          }
+          return Buffer.from('');
+        },
+      },
+    ),
+    /candidate create failed/u,
+  );
+
+  assert.equal(createCommands.length, 2, 'the previous task definition is restored');
+  assert.ok(
+    !removed.some((path) => /agentrunner-(?:start|restart)\.(?:vbs|bat)$/u.test(path)),
+    'rollback keeps every legacy executable referenced by the restored task',
+  );
+});
+
 test('windowsTaskNeedsNativeLauncherMigration detects a legacy action and stays quiet when unreadable', () => {
   assert.equal(
     windowsTaskNeedsNativeLauncherMigration({
@@ -263,6 +303,141 @@ test('windowsTaskNeedsNativeLauncherMigration detects a legacy action and stays 
     }),
     false,
   );
+});
+
+test('migrateWindowsAutostartOnBoot skips non-Windows platforms before probing registration', async () => {
+  let statusChecks = 0;
+  let migrationChecks = 0;
+
+  await migrateWindowsAutostartOnBoot({
+    platform: () => 'linux',
+    getAutostartStatus: () => {
+      statusChecks += 1;
+      return { registered: true, platform: 'task-scheduler' };
+    },
+    windowsTaskNeedsNativeLauncherMigration: () => {
+      migrationChecks += 1;
+      return true;
+    },
+  });
+
+  assert.equal(statusChecks, 0);
+  assert.equal(migrationChecks, 0);
+});
+
+test('migrateWindowsAutostartOnBoot skips unregistered and already-native tasks', async () => {
+  let migrationChecks = 0;
+  let registrations = 0;
+  const registerWindowsTask = async () => {
+    registrations += 1;
+    return { registered: true, servicePath: 'task', platform: 'task-scheduler' };
+  };
+
+  await migrateWindowsAutostartOnBoot({
+    platform: () => 'win32',
+    getAutostartStatus: () => ({ registered: false, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => {
+      migrationChecks += 1;
+      return true;
+    },
+    registerWindowsTask,
+  });
+  await migrateWindowsAutostartOnBoot({
+    platform: () => 'win32',
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => {
+      migrationChecks += 1;
+      return false;
+    },
+    registerWindowsTask,
+  });
+
+  assert.equal(migrationChecks, 1);
+  assert.equal(registrations, 0);
+});
+
+test('migrateWindowsAutostartOnBoot repairs a legacy action without starting a duplicate runner', async () => {
+  const registrations: Array<{ token: string; apiUrl: string; startImmediately?: boolean }> = [];
+
+  await migrateWindowsAutostartOnBoot({
+    platform: () => 'win32',
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => true,
+    getAutostartConfigFromEnv: () => ({ token: 'env-token', apiUrl: 'https://api.example' }),
+    registerWindowsTask: async (config, options) => {
+      registrations.push({ ...config, startImmediately: options?.startImmediately });
+      return { registered: true, servicePath: 'task', platform: 'task-scheduler' };
+    },
+    logger: { info: () => undefined, warn: () => undefined },
+  });
+
+  assert.deepEqual(registrations, [{ token: 'env-token', apiUrl: 'https://api.example', startImmediately: false }]);
+});
+
+test('migrateWindowsAutostartOnBoot uses file config and remains idempotent after migration', async () => {
+  let migrationChecks = 0;
+  let registrations = 0;
+
+  const deps = {
+    platform: () => 'win32' as NodeJS.Platform,
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => {
+      migrationChecks += 1;
+      return migrationChecks === 1;
+    },
+    getAutostartConfigFromEnv: () => null,
+    readDaemonConfigFile: async () => ({ daemonToken: 'file-token', apiUrl: 'https://file.example' }),
+    registerWindowsTask: async () => {
+      registrations += 1;
+      return { registered: true, servicePath: 'task', platform: 'task-scheduler' };
+    },
+    logger: { info: () => undefined, warn: () => undefined },
+  };
+
+  await migrateWindowsAutostartOnBoot(deps);
+  await migrateWindowsAutostartOnBoot(deps);
+
+  assert.equal(registrations, 1);
+});
+
+test('migrateWindowsAutostartOnBoot warns instead of registering when config is unavailable', async () => {
+  const warnings: string[] = [];
+  let registrations = 0;
+
+  await migrateWindowsAutostartOnBoot({
+    platform: () => 'win32',
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    windowsTaskNeedsNativeLauncherMigration: () => true,
+    getAutostartConfigFromEnv: () => null,
+    readDaemonConfigFile: async () => null,
+    registerWindowsTask: async () => {
+      registrations += 1;
+      return { registered: true, servicePath: 'task', platform: 'task-scheduler' };
+    },
+    logger: { info: () => undefined, warn: (message) => warnings.push(message) },
+  });
+
+  assert.equal(registrations, 0);
+  assert.equal(warnings.length, 1);
+});
+
+test('migrateWindowsAutostartOnBoot isolates registration failures', async () => {
+  const warnings: string[] = [];
+
+  await assert.doesNotReject(
+    migrateWindowsAutostartOnBoot({
+      platform: () => 'win32',
+      getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+      windowsTaskNeedsNativeLauncherMigration: () => true,
+      getAutostartConfigFromEnv: () => ({ token: 'env-token', apiUrl: 'https://api.example' }),
+      registerWindowsTask: async () => {
+        throw new Error('registration failed');
+      },
+      logger: { info: () => undefined, warn: (message) => warnings.push(message) },
+    }),
+  );
+
+  assert.equal(warnings.length, 1);
 });
 
 test('unregisterWindowsTask deletes the task and all generated or legacy artifacts idempotently', async () => {

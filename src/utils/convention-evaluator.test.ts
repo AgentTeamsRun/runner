@@ -20,6 +20,22 @@ const withGitRepo = async (run: (dir: string) => Promise<void>): Promise<void> =
   }
 };
 
+describe('getChangedFiles', () => {
+  it('hides both git subprocess windows', async () => {
+    const { getChangedFiles } = await import('./convention-evaluator.js');
+    const calls: Array<{ args: string[]; windowsHide: boolean }> = [];
+
+    const files = getChangedFiles('C:\\repo', (_command, args, options) => {
+      calls.push({ args, windowsHide: options.windowsHide });
+      return args[0] === 'diff' ? 'daemon/src/index.ts\n' : 'new-file.ts\n';
+    });
+
+    assert.deepEqual(files, ['daemon/src/index.ts', 'new-file.ts']);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((call) => call.windowsHide));
+  });
+});
+
 describe('evaluateConventionTriggers', () => {
   it('returns empty array for empty conventions', async () => {
     const { evaluateConventionTriggers } = await import('./convention-evaluator.js');

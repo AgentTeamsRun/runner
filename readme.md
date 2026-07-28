@@ -183,8 +183,12 @@ and installed under
 Legacy tasks migrate during restart — both `agentrunner restart` and a restart
 requested from the web UI (the path `agentrunner update` takes) re-register the
 task whenever the live definition still points at a console-bound action. The
-migration never deletes the previous registration first; a failed migration
-restores the prior task XML from an exported backup.
+runner also checks the definition during startup and repairs it without
+restarting the current process. That startup repair takes effect the next time
+the runner starts. Use `agentrunner status` to see whether a legacy action is
+still pending, or run `agentrunner restart` to migrate and apply the native
+launcher immediately. The migration never deletes the previous registration
+first; a failed migration restores the prior task XML from an exported backup.
 
 Windows x64 and Windows 11 ARM64 (through x64 emulation) are supported. Windows
 10 ARM64 is not supported and fails closed instead of falling back to a visible
