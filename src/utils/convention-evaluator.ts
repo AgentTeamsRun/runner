@@ -39,18 +39,30 @@ const parseConditionalTrigger = (trigger: string): ParsedCondition | null => {
   return null;
 };
 
-const getChangedFiles = (authPath: string): string[] => {
+type ConventionGitExecFile = (
+  executable: string,
+  args: string[],
+  options: { cwd: string; encoding: BufferEncoding; timeout: number; windowsHide: boolean },
+) => string;
+
+export const getChangedFiles = (
+  authPath: string,
+  execFileSyncFn: ConventionGitExecFile = execFileSync as unknown as ConventionGitExecFile,
+): string[] => {
   try {
-    const output = execFileSync('git', ['diff', '--name-only', 'HEAD'], {
+    // windows-hide-guard: child-process-alias execFileSyncFn
+    const output = execFileSyncFn('git', ['diff', '--name-only', 'HEAD'], {
       cwd: authPath,
       encoding: 'utf8',
       timeout: 10_000,
+      windowsHide: true,
     });
 
-    const statusOutput = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
+    const statusOutput = execFileSyncFn('git', ['ls-files', '--others', '--exclude-standard'], {
       cwd: authPath,
       encoding: 'utf8',
       timeout: 10_000,
+      windowsHide: true,
     });
 
     const files = [...output.split('\n'), ...statusOutput.split('\n')].map((f) => f.trim()).filter(Boolean);

@@ -548,6 +548,59 @@ export const windowsTaskNeedsNativeLauncherMigration = (deps: WindowsTaskMigrati
   return !NATIVE_LAUNCHER_COMMAND_PATTERN.test(liveTaskXml);
 };
 
+type WindowsAutostartBootMigrationDeps = {
+  platform?: typeof platform;
+  getAutostartStatus?: typeof getAutostartStatus;
+  windowsTaskNeedsNativeLauncherMigration?: typeof windowsTaskNeedsNativeLauncherMigration;
+  getAutostartConfigFromEnv?: () => AutostartConfig | null;
+  readDaemonConfigFile?: typeof readDaemonConfigFile;
+  registerWindowsTask?: typeof registerWindowsTask;
+  logger?: Pick<typeof logger, 'info' | 'warn'>;
+};
+
+export const migrateWindowsAutostartOnBoot = async (deps: WindowsAutostartBootMigrationDeps = {}): Promise<void> => {
+  const resolvedPlatform = deps.platform ?? platform;
+  const resolvedGetAutostartStatus = deps.getAutostartStatus ?? getAutostartStatus;
+  const resolvedNeedsMigration =
+    deps.windowsTaskNeedsNativeLauncherMigration ?? windowsTaskNeedsNativeLauncherMigration;
+  const resolvedGetConfigFromEnv = deps.getAutostartConfigFromEnv ?? getAutostartConfigFromEnv;
+  const resolvedReadConfigFile = deps.readDaemonConfigFile ?? readDaemonConfigFile;
+  const resolvedRegisterWindowsTask = deps.registerWindowsTask ?? registerWindowsTask;
+  const resolvedLogger = deps.logger ?? logger;
+
+  try {
+    if (resolvedPlatform() !== 'win32') {
+      return;
+    }
+
+    const status = resolvedGetAutostartStatus();
+    if (!status.registered || !resolvedNeedsMigration()) {
+      return;
+    }
+
+    let config = resolvedGetConfigFromEnv();
+    if (!config) {
+      const fileConfig = await resolvedReadConfigFile();
+      config = fileConfig ? { token: fileConfig.daemonToken, apiUrl: fileConfig.apiUrl } : null;
+    }
+    if (!config) {
+      resolvedLogger.warn(
+        'Windows Task Scheduler autostart still uses a console-bound action, but runtime configuration is unavailable',
+      );
+      return;
+    }
+
+    await resolvedRegisterWindowsTask(config, { startImmediately: false });
+    resolvedLogger.info(
+      'Migrated Windows Task Scheduler autostart to the native launcher; the hidden action applies on the next start',
+    );
+  } catch (error) {
+    resolvedLogger.warn('Failed to migrate Windows Task Scheduler autostart during boot; continuing startup', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
 type WindowsAutostartDeps = {
   execSync?: (command: string, options: { windowsHide: boolean }) => unknown;
   mkdir?: (path: string, options: { recursive: boolean }) => Promise<unknown>;
@@ -612,15 +665,6 @@ export const registerWindowsTask = async (
     });
   }
 
-  // Clean up legacy files.
-  for (const legacyPath of [startupVbsPath, legacyVbsPath, legacyBatPath, restartVbsPath]) {
-    try {
-      await resolvedUnlink(legacyPath);
-    } catch {
-      // Legacy file may not exist.
-    }
-  }
-
   let backedUp = false;
   try {
     resolvedExecSync(buildWindowsTaskBackupCommand(backupXmlPath), { windowsHide: true });
@@ -650,6 +694,17 @@ export const registerWindowsTask = async (
     }
     throw primaryError;
   }
+
+  // A rollback can restore a task that still points at one of these executables,
+  // so legacy assets stay intact until the native action is live and verified.
+  for (const legacyPath of [startupVbsPath, legacyVbsPath, legacyBatPath, restartVbsPath]) {
+    try {
+      await resolvedUnlink(legacyPath);
+    } catch {
+      // Legacy file may not exist.
+    }
+  }
+
   try {
     await resolvedUnlink(backupXmlPath);
   } catch {
