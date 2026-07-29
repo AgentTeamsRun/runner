@@ -5,6 +5,7 @@ import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
+import { createCodexFinalTextCapturer, createCodexJsonLineParser } from './codex-json-parser.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
@@ -48,8 +49,8 @@ export const buildCodexExecArgs = (
 ): string[] => {
   const baseArgs =
     sandboxLevel === 'off'
-      ? ['-a', 'never', 'exec', '--dangerously-bypass-approvals-and-sandbox']
-      : ['-a', 'never', 'exec', '-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true'];
+      ? ['-a', 'never', 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox']
+      : ['-a', 'never', 'exec', '--json', '-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true'];
   const fastModeArgs = fastMode ? ['-c', 'features.fast_mode=true', '-c', 'service_tier="fast"'] : [];
   const effortArgs = buildCodexEffortArgs(effort);
 
@@ -88,7 +89,7 @@ export const toPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `$promptText | & ${toPowerShellLiteral(resolvedExecutablePath)} '-a' 'never' 'exec' ${sandboxSegment}${fastModeSegment}${effortSegment}${modelSegment}`,
+    `$promptText | & ${toPowerShellLiteral(resolvedExecutablePath)} '-a' 'never' 'exec' '--json' ${sandboxSegment}${fastModeSegment}${effortSegment}${modelSegment}`,
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -221,6 +222,7 @@ export class CodexRunner implements Runner {
     let lastOutput = '';
     let lastErrorOutput = '';
     let outputText = '';
+    const finalTextCapturer = createCodexFinalTextCapturer();
 
     const appendOutputText = (chunk: string) => {
       if (outputText.length >= OUTPUT_CAPTURE_MAX) {
@@ -231,18 +233,32 @@ export class CodexRunner implements Runner {
     };
 
     const idleTimer = { reset: (): void => {} };
+    const jsonLineParser = createCodexJsonLineParser(
+      (entries) => {
+        for (const entry of entries) {
+          lastOutput = entry.message;
+          opts.onStdoutChunk?.(entry.message);
+        }
+      },
+      { cwd },
+    );
+
+    const finalizeOutputText = (): string | undefined => {
+      finalTextCapturer.flush();
+      return finalTextCapturer.get() ?? (lastOutput || outputText.trim() || undefined);
+    };
+
     child.stdout?.on('data', (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
       appendOutputText(rawOutput);
-      const output = toOutputPreview(rawOutput);
-      if (output.length > 0) {
-        lastOutput = output;
+      if (rawOutput.length > 0) {
+        finalTextCapturer.push(rawOutput);
+        jsonLineParser.push(rawOutput);
         idleTimer.reset();
-        opts.onStdoutChunk?.(output);
         logger.info('Runner stdout', {
           triggerId: opts.triggerId,
           pid: child.pid,
-          output,
+          output: toOutputPreview(rawOutput),
         });
       }
     });
@@ -358,7 +374,7 @@ export class CodexRunner implements Runner {
         resolve({
           exitCode: 1,
           lastOutput,
-          outputText: outputText.trim() || undefined,
+          outputText: finalizeOutputText(),
           errorMessage: error.message,
         });
       });
@@ -368,6 +384,7 @@ export class CodexRunner implements Runner {
       child.on('close', (code) => {
         closeWatchdog.cancel();
         clearTimeout(timeoutId);
+        jsonLineParser.flush();
         cleanup();
         logger.info('Runner process closed', {
           triggerId: opts.triggerId,
@@ -381,7 +398,7 @@ export class CodexRunner implements Runner {
             exitCode: 1,
             idleTimedOut,
             lastOutput,
-            outputText: outputText.trim() || undefined,
+            outputText: finalizeOutputText(),
             errorMessage: idleTimedOut
               ? `Runner idle timed out after ${Math.round(opts.idleTimeoutMs / 60_000)}m of no output`
               : `Runner fail-safe timed out after ${Math.round(opts.timeoutMs / 3_600_000)}h`,
@@ -394,7 +411,7 @@ export class CodexRunner implements Runner {
             exitCode: 1,
             cancelled: true,
             lastOutput,
-            outputText: outputText.trim() || undefined,
+            outputText: finalizeOutputText(),
             errorMessage: 'Runner cancelled by user',
           });
           return;
@@ -403,7 +420,7 @@ export class CodexRunner implements Runner {
         resolve({
           exitCode: code ?? 1,
           lastOutput,
-          outputText: outputText.trim() || undefined,
+          outputText: finalizeOutputText(),
           errorMessage: selectRunnerFailureMessage({ exitCode: code, lastErrorOutput, lastOutput }),
         });
       });

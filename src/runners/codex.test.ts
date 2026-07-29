@@ -52,6 +52,7 @@ test('buildCodexExecArgs keeps sandboxing by default', () => {
     '-a',
     'never',
     'exec',
+    '--json',
     '-s',
     'workspace-write',
     '-c',
@@ -67,6 +68,7 @@ test('buildCodexExecArgs enables fast mode with service tier config', () => {
     '-a',
     'never',
     'exec',
+    '--json',
     '-s',
     'workspace-write',
     '-c',
@@ -86,6 +88,7 @@ test('buildCodexExecArgs disables sandbox when requested', () => {
     '-a',
     'never',
     'exec',
+    '--json',
     '--dangerously-bypass-approvals-and-sandbox',
     'hello',
   ]);
@@ -130,6 +133,7 @@ test('toPowerShellEncodedCommand preserves model, sandbox, and fast mode args', 
   const decoded = decodeEncodedCommand(encoded);
 
   assert.ok(decoded.includes("'--model' 'gpt-5.5'"));
+  assert.ok(decoded.includes("'--json'"));
   assert.ok(decoded.includes("'-s' 'workspace-write'"));
   assert.ok(decoded.includes("'-c' 'sandbox_workspace_write.network_access=true'"));
   assert.ok(decoded.includes('features.fast_mode=true'));
@@ -146,6 +150,7 @@ test('toPowerShellEncodedCommand uses bypass flag and omits model when sandbox o
   const decoded = decodeEncodedCommand(encoded);
 
   assert.ok(decoded.includes('--dangerously-bypass-approvals-and-sandbox'));
+  assert.ok(decoded.includes("'--json'"));
   assert.ok(!decoded.includes("'--model'"));
   assert.ok(!decoded.includes('features.fast_mode=true'));
 });
@@ -176,6 +181,7 @@ test('buildCodexExecArgs injects exactly one model_reasoning_effort override whe
     '-a',
     'never',
     'exec',
+    '--json',
     '-s',
     'workspace-write',
     '-c',

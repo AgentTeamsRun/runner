@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"019fa5a4-9d9b-7210-a6c0-23c20ef42da3"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I'll read the note, search the directory, and write the uppercase copy."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc \"sed -n '1,200p' note.txt\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc \"sed -n '1,200p' note.txt\"","aggregated_output":"hello world\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"file_change","changes":[{"path":"/private/tmp/x/greet.txt","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"/private/tmp/x/greet.txt","kind":"add"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"Created greet.txt containing `HELLO WORLD`."}}
+{"type":"turn.completed","usage":{"input_tokens":78699,"cached_input_tokens":57600,"output_tokens":292,"reasoning_output_tokens":15}}
