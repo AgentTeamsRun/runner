@@ -199,7 +199,7 @@ export class KimiCliRunner implements Runner {
       if (output.length > 0) {
         lastOutput = output;
         idleTimer.reset();
-        opts.onStdoutChunk?.(output);
+        opts.onStdoutChunk?.(output, 'TEXT');
         logger.info('Runner stdout', { triggerId: opts.triggerId, pid: child.pid, output });
       }
     });

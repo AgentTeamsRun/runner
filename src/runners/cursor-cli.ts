@@ -197,7 +197,7 @@ export class CursorCliRunner implements Runner {
     const idleTimer = { reset: (): void => {} };
     const streamParser = createCursorStreamJsonLineParser(
       (entries) => {
-        for (const entry of entries) opts.onStdoutChunk?.(entry.message);
+        for (const entry of entries) opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
       },
       { cwd },
     );
@@ -220,7 +220,7 @@ export class CursorCliRunner implements Runner {
         lastOutput = output;
         lastErrorOutput = output;
         idleTimer.reset();
-        opts.onStderrChunk?.(output);
+        opts.onStderrChunk?.(output, 'STDERR');
         logger.warn('Runner stderr', { triggerId: opts.triggerId, pid: child.pid, output });
       }
     });

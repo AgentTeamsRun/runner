@@ -1,3 +1,5 @@
+import type { TriggerLogCategory } from '../types.js';
+
 export interface Runner {
   run(opts: RunnerOptions): Promise<RunResult>;
 }
@@ -19,8 +21,8 @@ export interface RunnerOptions {
   /// CODEX/CLAUDE_CODE에서만 러너별 CLI 인자로 전달되며, 그 외 엔진에서는 무시(WARN)된다.
   effort?: string | null;
   signal?: AbortSignal;
-  onStdoutChunk?: (chunk: string) => void;
-  onStderrChunk?: (chunk: string) => void;
+  onStdoutChunk?: (chunk: string, category: TriggerLogCategory, toolName?: string) => void;
+  onStderrChunk?: (chunk: string, category: 'STDERR') => void;
 }
 
 export type RunResult = {

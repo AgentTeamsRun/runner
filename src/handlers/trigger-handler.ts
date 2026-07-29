@@ -564,11 +564,11 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         fastMode: runnerFastMode,
         effort: runnerEffort,
         signal: cancelController.signal,
-        onStdoutChunk: (chunk) => {
-          activeLogReporter.append('INFO', chunk);
+        onStdoutChunk: (chunk, category, toolName) => {
+          activeLogReporter.append('INFO', chunk, category, toolName);
         },
-        onStderrChunk: (chunk) => {
-          activeLogReporter.append('WARN', chunk);
+        onStderrChunk: (chunk, category) => {
+          activeLogReporter.append('WARN', chunk, category);
         },
       });
       clearIntervalFn(cancelInterval);

@@ -121,7 +121,7 @@ export const parseOpenCodeJsonLine = (line: string, options?: ParseOptions): Par
     case 'text': {
       const text = part.text;
       if (text && text.trim().length > 0) {
-        return [{ level: 'INFO', message: firstSentence(text) }];
+        return [{ level: 'INFO', category: 'TEXT', message: firstSentence(text) }];
       }
       return [];
     }
@@ -132,7 +132,13 @@ export const parseOpenCodeJsonLine = (line: string, options?: ParseOptions): Par
       }
       const text = part.text;
       if (text && text.trim().length > 0) {
-        return [{ level: 'INFO', message: `[Thinking] ${truncate(text.trim(), REASONING_PREVIEW_MAX)}` }];
+        return [
+          {
+            level: 'INFO',
+            category: 'THINKING',
+            message: `[Thinking] ${truncate(text.trim(), REASONING_PREVIEW_MAX)}`,
+          },
+        ];
       }
       return [];
     }
@@ -148,6 +154,8 @@ export const parseOpenCodeJsonLine = (line: string, options?: ParseOptions): Par
       return [
         {
           level: status === 'error' ? 'WARN' : 'INFO',
+          category: 'TOOL',
+          toolName: part.tool ?? 'unknown',
           message: `[Tool] ${summary}${status === 'error' ? ' (error)' : ''}`,
         },
       ];
@@ -160,7 +168,7 @@ export const parseOpenCodeJsonLine = (line: string, options?: ParseOptions): Par
       }
       const shown = files.slice(0, PATCH_FILES_MAX).map((file) => shortenPath(file, cwd));
       const extra = files.length > PATCH_FILES_MAX ? ` (+${files.length - PATCH_FILES_MAX} more)` : '';
-      return [{ level: 'INFO', message: `[Patch] ${shown.join(', ')}${extra}` }];
+      return [{ level: 'INFO', category: 'TOOL', toolName: 'patch', message: `[Patch] ${shown.join(', ')}${extra}` }];
     }
 
     case 'step-finish': {
@@ -168,7 +176,7 @@ export const parseOpenCodeJsonLine = (line: string, options?: ParseOptions): Par
       const outputTokens = part.tokens?.output;
       const cost = typeof part.cost === 'number' ? `, $${part.cost.toFixed(4)}` : '';
       const tokens = typeof outputTokens === 'number' ? `, ${outputTokens} out tok` : '';
-      return [{ level: 'INFO', message: `[Step finished: ${reason}${tokens}${cost}]` }];
+      return [{ level: 'INFO', category: 'RESULT', message: `[Step finished: ${reason}${tokens}${cost}]` }];
     }
 
     default:

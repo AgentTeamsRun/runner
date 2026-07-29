@@ -239,7 +239,7 @@ export class ClaudeCodeRunner implements Runner {
     const streamParser = createStreamJsonLineParser(
       (entries) => {
         for (const entry of entries) {
-          opts.onStdoutChunk?.(entry.message);
+          opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
         }
       },
       { cwd },
@@ -266,7 +266,7 @@ export class ClaudeCodeRunner implements Runner {
         lastOutput = output;
         lastErrorOutput = output;
         idleTimer.reset();
-        opts.onStderrChunk?.(output);
+        opts.onStderrChunk?.(output, 'STDERR');
         logger.warn('Runner stderr', {
           triggerId: opts.triggerId,
           pid: child.pid,

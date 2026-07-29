@@ -54,7 +54,7 @@ test('parseStreamJsonLine skips thinking blocks by default and emits when verbos
   });
   assert.deepEqual(parseStreamJsonLine(line), []);
   assert.deepEqual(parseStreamJsonLine(line, { verbose: true }), [
-    { level: 'INFO', message: '[Thinking] Let me consider this.' },
+    { level: 'INFO', category: 'THINKING', message: '[Thinking] Let me consider this.' },
   ]);
 });
 
@@ -76,6 +76,8 @@ test('parseStreamJsonLine emits readable [Tool] line instead of JSON dump', () =
   const entries = parseStreamJsonLine(line, { cwd });
   assert.equal(entries.length, 1);
   assert.equal(entries[0].level, 'INFO');
+  assert.equal(entries[0].category, 'TOOL');
+  assert.equal(entries[0].toolName, 'Read');
   assert.equal(entries[0].message, '[Tool] Read: web/src/components/Foo.tsx');
   assert.ok(!entries[0].message.includes('{'), 'tool line must not contain raw JSON braces');
 });
@@ -88,7 +90,9 @@ test('parseStreamJsonLine reduces assistant text to first sentence', () => {
     },
   });
   const entries = parseStreamJsonLine(line);
-  assert.deepEqual(entries, [{ level: 'INFO', message: 'Now wire the refetch into the controller.' }]);
+  assert.deepEqual(entries, [
+    { level: 'INFO', category: 'TEXT', message: 'Now wire the refetch into the controller.' },
+  ]);
 });
 
 test('parseStreamJsonLine renders system init and result lines', () => {
@@ -99,11 +103,13 @@ test('parseStreamJsonLine renders system init and result lines', () => {
     tools: ['Read', 'Edit', 'Bash'],
   });
   assert.deepEqual(parseStreamJsonLine(init), [
-    { level: 'INFO', message: 'Session initialized (model=claude-opus-4-7, tools=3)' },
+    { level: 'INFO', category: 'SYSTEM', message: 'Session initialized (model=claude-opus-4-7, tools=3)' },
   ]);
 
   const ok = JSON.stringify({ type: 'result', duration_ms: 12345, num_turns: 4 });
-  assert.deepEqual(parseStreamJsonLine(ok), [{ level: 'INFO', message: '[Result] Completed in 12s (4 turns)' }]);
+  assert.deepEqual(parseStreamJsonLine(ok), [
+    { level: 'INFO', category: 'RESULT', message: '[Result] Completed in 12s (4 turns)' },
+  ]);
 
   const err = JSON.stringify({
     type: 'result',
@@ -113,7 +119,7 @@ test('parseStreamJsonLine renders system init and result lines', () => {
     result: 'Idle timeout',
   });
   assert.deepEqual(parseStreamJsonLine(err), [
-    { level: 'WARN', message: '[Result] Error after 5s (2 turns): Idle timeout' },
+    { level: 'WARN', category: 'RESULT', message: '[Result] Error after 5s (2 turns): Idle timeout' },
   ]);
 });
 
@@ -216,7 +222,7 @@ test('parseStreamJsonLine respects AGENTTEAMS_RUNNER_VERBOSE env when no option 
 });
 
 test('Cursor parser merges small assistant deltas and flushes on sentence, tool, result, and end boundaries', () => {
-  const entries: Array<{ level: string; message: string }> = [];
+  const entries: Array<{ level: string; category: string; toolName?: string; message: string }> = [];
   const parser = createCursorStreamJsonLineParser((next) => entries.push(...next), { cwd: '/repo' });
   const assistant = (text: string) =>
     JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
@@ -235,11 +241,16 @@ ${JSON.stringify({
   parser.flush();
 
   assert.deepEqual(entries, [
-    { level: 'INFO', message: 'Reading the repository.' },
-    { level: 'INFO', message: 'Opening configuration' },
-    { level: 'INFO', message: '[Tool] Read: config.json (started)' },
-    { level: 'INFO', message: 'Done without punctuation' },
-    { level: 'INFO', message: '[Result] Completed in 2s' },
+    { level: 'INFO', category: 'TEXT', message: 'Reading the repository.' },
+    { level: 'INFO', category: 'TEXT', message: 'Opening configuration' },
+    {
+      level: 'INFO',
+      category: 'TOOL',
+      toolName: 'Read',
+      message: '[Tool] Read: config.json (started)',
+    },
+    { level: 'INFO', category: 'TEXT', message: 'Done without punctuation' },
+    { level: 'INFO', category: 'RESULT', message: '[Result] Completed in 2s' },
   ]);
 });
 

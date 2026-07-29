@@ -3,11 +3,25 @@ import test from 'node:test';
 import { buildCopilotCliArgs, toPowerShellEncodedCommand } from './copilot-cli.js';
 
 test('buildCopilotCliArgs sends the prompt inline and enables unattended allow-all execution', () => {
-  assert.deepEqual(buildCopilotCliArgs('hello', null), ['-p', 'hello', '--allow-all', '--no-ask-user']);
+  assert.deepEqual(buildCopilotCliArgs('hello', null), [
+    '-p',
+    'hello',
+    '--allow-all',
+    '--no-ask-user',
+    '--output-format',
+    'json',
+  ]);
 });
 
 test('buildCopilotCliArgs leaves the client default model to Copilot CLI', () => {
-  assert.deepEqual(buildCopilotCliArgs('hello', 'default'), ['-p', 'hello', '--allow-all', '--no-ask-user']);
+  assert.deepEqual(buildCopilotCliArgs('hello', 'default'), [
+    '-p',
+    'hello',
+    '--allow-all',
+    '--no-ask-user',
+    '--output-format',
+    'json',
+  ]);
 });
 
 test('buildCopilotCliArgs appends a requested model', () => {
@@ -16,6 +30,8 @@ test('buildCopilotCliArgs appends a requested model', () => {
     'hello',
     '--allow-all',
     '--no-ask-user',
+    '--output-format',
+    'json',
     '--model',
     'gpt-5',
   ]);
@@ -27,7 +43,7 @@ test('toPowerShellEncodedCommand reads the prompt from a file and preserves unat
   const promptFilePath = 'C:/repo/.agentteams/runner/tmp/trigger-123.prompt.txt';
   const script = decodePowerShellCommand(toPowerShellEncodedCommand('C:/copilot.cmd', promptFilePath, 'gpt-5'));
   assert.match(script, /\[System\.IO\.File\]::ReadAllText/);
-  assert.match(script, /'--allow-all' '--no-ask-user' '--model' 'gpt-5'/);
+  assert.match(script, /'--allow-all' '--no-ask-user' '--output-format' 'json' '--model' 'gpt-5'/);
   assert.ok(script.includes(promptFilePath));
 });
 
@@ -35,7 +51,7 @@ test('toPowerShellEncodedCommand omits the default model', () => {
   const script = decodePowerShellCommand(
     toPowerShellEncodedCommand('C:/copilot.cmd', 'C:/repo/.agentteams/runner/tmp/trigger-456.prompt.txt', 'default'),
   );
-  assert.match(script, /'--allow-all' '--no-ask-user'/);
+  assert.match(script, /'--allow-all' '--no-ask-user' '--output-format' 'json'/);
   assert.doesNotMatch(script, /--model/);
 });
 

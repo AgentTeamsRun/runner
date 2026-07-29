@@ -242,7 +242,7 @@ export class OpenCodeRunner implements Runner {
       (entries) => {
         for (const entry of entries) {
           lastOutput = entry.message;
-          opts.onStdoutChunk?.(entry.message);
+          opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
         }
       },
       { cwd },
@@ -276,7 +276,7 @@ export class OpenCodeRunner implements Runner {
         lastOutput = output;
         lastErrorOutput = output;
         idleTimer.reset();
-        opts.onStderrChunk?.(output);
+        opts.onStderrChunk?.(output, 'STDERR');
         logger.warn('Runner stderr', {
           triggerId: opts.triggerId,
           pid: child.pid,

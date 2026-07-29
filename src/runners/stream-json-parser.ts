@@ -3,8 +3,12 @@
  * Shared by claude-code and amp runners to convert raw JSON output into human-readable logs.
  */
 
+import type { TriggerLogCategory } from '../types.js';
+
 export type ParsedLogEntry = {
   level: 'INFO' | 'WARN';
+  category: TriggerLogCategory;
+  toolName?: string;
   message: string;
 };
 
@@ -185,7 +189,11 @@ export const parseStreamJsonLine = (line: string, options?: ParseOptions): Parse
       if (parsed.subtype === 'init') {
         const toolCount = parsed.tools?.length ?? 0;
         const model = parsed.model ?? 'unknown';
-        entries.push({ level: 'INFO', message: `Session initialized (model=${model}, tools=${toolCount})` });
+        entries.push({
+          level: 'INFO',
+          category: 'SYSTEM',
+          message: `Session initialized (model=${model}, tools=${toolCount})`,
+        });
       }
       break;
     }
@@ -204,14 +212,18 @@ export const parseStreamJsonLine = (line: string, options?: ParseOptions): Parse
             }
             const thinking = (block as { thinking?: string }).thinking;
             if (thinking && thinking.trim().length > 0) {
-              entries.push({ level: 'INFO', message: `[Thinking] ${truncate(thinking.trim(), THINKING_PREVIEW_MAX)}` });
+              entries.push({
+                level: 'INFO',
+                category: 'THINKING',
+                message: `[Thinking] ${truncate(thinking.trim(), THINKING_PREVIEW_MAX)}`,
+              });
             }
             break;
           }
           case 'text': {
             const text = (block as { text?: string }).text;
             if (text && text.trim().length > 0) {
-              entries.push({ level: 'INFO', message: firstSentence(text) });
+              entries.push({ level: 'INFO', category: 'TEXT', message: firstSentence(text) });
             }
             break;
           }
@@ -219,7 +231,7 @@ export const parseStreamJsonLine = (line: string, options?: ParseOptions): Parse
             const toolBlock = block as { name?: string; input?: Record<string, unknown> };
             const name = toolBlock.name ?? 'unknown';
             const summary = truncate(summarizeToolUse(name, toolBlock.input, cwd), TOOL_PREVIEW_MAX);
-            entries.push({ level: 'INFO', message: `[Tool] ${summary}` });
+            entries.push({ level: 'INFO', category: 'TOOL', toolName: name, message: `[Tool] ${summary}` });
             break;
           }
           default:
@@ -236,10 +248,15 @@ export const parseStreamJsonLine = (line: string, options?: ParseOptions): Parse
         const result = parsed.result ?? 'Unknown error';
         entries.push({
           level: 'WARN',
+          category: 'RESULT',
           message: `[Result] Error after ${duration} (${turns} turns): ${truncate(result, 300)}`,
         });
       } else {
-        entries.push({ level: 'INFO', message: `[Result] Completed in ${duration} (${turns} turns)` });
+        entries.push({
+          level: 'INFO',
+          category: 'RESULT',
+          message: `[Result] Completed in ${duration} (${turns} turns)`,
+        });
       }
       break;
     }
@@ -337,7 +354,11 @@ const cursorToolDisplayName = (key: string): string => {
   return `${withoutSuffix[0]?.toUpperCase() ?? ''}${withoutSuffix.slice(1)}`;
 };
 
-const cursorToolSummary = (toolCall: Record<string, unknown> | undefined, subtype: string, cwd?: string): string => {
+const cursorToolDetails = (
+  toolCall: Record<string, unknown> | undefined,
+  subtype: string,
+  cwd?: string,
+): { message: string; toolName: string } => {
   const [key, rawValue] = Object.entries(toolCall ?? {})[0] ?? ['unknownToolCall', undefined];
   const value = rawValue && typeof rawValue === 'object' ? (rawValue as Record<string, unknown>) : {};
   const args = value.args && typeof value.args === 'object' ? (value.args as Record<string, unknown>) : {};
@@ -346,7 +367,10 @@ const cursorToolSummary = (toolCall: Record<string, unknown> | undefined, subtyp
   const result = value.result && typeof value.result === 'object' ? (value.result as Record<string, unknown>) : {};
   const failed = subtype === 'completed' && ('error' in result || 'failure' in result);
   const status = subtype === 'completed' ? (failed ? 'failed' : 'completed') : 'started';
-  return `[Tool] ${displayName}${path ? `: ${path}` : ''} (${status})`;
+  return {
+    message: `[Tool] ${displayName}${path ? `: ${path}` : ''} (${status})`,
+    toolName: displayName,
+  };
 };
 
 const findCursorFlushIndex = (text: string): number => {
@@ -394,7 +418,7 @@ export const createCursorStreamJsonLineParser = (
 
       const message = assistantBuffer.slice(0, flushIndex).replace(/\s+/gu, ' ').trim();
       assistantBuffer = assistantBuffer.slice(flushIndex);
-      if (message.length > 0) emit({ level: 'INFO', message });
+      if (message.length > 0) emit({ level: 'INFO', category: 'TEXT', message });
       if (!force && assistantBuffer.length < CURSOR_TEXT_LOG_MAX && findCursorFlushIndex(assistantBuffer) < 0) return;
     }
   };
@@ -413,7 +437,11 @@ export const createCursorStreamJsonLineParser = (
     switch (parsed.type) {
       case 'system':
         if (parsed.subtype === 'init') {
-          emit({ level: 'INFO', message: `Cursor session initialized (model=${parsed.model ?? 'unknown'})` });
+          emit({
+            level: 'INFO',
+            category: 'SYSTEM',
+            message: `Cursor session initialized (model=${parsed.model ?? 'unknown'})`,
+          });
         }
         break;
       case 'assistant':
@@ -439,6 +467,7 @@ export const createCursorStreamJsonLineParser = (
         flushAssistant(true);
         resetAssistantTurn();
         if (parsed.subtype === 'started' || parsed.subtype === 'completed') {
+          const tool = cursorToolDetails(parsed.tool_call, parsed.subtype, options?.cwd);
           emit({
             level:
               parsed.subtype === 'completed' &&
@@ -453,7 +482,9 @@ export const createCursorStreamJsonLineParser = (
               )
                 ? 'WARN'
                 : 'INFO',
-            message: cursorToolSummary(parsed.tool_call, parsed.subtype, options?.cwd),
+            category: 'TOOL',
+            toolName: tool.toolName,
+            message: tool.message,
           });
         }
         break;
@@ -462,6 +493,7 @@ export const createCursorStreamJsonLineParser = (
         resetAssistantTurn();
         emit({
           level: parsed.is_error ? 'WARN' : 'INFO',
+          category: 'RESULT',
           message: `[Result] ${parsed.is_error ? 'Failed' : 'Completed'}${
             typeof parsed.duration_ms === 'number' ? ` in ${Math.round(parsed.duration_ms / 1000)}s` : ''
           }`,
