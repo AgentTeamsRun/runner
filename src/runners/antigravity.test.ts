@@ -173,47 +173,47 @@ test('extractAntigravityReadableEvent returns readable events for whitelisted ca
     extractAntigravityReadableEvent(
       'I0524 00:18:12.649978 87309 server_oauth.go:217] OAuth: authenticated successfully as user@example.com',
     ),
-    { message: '[Session] Authenticated as user@example.com', level: 'INFO' },
+    { message: '[Session] Authenticated as user@example.com', level: 'INFO', category: 'SYSTEM' },
   );
   assert.deepEqual(
     extractAntigravityReadableEvent(
       'I0524 00:18:12.413146 87309 common.go:156] project: using project "/Users/justin/Project/Me/AgentTeams" (id=341f61de-cb14-4ef7-a6a6-14dc43eb3e10) at /Users/justin/.gemini/config/projects/341f61de-cb14-4ef7-a6a6-14dc43eb3e10.json',
     ),
-    { message: '[Session] Project: AgentTeams (#341f61de)', level: 'INFO' },
+    { message: '[Session] Project: AgentTeams (#341f61de)', level: 'INFO', category: 'SYSTEM' },
   );
   assert.deepEqual(
     extractAntigravityReadableEvent(
       'I0524 00:18:12.413325 87309 printmode.go:71] Print mode: starting (promptLength=2066, model="", conversationID="")',
     ),
-    { message: '[Session] Session started (prompt=2066 chars)', level: 'INFO' },
+    { message: '[Session] Session started (prompt=2066 chars)', level: 'INFO', category: 'SYSTEM' },
   );
   assert.deepEqual(
     extractAntigravityReadableEvent(
       'I0524 00:18:15.228104 87309 model_config_manager.go:157] Propagating selected model override to backend: label="Gemini 3.5 Flash (Medium)"',
     ),
-    { message: '[Session] Model: Gemini 3.5 Flash (Medium)', level: 'INFO' },
+    { message: '[Session] Model: Gemini 3.5 Flash (Medium)', level: 'INFO', category: 'SYSTEM' },
   );
   assert.deepEqual(
     extractAntigravityReadableEvent(
       'I0524 00:18:16.261389 87309 server.go:747] Created conversation 1e5397df-a0b6-4194-92e3-3de0084e8945',
     ),
-    { message: '[Session] Conversation: 1e5397df', level: 'INFO' },
+    { message: '[Session] Conversation: 1e5397df', level: 'INFO', category: 'SYSTEM' },
   );
   assert.deepEqual(
     extractAntigravityReadableEvent(
       'I0524 00:18:56.816107 87309 tool_confirmation_manager.go:72] Auto-approving tool confirmation: "Edit" at step 24',
     ),
-    { message: '[Tool] Edit (step 24)', level: 'INFO' },
+    { message: '[Tool] Edit (step 24)', level: 'INFO', category: 'TOOL', toolName: 'Edit' },
   );
   assert.deepEqual(
     extractAntigravityReadableEvent(
       'I0524 00:19:08.955392 87309 text_drip.go:173] Drip stopped: lastStepIdx=29, charIdx=1037, length=1037',
     ),
-    { message: '[Result] Streamed 1037 chars', level: 'INFO' },
+    { message: '[Result] Streamed 1037 chars', level: 'INFO', category: 'RESULT' },
   );
   assert.deepEqual(
     extractAntigravityReadableEvent('I0524 00:19:08.977946 87309 server.go:2160] Language server shutting down'),
-    { message: '[Result] Session ended', level: 'INFO' },
+    { message: '[Result] Session ended', level: 'INFO', category: 'RESULT' },
   );
 });
 
@@ -242,6 +242,7 @@ test('extractAntigravityReadableEvent forwards non-login errors as warnings', ()
       message:
         'Failed to resolve GeminiDir ".gemini": .gemini must be an absolute path: path is not absolute, falling back to default',
       level: 'WARN',
+      category: 'STDERR',
     },
   );
 });

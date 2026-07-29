@@ -60,7 +60,7 @@ test.afterEach(() => {
 
 test('createTriggerHandler runs the runner, reports history, and marks success', async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
-  const logEntries: Array<{ level: string; message: string }> = [];
+  const logEntries: Array<{ level: string; message: string; category?: string; toolName?: string }> = [];
   const discoveredAuthPaths: string[] = [];
   const runnerInputs: Array<{ prompt: string; authPath: string | null }> = [];
 
@@ -84,8 +84,8 @@ test('createTriggerHandler runs the runner, reports history, and marks success',
   const runner: Runner = {
     run: async (input) => {
       runnerInputs.push({ prompt: input.prompt, authPath: input.authPath });
-      input.onStdoutChunk?.('stdout');
-      input.onStderrChunk?.('stderr');
+      input.onStdoutChunk?.('stdout', 'TEXT');
+      input.onStderrChunk?.('stderr', 'STDERR');
       return { exitCode: 0 };
     },
   };
@@ -113,8 +113,8 @@ test('createTriggerHandler runs the runner, reports history, and marks success',
         start: () => {
           logEntries.push({ level: 'START', message: 'started' });
         },
-        append: (level, message) => {
-          logEntries.push({ level, message });
+        append: (level, message, category, toolName) => {
+          logEntries.push({ level, message, category, toolName });
         },
         stop: async () => {
           logEntries.push({ level: 'STOP', message: 'stopped' });
@@ -137,11 +137,13 @@ test('createTriggerHandler runs the runner, reports history, and marks success',
     'API runner prompt\n- History path: /auth/path/.agentteams/runner/history/trigger-1.md\n- Previous history path: /auth/path/.agentteams/runner/history/parent-1.md',
   );
   assert.equal(
-    logEntries.some((entry) => entry.level === 'INFO' && entry.message.includes('stdout')),
+    logEntries.some((entry) => entry.level === 'INFO' && entry.category === 'TEXT' && entry.message.includes('stdout')),
     true,
   );
   assert.equal(
-    logEntries.some((entry) => entry.level === 'WARN' && entry.message.includes('stderr')),
+    logEntries.some(
+      (entry) => entry.level === 'WARN' && entry.category === 'STDERR' && entry.message.includes('stderr'),
+    ),
     true,
   );
   assert.deepEqual(

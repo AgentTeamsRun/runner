@@ -38,7 +38,7 @@ test('summarizeOpenCodeTool renders readable summaries with opencode input keys'
 test('parseOpenCodeJsonLine reduces assistant text to first sentence', () => {
   const line = textEvent('Now wire the refetch into the controller. Next steps follow.');
   assert.deepEqual(parseOpenCodeJsonLine(line), [
-    { level: 'INFO', message: 'Now wire the refetch into the controller.' },
+    { level: 'INFO', category: 'TEXT', message: 'Now wire the refetch into the controller.' },
   ]);
 });
 
@@ -46,10 +46,10 @@ test('parseOpenCodeJsonLine only surfaces terminal tool state and flags errors',
   const cmd = { command: 'ls dist' };
   assert.deepEqual(parseOpenCodeJsonLine(toolEvent('bash', cmd, 'running')), []);
   assert.deepEqual(parseOpenCodeJsonLine(toolEvent('bash', cmd, 'completed')), [
-    { level: 'INFO', message: '[Tool] bash: ls dist' },
+    { level: 'INFO', category: 'TOOL', toolName: 'bash', message: '[Tool] bash: ls dist' },
   ]);
   assert.deepEqual(parseOpenCodeJsonLine(toolEvent('bash', cmd, 'error')), [
-    { level: 'WARN', message: '[Tool] bash: ls dist (error)' },
+    { level: 'WARN', category: 'TOOL', toolName: 'bash', message: '[Tool] bash: ls dist (error)' },
   ]);
 });
 
@@ -59,7 +59,12 @@ test('parseOpenCodeJsonLine summarizes patch and step-finish, hides reasoning by
     part: { type: 'patch', files: [`${cwd}/api/src/a.ts`, `${cwd}/api/src/b.ts`] },
   });
   assert.deepEqual(parseOpenCodeJsonLine(patch, { cwd }), [
-    { level: 'INFO', message: '[Patch] api/src/a.ts, api/src/b.ts' },
+    {
+      level: 'INFO',
+      category: 'TOOL',
+      toolName: 'patch',
+      message: '[Patch] api/src/a.ts, api/src/b.ts',
+    },
   ]);
 
   const step = JSON.stringify({
@@ -67,13 +72,13 @@ test('parseOpenCodeJsonLine summarizes patch and step-finish, hides reasoning by
     part: { type: 'step-finish', reason: 'stop', tokens: { output: 23 }, cost: 0.00266898 },
   });
   assert.deepEqual(parseOpenCodeJsonLine(step), [
-    { level: 'INFO', message: '[Step finished: stop, 23 out tok, $0.0027]' },
+    { level: 'INFO', category: 'RESULT', message: '[Step finished: stop, 23 out tok, $0.0027]' },
   ]);
 
   const reasoning = JSON.stringify({ type: 'reasoning', part: { type: 'reasoning', text: 'hidden by default' } });
   assert.deepEqual(parseOpenCodeJsonLine(reasoning), []);
   assert.deepEqual(parseOpenCodeJsonLine(reasoning, { verbose: true }), [
-    { level: 'INFO', message: '[Thinking] hidden by default' },
+    { level: 'INFO', category: 'THINKING', message: '[Thinking] hidden by default' },
   ]);
 });
 

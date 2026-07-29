@@ -91,12 +91,12 @@ export const parseCodexJsonLine = (line: string, options?: ParseOptions): Parsed
   }
 
   if (parsed.type === 'turn.completed') {
-    return [{ level: 'INFO', message: '[Result] Completed' }];
+    return [{ level: 'INFO', category: 'RESULT', message: '[Result] Completed' }];
   }
 
   if (parsed.type === 'turn.failed' || parsed.type === 'error') {
     const detail = firstSentence(failureMessage(parsed), 160);
-    return [{ level: 'WARN', message: detail ? `[Result] Failed: ${detail}` : '[Result] Failed' }];
+    return [{ level: 'WARN', category: 'RESULT', message: detail ? `[Result] Failed: ${detail}` : '[Result] Failed' }];
   }
 
   if (parsed.type !== 'item.completed' || !parsed.item?.type) {
@@ -107,7 +107,7 @@ export const parseCodexJsonLine = (line: string, options?: ParseOptions): Parsed
   switch (item.type) {
     case 'agent_message': {
       return typeof item.text === 'string' && item.text.trim().length > 0
-        ? [{ level: 'INFO', message: firstSentence(item.text) }]
+        ? [{ level: 'INFO', category: 'TEXT', message: firstSentence(item.text) }]
         : [];
     }
 
@@ -115,28 +115,66 @@ export const parseCodexJsonLine = (line: string, options?: ParseOptions): Parsed
       if (!isVerboseEnabled(options) || typeof item.text !== 'string' || item.text.trim().length === 0) {
         return [];
       }
-      return [{ level: 'INFO', message: `[Thinking] ${truncate(item.text.trim(), REASONING_PREVIEW_MAX)}` }];
+      return [
+        {
+          level: 'INFO',
+          category: 'THINKING',
+          message: `[Thinking] ${truncate(item.text.trim(), REASONING_PREVIEW_MAX)}`,
+        },
+      ];
     }
 
     case 'command_execution': {
       const summary = summarizeCommand(item.command ?? '', options?.cwd);
       const failed = item.status === 'failed' || (typeof item.exit_code === 'number' && item.exit_code !== 0);
-      return [{ level: failed ? 'WARN' : 'INFO', message: `[Tool] ${summary}${failed ? ' (failed)' : ''}` }];
+      return [
+        {
+          level: failed ? 'WARN' : 'INFO',
+          category: 'TOOL',
+          toolName: 'Bash',
+          message: `[Tool] ${summary}${failed ? ' (failed)' : ''}`,
+        },
+      ];
     }
 
     case 'file_change': {
       const summary = summarizeFileChanges(item.changes, options?.cwd);
-      return summary ? [{ level: item.status === 'failed' ? 'WARN' : 'INFO', message: `[Tool] ${summary}` }] : [];
+      return summary
+        ? [
+            {
+              level: item.status === 'failed' ? 'WARN' : 'INFO',
+              category: 'TOOL',
+              toolName: 'File change',
+              message: `[Tool] ${summary}`,
+            },
+          ]
+        : [];
     }
 
     case 'mcp_tool_call': {
       const toolName = [item.server, item.tool ?? item.name].filter(Boolean).join('.');
-      return toolName ? [{ level: item.status === 'failed' ? 'WARN' : 'INFO', message: `[Tool] ${toolName}` }] : [];
+      return toolName
+        ? [
+            {
+              level: item.status === 'failed' ? 'WARN' : 'INFO',
+              category: 'TOOL',
+              toolName,
+              message: `[Tool] ${toolName}`,
+            },
+          ]
+        : [];
     }
 
     case 'web_search': {
       const query = typeof item.query === 'string' ? truncate(item.query.trim(), COMMAND_PREVIEW_MAX) : '';
-      return [{ level: 'INFO', message: query ? `[Tool] Web search: ${query}` : '[Tool] Web search' }];
+      return [
+        {
+          level: 'INFO',
+          category: 'TOOL',
+          toolName: 'Web search',
+          message: query ? `[Tool] Web search: ${query}` : '[Tool] Web search',
+        },
+      ];
     }
 
     default:

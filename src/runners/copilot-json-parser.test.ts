@@ -36,6 +36,8 @@ test('measured Copilot fixture suppresses ephemeral noise and file or result bod
   assert.ok(messages.includes('[Tool] view: note.txt'));
   assert.ok(messages.includes('[Tool] create: greet.txt'));
   assert.ok(messages.some((message) => message.startsWith('[Result] Completed in 36s')));
+  assert.ok(entries.some((entry) => entry.category === 'TOOL' && entry.toolName === 'create'));
+  assert.equal(entries.at(-1)?.category, 'RESULT');
   assert.ok(!messages.join('\n').includes('HELLO WORLD'));
   assert.ok(!messages.join('\n').includes('reasoningOpaque'));
   assert.ok(!messages.join('\n').includes('detailedContent'));
@@ -70,5 +72,7 @@ test('parseCopilotJsonLine reports failures without exposing result payloads', (
     type: 'tool.execution_complete',
     data: { toolName: 'create', success: false, result: { content: 'SECRET BODY' } },
   });
-  assert.deepEqual(parseCopilotJsonLine(line), [{ level: 'WARN', message: '[Tool] create (failed)' }]);
+  assert.deepEqual(parseCopilotJsonLine(line), [
+    { level: 'WARN', category: 'TOOL', toolName: 'create', message: '[Tool] create (failed)' },
+  ]);
 });

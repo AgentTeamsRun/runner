@@ -4,7 +4,7 @@ import { logger } from '../logger.js';
 import { TriggerLogReporter, mergeLogs } from './log-reporter.js';
 
 type Payload = {
-  logs?: Array<{ level: string; message: string }>;
+  logs?: Array<{ level: string; category?: string; toolName?: string; message: string }>;
   heartbeat?: boolean;
 };
 
@@ -162,32 +162,57 @@ test('mergeLogs returns empty array for empty input', () => {
   assert.deepEqual(mergeLogs([]), []);
 });
 
-test('mergeLogs splits at category prefix boundaries', () => {
+test('mergeLogs splits at structured category boundaries while ignoring toolName as a merge key', () => {
   const result = mergeLogs([
-    { level: 'INFO', message: '[Tool] Read: web/src/a.ts' },
-    { level: 'INFO', message: '[Tool] Read: web/src/b.ts' },
-    { level: 'INFO', message: 'Now wire the refetch.' },
-    { level: 'INFO', message: '[Tool] Edit: web/src/a.ts' },
+    { level: 'INFO', category: 'TOOL', toolName: 'Read', message: '[Tool] Read: web/src/a.ts' },
+    { level: 'INFO', category: 'TOOL', toolName: 'Edit', message: '[Tool] Edit: web/src/b.ts' },
+    { level: 'INFO', category: 'TEXT', message: 'Now wire the refetch.' },
+    { level: 'INFO', category: 'TOOL', toolName: 'Edit', message: '[Tool] Edit: web/src/a.ts' },
   ]);
 
   assert.equal(result.length, 3);
   assert.deepEqual(result[0], {
     level: 'INFO',
-    message: '[Tool] Read: web/src/a.ts\n[Tool] Read: web/src/b.ts',
+    category: 'TOOL',
+    toolName: 'Read',
+    message: '[Tool] Read: web/src/a.ts\n[Tool] Edit: web/src/b.ts',
   });
-  assert.deepEqual(result[1], { level: 'INFO', message: 'Now wire the refetch.' });
-  assert.deepEqual(result[2], { level: 'INFO', message: '[Tool] Edit: web/src/a.ts' });
+  assert.deepEqual(result[1], { level: 'INFO', category: 'TEXT', message: 'Now wire the refetch.' });
+  assert.deepEqual(result[2], {
+    level: 'INFO',
+    category: 'TOOL',
+    toolName: 'Edit',
+    message: '[Tool] Edit: web/src/a.ts',
+  });
 });
 
-test('mergeLogs keeps [Result] separate from plain text even at same level', () => {
+test('mergeLogs keeps RESULT separate from TEXT even at the same level', () => {
   const result = mergeLogs([
-    { level: 'INFO', message: 'Task 1 done' },
-    { level: 'INFO', message: '[Result] Completed in 12s (4 turns)' },
+    { level: 'INFO', category: 'TEXT', message: 'Task 1 done' },
+    { level: 'INFO', category: 'RESULT', message: '[Result] Completed in 12s (4 turns)' },
   ]);
 
   assert.equal(result.length, 2);
   assert.equal(result[0].message, 'Task 1 done');
   assert.equal(result[1].message, '[Result] Completed in 12s (4 turns)');
+});
+
+test('TriggerLogReporter forwards optional category and toolName fields', async () => {
+  const payloads: Payload[] = [];
+  const client = {
+    appendTriggerLogs: async (_triggerId: string, payload: Payload) => {
+      payloads.push(payload);
+    },
+  };
+
+  const reporter = new TriggerLogReporter(client as never, 'trigger-1');
+  reporter.append('INFO', '[Tool] Read: web/src/a.ts', 'TOOL', 'Read');
+  await reporter.stop();
+
+  assert.deepEqual(payloads[0], {
+    logs: [{ level: 'INFO', category: 'TOOL', toolName: 'Read', message: '[Tool] Read: web/src/a.ts' }],
+    heartbeat: true,
+  });
 });
 
 test('TriggerLogReporter merges same-level logs during flush', async () => {

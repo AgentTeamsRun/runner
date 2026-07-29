@@ -7,6 +7,7 @@ import { describeExecutableResolution, resolveExecutablePathWithPreference, spaw
 import { logger } from '../logger.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
+import type { TriggerLogCategory } from '../types.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 
 const PROMPT_PREVIEW_MAX = 500;
@@ -84,6 +85,8 @@ export const sanitizeAntigravityInternalLogLine = (line: string): string => {
 export type AntigravityReadableEvent = {
   message: string;
   level: 'INFO' | 'WARN';
+  category: TriggerLogCategory;
+  toolName?: string;
 };
 
 const parseAntigravityKlogLine = (line: string): { level: string; message: string } | null => {
@@ -107,7 +110,7 @@ export const extractAntigravityReadableEvent = (line: string): AntigravityReadab
   const { level, message } = parsed;
   const authMatch = message.match(/^OAuth: authenticated successfully as (.+)$/);
   if (authMatch) {
-    return { message: `[Session] Authenticated as ${authMatch[1]}`, level: 'INFO' };
+    return { message: `[Session] Authenticated as ${authMatch[1]}`, level: 'INFO', category: 'SYSTEM' };
   }
 
   const projectMatch = message.match(/^project: using project "([^"]+)" \(id=([0-9a-f-]+)\)/i);
@@ -115,40 +118,54 @@ export const extractAntigravityReadableEvent = (line: string): AntigravityReadab
     return {
       message: `[Session] Project: ${basename(projectMatch[1] ?? '')} (#${(projectMatch[2] ?? '').slice(0, 8)})`,
       level: 'INFO',
+      category: 'SYSTEM',
     };
   }
 
   const printModeMatch = message.match(/^Print mode: starting \(promptLength=(\d+)/);
   if (printModeMatch) {
-    return { message: `[Session] Session started (prompt=${printModeMatch[1]} chars)`, level: 'INFO' };
+    return {
+      message: `[Session] Session started (prompt=${printModeMatch[1]} chars)`,
+      level: 'INFO',
+      category: 'SYSTEM',
+    };
   }
 
   const modelMatch = message.match(/^Propagating selected model override to backend: label="([^"]+)"/);
   if (modelMatch) {
-    return { message: `[Session] Model: ${modelMatch[1]}`, level: 'INFO' };
+    return { message: `[Session] Model: ${modelMatch[1]}`, level: 'INFO', category: 'SYSTEM' };
   }
 
   const conversationMatch = message.match(/^Created conversation ([0-9a-f-]+)/i);
   if (conversationMatch) {
-    return { message: `[Session] Conversation: ${(conversationMatch[1] ?? '').slice(0, 8)}`, level: 'INFO' };
+    return {
+      message: `[Session] Conversation: ${(conversationMatch[1] ?? '').slice(0, 8)}`,
+      level: 'INFO',
+      category: 'SYSTEM',
+    };
   }
 
   const toolMatch = message.match(/^Auto-approving tool confirmation: "([^"]+)" at step (\d+)/);
   if (toolMatch) {
-    return { message: `[Tool] ${toolMatch[1]} (step ${toolMatch[2]})`, level: 'INFO' };
+    return {
+      message: `[Tool] ${toolMatch[1]} (step ${toolMatch[2]})`,
+      level: 'INFO',
+      category: 'TOOL',
+      toolName: toolMatch[1],
+    };
   }
 
   const dripMatch = message.match(/^Drip stopped: .* length=(\d+)/);
   if (dripMatch) {
-    return { message: `[Result] Streamed ${dripMatch[1]} chars`, level: 'INFO' };
+    return { message: `[Result] Streamed ${dripMatch[1]} chars`, level: 'INFO', category: 'RESULT' };
   }
 
   if (message === 'Language server shutting down') {
-    return { message: '[Result] Session ended', level: 'INFO' };
+    return { message: '[Result] Session ended', level: 'INFO', category: 'RESULT' };
   }
 
   if (level === 'E' && !message.includes('not logged into Antigravity')) {
-    return { message, level: 'WARN' };
+    return { message, level: 'WARN', category: 'STDERR' };
   }
 
   return null;
@@ -157,8 +174,8 @@ export const extractAntigravityReadableEvent = (line: string): AntigravityReadab
 type InternalLogForwarderOptions = {
   logPath: string;
   triggerId: string;
-  onLine: (line: string) => void;
-  onWarnLine?: (line: string) => void;
+  onLine: (line: string, category: TriggerLogCategory, toolName?: string) => void;
+  onWarnLine?: (line: string, category: 'STDERR') => void;
   onActivity?: () => void;
   pollMs?: number;
 };
@@ -222,9 +239,9 @@ export const createAntigravityInternalLogForwarder = ({
       forwardedBytes += Buffer.byteLength(boundedOutput, 'utf8');
       forwardedLines += 1;
       if (event.level === 'WARN') {
-        (onWarnLine ?? onLine)(boundedOutput);
+        (onWarnLine ?? onLine)(boundedOutput, 'STDERR');
       } else {
-        onLine(boundedOutput);
+        onLine(boundedOutput, event.category, event.toolName);
       }
       onActivity?.();
       const logPayload = {
@@ -438,14 +455,14 @@ export class AntigravityRunner implements Runner {
     const internalLogForwarder = createAntigravityInternalLogForwarder({
       logPath: internalLogPath,
       triggerId: opts.triggerId,
-      onLine: (line) => {
+      onLine: (line, category, toolName) => {
         lastOutput = line;
-        opts.onStdoutChunk?.(line);
+        opts.onStdoutChunk?.(line, category, toolName);
       },
-      onWarnLine: (line) => {
+      onWarnLine: (line, category) => {
         lastOutput = line;
         lastErrorOutput = line;
-        opts.onStderrChunk?.(line);
+        opts.onStderrChunk?.(line, category);
       },
       onActivity: () => idleTimer.reset(),
     });
@@ -466,7 +483,7 @@ export class AntigravityRunner implements Runner {
       if (output.length > 0) {
         lastOutput = output;
         idleTimer.reset();
-        opts.onStdoutChunk?.(output);
+        opts.onStdoutChunk?.(output, 'TEXT');
         logger.info('Runner stdout', {
           triggerId: opts.triggerId,
           pid: child.pid,
@@ -480,7 +497,7 @@ export class AntigravityRunner implements Runner {
         lastOutput = output;
         lastErrorOutput = output;
         idleTimer.reset();
-        opts.onStderrChunk?.(output);
+        opts.onStderrChunk?.(output, 'STDERR');
         logger.warn('Runner stderr', {
           triggerId: opts.triggerId,
           pid: child.pid,

@@ -16,7 +16,9 @@ test('parseCodexJsonLine hides command output and only emits terminal command st
   assert.ok(completed);
   assert.deepEqual(parseCodexJsonLine(started, { cwd }), []);
   const entries = parseCodexJsonLine(completed, { cwd });
-  assert.deepEqual(entries, [{ level: 'INFO', message: "[Tool] Bash: sed -n '1,200p' note.txt" }]);
+  assert.deepEqual(entries, [
+    { level: 'INFO', category: 'TOOL', toolName: 'Bash', message: "[Tool] Bash: sed -n '1,200p' note.txt" },
+  ]);
   assert.ok(!entries.some((entry) => entry.message.includes('hello world')));
 });
 
@@ -28,7 +30,12 @@ test('parseCodexJsonLine summarizes completed file changes without file contents
 
   assert.ok(line);
   assert.deepEqual(parseCodexJsonLine(line, { cwd }), [
-    { level: 'INFO', message: '[Tool] File change: greet.txt (add)' },
+    {
+      level: 'INFO',
+      category: 'TOOL',
+      toolName: 'File change',
+      message: '[Tool] File change: greet.txt (add)',
+    },
   ]);
 });
 
@@ -72,9 +79,9 @@ test('parseCodexJsonLine hides reasoning unless verbose and handles failure even
   });
   assert.deepEqual(parseCodexJsonLine(reasoning), []);
   assert.deepEqual(parseCodexJsonLine(reasoning, { verbose: true }), [
-    { level: 'INFO', message: '[Thinking] Inspect the repository before editing.' },
+    { level: 'INFO', category: 'THINKING', message: '[Thinking] Inspect the repository before editing.' },
   ]);
   assert.deepEqual(parseCodexJsonLine(JSON.stringify({ type: 'turn.failed', error: { message: 'model failed' } })), [
-    { level: 'WARN', message: '[Result] Failed: model failed' },
+    { level: 'WARN', category: 'RESULT', message: '[Result] Failed: model failed' },
   ]);
 });

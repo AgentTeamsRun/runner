@@ -131,8 +131,12 @@ export type TriggerRuntimeAttachment = {
 
 export type TriggerLogLevel = 'INFO' | 'WARN' | 'ERROR';
 
+export type TriggerLogCategory = 'SYSTEM' | 'TEXT' | 'THINKING' | 'TOOL' | 'RESULT' | 'STDERR';
+
 export type TriggerLogInput = {
   level: TriggerLogLevel;
+  category?: TriggerLogCategory;
+  toolName?: string;
   message: string;
 };
 

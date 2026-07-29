@@ -82,7 +82,7 @@ export const parseCopilotJsonLine = (line: string, options?: ParseOptions): Pars
     case 'assistant.message': {
       const content = parsed.data?.content;
       return typeof content === 'string' && content.trim().length > 0
-        ? [{ level: 'INFO', message: firstSentence(content) }]
+        ? [{ level: 'INFO', category: 'TEXT', message: firstSentence(content) }]
         : [];
     }
 
@@ -90,14 +90,14 @@ export const parseCopilotJsonLine = (line: string, options?: ParseOptions): Pars
       const content = parsed.data?.content;
       const verbose = options?.verbose ?? process.env.AGENTTEAMS_RUNNER_VERBOSE === '1';
       return verbose && typeof content === 'string' && content.trim().length > 0
-        ? [{ level: 'INFO', message: `[Thinking] ${truncate(content.trim(), 300)}` }]
+        ? [{ level: 'INFO', category: 'THINKING', message: `[Thinking] ${truncate(content.trim(), 300)}` }]
         : [];
     }
 
     case 'tool.execution_start': {
       const toolName = parsed.data?.toolName ?? 'unknown';
       const summary = truncate(summarizeCopilotTool(toolName, parsed.data?.arguments, options?.cwd), TOOL_PREVIEW_MAX);
-      return [{ level: 'INFO', message: `[Tool] ${summary}` }];
+      return [{ level: 'INFO', category: 'TOOL', toolName, message: `[Tool] ${summary}` }];
     }
 
     case 'tool.execution_complete': {
@@ -105,7 +105,7 @@ export const parseCopilotJsonLine = (line: string, options?: ParseOptions): Pars
         return [];
       }
       const toolName = parsed.data.toolName ?? 'unknown';
-      return [{ level: 'WARN', message: `[Tool] ${toolName} (failed)` }];
+      return [{ level: 'WARN', category: 'TOOL', toolName, message: `[Tool] ${toolName} (failed)` }];
     }
 
     case 'result': {
@@ -117,6 +117,7 @@ export const parseCopilotJsonLine = (line: string, options?: ParseOptions): Pars
       return [
         {
           level: failed ? 'WARN' : 'INFO',
+          category: 'RESULT',
           message: `[Result] ${failed ? 'Failed' : 'Completed'}${duration}${changed}`,
         },
       ];

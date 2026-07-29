@@ -1,6 +1,6 @@
 import { logger } from '../logger.js';
 import { DaemonApiClient } from '../api-client.js';
-import type { TriggerLogInput, TriggerLogLevel } from '../types.js';
+import type { TriggerLogCategory, TriggerLogInput, TriggerLogLevel } from '../types.js';
 
 const MAX_BATCH_SIZE = 50;
 const MAX_BUFFERED_LOGS = 500;
@@ -11,33 +11,22 @@ const ANSI_ESCAPE_PATTERN = /\u001B\[[0-9;?]*[ -/]*[@-~]/g;
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHAR_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
-const CATEGORY_PREFIX_PATTERN = /^\[([^\]]+)\]/;
-
-const categoryOf = (message: string): string => {
-  const match = message.match(CATEGORY_PREFIX_PATTERN);
-  return match ? match[1] : '';
-};
-
 export const mergeLogs = (logs: TriggerLogInput[]): TriggerLogInput[] => {
   if (logs.length === 0) {
     return [];
   }
 
   const merged: TriggerLogInput[] = [];
-  let current = { level: logs[0].level, message: logs[0].message };
-  let currentCategory = categoryOf(current.message);
+  let current = { ...logs[0] };
 
   for (let i = 1; i < logs.length; i++) {
     const log = logs[i];
-    const logCategory = categoryOf(log.message);
     const combined = current.message + '\n' + log.message;
-    const sameCategory = logCategory === currentCategory;
-    if (log.level === current.level && sameCategory && combined.length <= MAX_MESSAGE_LENGTH) {
+    if (log.level === current.level && log.category === current.category && combined.length <= MAX_MESSAGE_LENGTH) {
       current.message = combined;
     } else {
       merged.push(current);
-      current = { level: log.level, message: log.message };
-      currentCategory = logCategory;
+      current = { ...log };
     }
   }
 
@@ -80,7 +69,7 @@ export class TriggerLogReporter {
     }, this.flushIntervalMs);
   }
 
-  append(level: TriggerLogLevel, message: string): void {
+  append(level: TriggerLogLevel, message: string, category?: TriggerLogCategory, toolName?: string): void {
     const normalized = normalizeMessage(message);
     if (normalized.length === 0) {
       return;
@@ -91,7 +80,12 @@ export class TriggerLogReporter {
       this.droppedCount += 1;
     }
 
-    this.queue.push({ level, message: normalized });
+    this.queue.push({
+      level,
+      message: normalized,
+      ...(category ? { category } : {}),
+      ...(toolName ? { toolName } : {}),
+    });
   }
 
   async stop(): Promise<void> {
