@@ -162,7 +162,7 @@ test('mergeLogs returns empty array for empty input', () => {
   assert.deepEqual(mergeLogs([]), []);
 });
 
-test('mergeLogs splits at structured category boundaries while ignoring toolName as a merge key', () => {
+test('mergeLogs splits at structured category boundaries and keeps every TOOL call as its own record', () => {
   const result = mergeLogs([
     { level: 'INFO', category: 'TOOL', toolName: 'Read', message: '[Tool] Read: web/src/a.ts' },
     { level: 'INFO', category: 'TOOL', toolName: 'Edit', message: '[Tool] Edit: web/src/b.ts' },
@@ -170,20 +170,40 @@ test('mergeLogs splits at structured category boundaries while ignoring toolName
     { level: 'INFO', category: 'TOOL', toolName: 'Edit', message: '[Tool] Edit: web/src/a.ts' },
   ]);
 
-  assert.equal(result.length, 3);
+  assert.equal(result.length, 4);
   assert.deepEqual(result[0], {
     level: 'INFO',
     category: 'TOOL',
     toolName: 'Read',
-    message: '[Tool] Read: web/src/a.ts\n[Tool] Edit: web/src/b.ts',
+    message: '[Tool] Read: web/src/a.ts',
   });
-  assert.deepEqual(result[1], { level: 'INFO', category: 'TEXT', message: 'Now wire the refetch.' });
-  assert.deepEqual(result[2], {
+  assert.deepEqual(result[1], {
+    level: 'INFO',
+    category: 'TOOL',
+    toolName: 'Edit',
+    message: '[Tool] Edit: web/src/b.ts',
+  });
+  assert.deepEqual(result[2], { level: 'INFO', category: 'TEXT', message: 'Now wire the refetch.' });
+  assert.deepEqual(result[3], {
     level: 'INFO',
     category: 'TOOL',
     toolName: 'Edit',
     message: '[Tool] Edit: web/src/a.ts',
   });
+});
+
+test('mergeLogs keeps repeated calls to the same tool as separate records so the UI can group them', () => {
+  const result = mergeLogs([
+    { level: 'INFO', category: 'TOOL', toolName: 'Read', message: '[Tool] Read: a.ts' },
+    { level: 'INFO', category: 'TOOL', toolName: 'Read', message: '[Tool] Read: b.ts' },
+    { level: 'INFO', category: 'TOOL', toolName: 'Read', message: '[Tool] Read: c.ts' },
+  ]);
+
+  assert.equal(result.length, 3);
+  assert.deepEqual(
+    result.map((log) => log.message),
+    ['[Tool] Read: a.ts', '[Tool] Read: b.ts', '[Tool] Read: c.ts'],
+  );
 });
 
 test('mergeLogs keeps RESULT separate from TEXT even at the same level', () => {

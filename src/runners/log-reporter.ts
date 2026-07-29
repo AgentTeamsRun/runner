@@ -11,6 +11,13 @@ const ANSI_ESCAPE_PATTERN = /\u001B\[[0-9;?]*[ -/]*[@-~]/g;
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHAR_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
+// TOOL 로그는 도구 호출 1건이 저장 행 1건이어야 한다. 웹의 `groupAdjacentLogs`가 인접한
+// 저장 행의 `level/category/toolName`을 비교해 `<tool> ×N` 그룹을 만들기 때문에, 여기서
+// 여러 호출을 한 행으로 합치면 그룹이 만들어지지 않고 첫 호출의 `toolName`만 남아
+// 서로 다른 도구까지 첫 도구명으로 표시된다. 그래서 병합 키에 `toolName`을 더하는 대신
+// TOOL 카테고리 자체를 병합 대상에서 제외한다(같은 도구 반복 호출도 ×N으로 보이게).
+const isMergeableCategory = (category: TriggerLogInput['category']): boolean => category !== 'TOOL';
+
 export const mergeLogs = (logs: TriggerLogInput[]): TriggerLogInput[] => {
   if (logs.length === 0) {
     return [];
@@ -22,7 +29,12 @@ export const mergeLogs = (logs: TriggerLogInput[]): TriggerLogInput[] => {
   for (let i = 1; i < logs.length; i++) {
     const log = logs[i];
     const combined = current.message + '\n' + log.message;
-    if (log.level === current.level && log.category === current.category && combined.length <= MAX_MESSAGE_LENGTH) {
+    if (
+      log.level === current.level &&
+      log.category === current.category &&
+      isMergeableCategory(log.category) &&
+      combined.length <= MAX_MESSAGE_LENGTH
+    ) {
       current.message = combined;
     } else {
       merged.push(current);
