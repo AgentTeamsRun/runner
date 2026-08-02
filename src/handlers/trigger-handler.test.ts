@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from '../logger.js';
@@ -108,6 +108,7 @@ test('createTriggerHandler runs the runner, reports history, and marks success',
       },
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => runner,
       createLogReporter: () => ({
         start: () => {
@@ -387,6 +388,7 @@ test('createTriggerHandler preserves the local history file and still marks succ
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () => ({ exitCode: 0, outputText: '{"type":"result"}' }) satisfies RunResult,
       }),
@@ -447,6 +449,7 @@ test('createTriggerHandler flags NEEDS_REVIEW when the runner exits 0 without wr
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () => ({ exitCode: 0, outputText: 'The final summary.' }) satisfies RunResult,
       }),
@@ -511,6 +514,7 @@ test('createTriggerHandler strips a UTF-8 BOM before reporting history to the da
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () => ({ exitCode: 0 }) satisfies RunResult,
       }),
@@ -569,6 +573,7 @@ test('createTriggerHandler keeps history unchanged when the Questions for User s
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () => ({ exitCode: 0 }) satisfies RunResult,
       }),
@@ -623,6 +628,7 @@ test('createTriggerHandler restores parent history from server-side coaction con
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async (input) => {
           runnerInputs.push({ prompt: input.prompt, authPath: input.authPath });
@@ -689,6 +695,7 @@ test('createTriggerHandler strips a UTF-8 BOM before restoring parent history fr
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () => ({ exitCode: 0 }) satisfies RunResult,
       }),
@@ -746,6 +753,7 @@ test('createTriggerHandler overwrites existing parent history with server cumula
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () => ({ exitCode: 0 }) satisfies RunResult,
       }),
@@ -804,6 +812,7 @@ test('createTriggerHandler reports runner failures and falls back to last output
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () => ({ exitCode: 1, lastOutput: 'last output' }) satisfies RunResult,
       }),
@@ -854,6 +863,7 @@ test('createTriggerHandler reports the explicit runner error before last output'
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () =>
           ({
@@ -922,6 +932,7 @@ test('createTriggerHandler fails without running the runner when worktree creati
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async (input) => {
           runnerInputs.push({ authPath: input.authPath });
@@ -998,6 +1009,7 @@ test('createTriggerHandler fails without running the runner when worktree authPa
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async (input) => {
           runnerInputs.push({ authPath: input.authPath });
@@ -1076,6 +1088,7 @@ test('createTriggerHandler resolves a member repo via remoteUrl when worktree au
       },
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async (input) => {
           runnerInputs.push({ authPath: input.authPath });
@@ -1163,6 +1176,7 @@ test('createTriggerHandler fails without running the runner when member repo res
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async (input) => {
           runnerInputs.push({ authPath: input.authPath });
@@ -1254,6 +1268,7 @@ test('worktrees created via member repo resolution are removed by the poller lif
         },
       },
       {
+        pathExists: () => true,
         createRunnerFactory: () => () => ({
           run: async () => ({ exitCode: 0 }) satisfies RunResult,
         }),
@@ -1393,6 +1408,7 @@ test('createTriggerHandler downgrades an idle-timeout to NEEDS_REVIEW when a his
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () =>
           ({
@@ -1451,6 +1467,7 @@ test('createTriggerHandler keeps an idle-timeout as FAILED when no history file 
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         // idle 타임아웃이지만 히스토리 파일도, stdout 폴백도 없으면 작업 완료를 보장할 수 없어 FAILED 유지.
         run: async () =>
@@ -1509,6 +1526,7 @@ test('createTriggerHandler stores stdout as fallback history when the runner omi
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () =>
           ({
@@ -1580,6 +1598,7 @@ test('createTriggerHandler truncates long agent output in fallback history', asy
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () =>
           ({
@@ -1648,6 +1667,7 @@ test('createTriggerHandler preserves fallback agent output within history limit'
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () =>
           ({
@@ -1712,6 +1732,7 @@ test('createTriggerHandler cancels the runner when the server reports a cancel r
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async ({ signal }) => {
           await new Promise<void>((resolve) => {
@@ -1805,6 +1826,14 @@ test('createTriggerHandler marks the trigger as failed when runtime loading thro
 
 const withTempDir = async (run: (dir: string) => Promise<void>): Promise<void> => {
   const dir = await mkdtemp(join(tmpdir(), 'trigger-handler-hook-test-'));
+  // 실행 전 작업 디렉터리 검증(checkRunnerWorkingDirectory)이 프로젝트 마커를 요구하므로,
+  // 임시 워크스페이스도 실제 러너 워크스페이스와 같은 마커(트리거와 같은 projectId)를 갖춘다.
+  await mkdir(join(dir, '.agentteams'), { recursive: true });
+  await writeFile(
+    join(dir, '.agentteams', 'config.json'),
+    `${JSON.stringify({ projectId: runtime.projectId })}\n`,
+    'utf8',
+  );
   try {
     await run(dir);
   } finally {
@@ -2083,7 +2112,7 @@ test('createTriggerHandler logs but does not throw when attachment cleanup fails
   });
 });
 
-test('createTriggerHandler fails before runner execution when attachments have no runner workspace', async () => {
+test('createTriggerHandler fails before runner execution when the runner workspace is not configured', async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
   let runnerCalled = false;
   const client = {
@@ -2143,11 +2172,11 @@ test('createTriggerHandler fails before runner execution when attachments have n
   await handler({ ...trigger, parentTriggerId: null });
 
   assert.equal(runnerCalled, false);
-  assert.deepEqual(clientCalls.at(-1)?.args, [
-    'trigger-1',
-    'FAILED',
-    'Cannot deliver attachments because runner workspace path is not configured.',
-  ]);
+  const [triggerId, status, message] = (clientCalls.at(-1)?.args ?? []) as [string, string, string];
+  assert.equal(triggerId, 'trigger-1');
+  assert.equal(status, 'FAILED');
+  // 워크스페이스 경로가 없는 실행은 첨부 전달 단계보다 앞선 작업 디렉터리 검증에서 끝난다.
+  assert.match(message, /Runner workspace path is not configured/);
 });
 
 test('createTriggerHandler does not append history or convention text to the API prompt', async () => {
@@ -2244,6 +2273,7 @@ test('createTriggerHandler surfaces a user-visible warning when the runner ignor
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async (input) => {
           runnerInputs.push({ model: input.model, fastMode: input.fastMode });
@@ -2307,6 +2337,7 @@ test('createTriggerHandler does not warn when the runner supports the requested 
       client: client as never,
     },
     {
+      pathExists: () => true,
       createRunnerFactory: () => () => ({
         run: async () => ({ exitCode: 0 }) satisfies RunResult,
       }),
@@ -2331,4 +2362,310 @@ test('createTriggerHandler does not warn when the runner supports the requested 
     (entry) => entry.level === 'WARN' && /is not supported by runner/.test(entry.message),
   );
   assert.deepEqual(unsupportedWarnings, []);
+});
+
+// ---------------------------------------------------------------------------
+// Working directory pre-flight tests
+// ---------------------------------------------------------------------------
+
+test('createTriggerHandler fails without creating the workspace when authPath is missing on this runner', async () => {
+  await withTempDir(async (dir) => {
+    const missingAuthPath = join(dir, 'not-on-this-machine');
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+    const logEntries: Array<{ level: string; message: string }> = [];
+    let runnerCalled = false;
+
+    const client = {
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: missingAuthPath }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async (...args: unknown[]) => {
+        clientCalls.push({ method: 'updateTriggerHistory', args });
+      },
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: 'updateTriggerStatus', args });
+      },
+    };
+
+    const handler = createTriggerHandler(
+      {
+        config: {
+          daemonToken: 'daemon-token',
+          apiUrl: 'https://api.example',
+          pollingIntervalMs: 5000,
+          maxPollingIntervalMs: 120_000,
+          timeoutMs: 1500,
+          idleTimeoutMs: 500,
+          runnerCmd: 'opencode',
+          preventSleepWhileBusy: false,
+        },
+        client: client as never,
+      },
+      {
+        createRunnerFactory: () => () => ({
+          run: async () => {
+            runnerCalled = true;
+            return { exitCode: 0 } satisfies RunResult;
+          },
+        }),
+        createLogReporter: () => ({
+          start: () => undefined,
+          append: (level, message) => {
+            logEntries.push({ level, message });
+          },
+          stop: async () => undefined,
+        }),
+        readHistoryFile: async () => '',
+      },
+    );
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, false);
+    assert.equal(existsSync(missingAuthPath), false);
+
+    const statusCall = clientCalls.filter((call) => call.method === 'updateTriggerStatus').at(-1);
+    assert.equal(statusCall?.args[1], 'FAILED');
+    assert.match(String(statusCall?.args[2]), /does not exist on this runner/);
+    assert.match(String(statusCall?.args[2]), /machine where this agent was registered/);
+    assert.equal(
+      logEntries.some((entry) => entry.level === 'ERROR' && /does not exist on this runner/.test(entry.message)),
+      true,
+    );
+  });
+});
+
+test('createTriggerHandler fails when the workspace exists but is neither a project nor a git repository', async () => {
+  await withTempDir(async (dir) => {
+    const plainDir = join(dir, 'plain');
+    await mkdir(plainDir);
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+    let runnerCalled = false;
+
+    const client = {
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: plainDir }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: 'updateTriggerStatus', args });
+      },
+    };
+
+    const handler = createTriggerHandler(
+      {
+        config: {
+          daemonToken: 'daemon-token',
+          apiUrl: 'https://api.example',
+          pollingIntervalMs: 5000,
+          maxPollingIntervalMs: 120_000,
+          timeoutMs: 1500,
+          idleTimeoutMs: 500,
+          runnerCmd: 'opencode',
+          preventSleepWhileBusy: false,
+        },
+        client: client as never,
+      },
+      {
+        createRunnerFactory: () => () => ({
+          run: async () => {
+            runnerCalled = true;
+            return { exitCode: 0 } satisfies RunResult;
+          },
+        }),
+        createLogReporter: () => ({
+          start: () => undefined,
+          append: () => undefined,
+          stop: async () => undefined,
+        }),
+        readHistoryFile: async () => '',
+      },
+    );
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, false);
+    assert.equal(existsSync(join(plainDir, '.agentteams')), false);
+    assert.equal(clientCalls.at(-1)?.args[1], 'FAILED');
+    assert.match(String(clientCalls.at(-1)?.args[2]), /is neither a git repository nor an AgentTeams project/);
+  });
+});
+
+test('createTriggerHandler runs normally when the workspace carries the project marker', async () => {
+  await withTempDir(async (dir) => {
+    const runnerInputs: Array<{ authPath: string | null }> = [];
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: dir }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: 'updateTriggerStatus', args });
+      },
+    };
+
+    const handler = createTriggerHandler(
+      {
+        config: {
+          daemonToken: 'daemon-token',
+          apiUrl: 'https://api.example',
+          pollingIntervalMs: 5000,
+          maxPollingIntervalMs: 120_000,
+          timeoutMs: 1500,
+          idleTimeoutMs: 500,
+          runnerCmd: 'opencode',
+          preventSleepWhileBusy: false,
+        },
+        client: client as never,
+      },
+      {
+        createRunnerFactory: () => () => ({
+          run: async (input) => {
+            runnerInputs.push({ authPath: input.authPath });
+            return { exitCode: 0 } satisfies RunResult;
+          },
+        }),
+        createLogReporter: () => ({
+          start: () => undefined,
+          append: () => undefined,
+          stop: async () => undefined,
+        }),
+        readHistoryFile: async () => '### Summary\n- done\n',
+        resolveRunnerHistoryPaths: () => ({
+          currentHistoryPath: join(dir, '.agentteams/runner/history/trigger-1.md'),
+          parentHistoryPath: null,
+        }),
+      },
+    );
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.deepEqual(runnerInputs, [{ authPath: dir }]);
+    assert.equal(clientCalls.at(-1)?.args[1], 'DONE');
+  });
+});
+
+test('createTriggerHandler fails when the workspace marker belongs to another project', async () => {
+  await withTempDir(async (dir) => {
+    // 같은 사용자명·같은 디렉터리 배치를 쓰는 머신에서는 다른 머신의 authPath가 "존재하는 어떤
+    // 프로젝트"에 그대로 맞아떨어진다. 마커의 projectId까지 대조해야 조용한 오실행이 사라진다.
+    const otherProjectDir = join(dir, 'other-project');
+    await mkdir(join(otherProjectDir, '.agentteams'), { recursive: true });
+    await writeFile(
+      join(otherProjectDir, '.agentteams', 'config.json'),
+      `${JSON.stringify({ projectId: 'project-other' })}\n`,
+      'utf8',
+    );
+
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+    let runnerCalled = false;
+
+    const client = {
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: otherProjectDir }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: 'updateTriggerStatus', args });
+      },
+    };
+
+    const handler = createTriggerHandler(
+      {
+        config: {
+          daemonToken: 'daemon-token',
+          apiUrl: 'https://api.example',
+          pollingIntervalMs: 5000,
+          maxPollingIntervalMs: 120_000,
+          timeoutMs: 1500,
+          idleTimeoutMs: 500,
+          runnerCmd: 'opencode',
+          preventSleepWhileBusy: false,
+        },
+        client: client as never,
+      },
+      {
+        isGitRepo: () => true,
+        createRunnerFactory: () => () => ({
+          run: async () => {
+            runnerCalled = true;
+            return { exitCode: 0 } satisfies RunResult;
+          },
+        }),
+        createLogReporter: () => ({
+          start: () => undefined,
+          append: () => undefined,
+          stop: async () => undefined,
+        }),
+        readHistoryFile: async () => '',
+      },
+    );
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    assert.equal(runnerCalled, false);
+    assert.equal(clientCalls.at(-1)?.args[1], 'FAILED');
+    assert.match(String(clientCalls.at(-1)?.args[2]), /belongs to a different AgentTeams project/);
+  });
+});
+
+test('createTriggerHandler skips the pre-flight for worktree runs that already validate their path', async () => {
+  await withTempDir(async (dir) => {
+    // RunnerBox 경로는 authPath가 아니라 생성된 워크트리에서 실행되므로, 마커가 없는 git 저장소
+    // 루트여도 기존 동작(worktree 생성 후 실행)이 유지되어야 한다.
+    const repoDir = join(dir, 'repo');
+    await mkdir(repoDir);
+    const worktreePath = join(dir, 'worktrees', 'wt-1');
+    const runnerInputs: Array<{ authPath: string | null }> = [];
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+    const client = {
+      fetchTriggerRuntime: async () => ({ ...runtime, authPath: repoDir, useWorktree: true, worktreeId: 'wt-1' }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      reportWorktreeStatus: async () => undefined,
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: 'updateTriggerStatus', args });
+      },
+    };
+
+    const handler = createTriggerHandler(
+      {
+        config: {
+          daemonToken: 'daemon-token',
+          apiUrl: 'https://api.example',
+          pollingIntervalMs: 5000,
+          maxPollingIntervalMs: 120_000,
+          timeoutMs: 1500,
+          idleTimeoutMs: 500,
+          runnerCmd: 'opencode',
+          preventSleepWhileBusy: false,
+        },
+        client: client as never,
+      },
+      {
+        isGitRepo: () => true,
+        createWorktree: () => worktreePath,
+        createRunnerFactory: () => () => ({
+          run: async (input) => {
+            runnerInputs.push({ authPath: input.authPath });
+            return { exitCode: 0 } satisfies RunResult;
+          },
+        }),
+        createLogReporter: () => ({
+          start: () => undefined,
+          append: () => undefined,
+          stop: async () => undefined,
+        }),
+        readHistoryFile: async () => '### Summary\n- done\n',
+        resolveRunnerHistoryPaths: () => ({
+          currentHistoryPath: join(worktreePath, '.agentteams/runner/history/trigger-1.md'),
+          parentHistoryPath: null,
+        }),
+      },
+    );
+
+    await handler({ ...trigger, useWorktree: true, worktreeId: 'wt-1', parentTriggerId: null });
+
+    assert.deepEqual(runnerInputs, [{ authPath: worktreePath }]);
+    assert.equal(clientCalls.at(-1)?.args[1], 'DONE');
+  });
 });

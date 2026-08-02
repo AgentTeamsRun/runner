@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import test, { mock } from 'node:test';
 import { DAEMON_API_TRANSPORT_TIMEOUT_MS, DaemonApiClient } from './api-client.js';
 import { logger } from './logger.js';
+import { getMachineId } from './utils/machine-id.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json') as { version?: string };
@@ -56,21 +57,14 @@ test('validateDaemonToken sends daemon header and returns payload data', async (
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.url, 'https://api.example/api/daemons/me');
-  assert.deepEqual(
-    calls[0]?.options?.headers,
-    expectedOsType
-      ? {
-          'X-AgentTeams-Client': 'daemon',
-          'x-daemon-token': 'daemon-token',
-          'x-runner-version': runnerVersion,
-          'x-os-type': expectedOsType,
-        }
-      : {
-          'X-AgentTeams-Client': 'daemon',
-          'x-daemon-token': 'daemon-token',
-          'x-runner-version': runnerVersion,
-        },
-  );
+  const expectedMachineId = getMachineId();
+  assert.deepEqual(calls[0]?.options?.headers, {
+    'X-AgentTeams-Client': 'daemon',
+    'x-daemon-token': 'daemon-token',
+    'x-runner-version': runnerVersion,
+    ...(expectedOsType ? { 'x-os-type': expectedOsType } : {}),
+    ...(expectedMachineId ? { 'x-machine-id': expectedMachineId } : {}),
+  });
   assert.equal(result.id, 'd1');
   assert.equal(result.osType, 'MACOS');
   assert.deepEqual(result.supportedEngines, ['CODEX']);
@@ -278,4 +272,19 @@ test('requestWithRetry aborts stalled requests at the transport timeout and retr
   );
   assert.ok(warnings.every((warning) => !JSON.stringify(warning).includes('daemon-token')));
   assert.ok(warnings.every((warning) => !JSON.stringify(warning).includes('https://api.example')));
+});
+
+test('daemon requests carry the machine identity header', async () => {
+  const calls: Array<RequestInit | undefined> = [];
+  globalThis.fetch = (async (_url, options) => {
+    calls.push(options);
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+
+  const client = new DaemonApiClient('https://api.example', 'daemon-token');
+  await client.claimTrigger('t1');
+
+  const machineId = getMachineId();
+  assert.ok(machineId);
+  assert.equal((calls[0]?.headers as Record<string, string>)['x-machine-id'], machineId);
 });

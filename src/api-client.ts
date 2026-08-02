@@ -12,6 +12,7 @@ import type {
   TriggerRuntime,
 } from './types.js';
 import { logger } from './logger.js';
+import { getMachineId } from './utils/machine-id.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json') as { version?: string };
@@ -68,6 +69,12 @@ export class DaemonApiClient {
       if (osType) {
         headers['x-os-type'] = osType;
       }
+    }
+
+    // 머신 신원은 실패해도 요청을 막지 않는다(헤더만 생략되고 서버는 구버전 러너처럼 취급).
+    const machineId = getMachineId();
+    if (machineId) {
+      headers['x-machine-id'] = machineId;
     }
 
     return headers;

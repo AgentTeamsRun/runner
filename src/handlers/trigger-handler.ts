@@ -15,6 +15,7 @@ import { extractResultTextFromStreamJson } from '../runners/claude-code.js';
 import { runOriginIssueSafeguard } from '../utils/origin-issue-safeguard.js';
 import { computeLocalKey, resolveRepositoryOrigin } from '../utils/worktree-discovery.js';
 import { normalizeRemoteUrl } from '../utils/resolve-member-repo.js';
+import { checkRunnerWorkingDirectory } from '../utils/working-directory.js';
 import {
   describeUnsupportedRunnerOptions,
   runnerSupportsEffort,
@@ -479,6 +480,24 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           });
           await reportWorktreeFailure(trigger.id, reason, activeLogReporter);
           throw new Error(reason);
+        }
+      } else {
+        // RunnerBox를 끄고 authPath에서 바로 실행하는 경로에만 적용한다. discovered worktree와
+        // managed worktree 분기는 각자의 존재/유효성 검증을 이미 수행하므로 중복 판정하지 않는다.
+        // 이 판정은 히스토리·첨부 쓰기와 러너의 mkdir(recursive)보다 먼저 일어나야, 다른 머신의
+        // 트리거를 집어갔을 때 빈 디렉터리를 만들어 놓고 도는 조용한 오실행이 사라진다.
+        const workingDirectoryCheck = checkRunnerWorkingDirectory(effectiveAuthPath, {
+          pathExists,
+          isGitRepo: checkIsGitRepo,
+          expectedProjectId: runtime.projectId,
+        });
+        if (!workingDirectoryCheck.valid) {
+          logger.warn('Runner working directory validation failed', {
+            triggerId: trigger.id,
+            code: workingDirectoryCheck.code,
+          });
+          activeLogReporter.append('ERROR', workingDirectoryCheck.reason);
+          throw new Error(workingDirectoryCheck.reason);
         }
       }
 
