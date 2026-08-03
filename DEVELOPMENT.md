@@ -209,8 +209,13 @@ schtasks /Query /TN "AgentRunner" /XML
 
 native build에는 Windows SDK와 MSVC x64가 필요합니다. 생성된 `native/bin/`은
 커밋하지 않으며, 최종 서명 바이트의 `manifest.json`과 함께 배포 artifact로
-조립합니다. `prepublishOnly`가 `verify-package.mjs`를 실행하므로, 네이티브
-산출물이 없는 패키지는 `npm publish` 자체가 실패합니다.
+조립합니다. Windows CI는 `powershell.exe`와 `pwsh`에서 같은 smoke·negative
+fixture를 실행하고, `verify-lifecycle.ps1` 하나로 npm 설치와 Task Scheduler
+수명주기를 검증합니다. 이 스크립트는 실제 사용자 프로필과 고정 이름 `AgentRunner`
+예약 작업을 사용하므로, 일회성 VM인 GitHub-hosted runner가 아니면 상태 변경 전에
+중단합니다. `prepublishOnly`는 `verify-packed-package.mjs`로 source와
+실제 npm tarball 해제본의 버전·SHA-256을 함께 비교하므로, 네이티브 산출물이
+없거나 pack 과정에서 달라진 패키지는 `npm publish` 자체가 실패합니다.
 
 ### 릴리스 체크리스트 (Windows 네이티브 런처)
 
@@ -221,8 +226,9 @@ native build에는 Windows SDK와 MSVC x64가 필요합니다. 생성된 `native
       summary(`### ⚠️ Windows launcher is unsigned`)만 남기고 **미서명 런처를 배포**합니다.
 - [ ] 미서명 배포를 의도한 것이라면 릴리스 PR 본문에 그 사실을 기록했는가?
       (사용자 프로필의 무서명 exe가 PowerShell을 기동하므로 SmartScreen/EDR 오탐 위험이 있음)
-- [ ] `windows-native` 잡이 성공했고 `verify-package.mjs`가 버전·SHA-256·
-      `schemaVersion`·산출물 디렉터리 내용까지 통과했는가?
+- [ ] `windows-native` 잡이 성공했고 PowerShell 5/7 contract fixture와
+      `verify-packed-package.mjs`의 source/tarball 버전·SHA-256·`schemaVersion`·
+      VERSIONINFO·산출물 디렉터리 검증이 모두 통과했는가?
 
 ### 서비스 디버깅
 
