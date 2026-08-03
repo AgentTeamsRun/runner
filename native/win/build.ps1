@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $sourceDir = $PSScriptRoot
+. (Join-Path $sourceDir 'native-command.ps1')
 if (-not $Version) {
   $Version = (Get-Content -LiteralPath (Join-Path $sourceDir '..\..\package.json') -Raw | ConvertFrom-Json).version
 }
@@ -39,14 +40,16 @@ $versionHeader = @"
 "@
 $versionHeader | Set-Content -LiteralPath (Join-Path $buildDir 'version.h') -Encoding ascii
 
-& rc.exe /nologo /I $buildDir /fo (Join-Path $buildDir 'launcher.res') (Join-Path $sourceDir 'launcher.rc')
-if ($LASTEXITCODE -ne 0) { throw "rc.exe failed with exit $LASTEXITCODE" }
+$launcherResource = Join-Path $buildDir 'launcher.res'
+Invoke-NativeCommand -Description 'rc.exe' -Command {
+  & rc.exe /nologo /I $buildDir /fo $launcherResource (Join-Path $sourceDir 'launcher.rc')
+} | Out-Null
 $launcherObject = Join-Path $buildDir 'launcher.obj'
 $launcherBinary = Join-Path $outputDir 'agentrunner-launcher.exe'
-& cl.exe /nologo /W4 /WX /O2 /MT "/Fo$launcherObject" (Join-Path $sourceDir 'launcher.c') `
-  (Join-Path $buildDir 'launcher.res') /link /SUBSYSTEM:WINDOWS /MACHINE:X64 `
-  "/OUT:$launcherBinary" advapi32.lib
-if ($LASTEXITCODE -ne 0) { throw "cl.exe failed with exit $LASTEXITCODE" }
+Invoke-NativeCommand -Description 'cl.exe' -Command {
+  & cl.exe /nologo /W4 /WX /O2 /MT "/Fo$launcherObject" (Join-Path $sourceDir 'launcher.c') `
+    $launcherResource /link /SUBSYSTEM:WINDOWS /MACHINE:X64 "/OUT:$launcherBinary" advapi32.lib
+} | Out-Null
 
 if (-not $SkipManifest) {
   & (Join-Path $sourceDir 'write-manifest.ps1') -Version $Version

@@ -1,6 +1,7 @@
 param([string]$Version)
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'native-command.ps1')
 if (-not $Version) {
   $packageJsonPath = Join-Path $PSScriptRoot '..\..\package.json'
   $Version = (Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json).version
@@ -25,9 +26,10 @@ $spacedResultPath = Join-Path $buildDir "agentrunner-native-smoke-spaced-$PID.tx
 $spacedLauncher = Join-Path $spacedDir 'agentrunner-launcher.exe'
 
 try {
-  & cl.exe /nologo /W4 /WX /O2 /MT "/Fo$smokeObject" (Join-Path $PSScriptRoot 'smoke-child.c') `
-    /link /SUBSYSTEM:CONSOLE /MACHINE:X64 "/OUT:$fixture" shell32.lib
-  if ($LASTEXITCODE -ne 0) { throw "smoke child build failed with exit $LASTEXITCODE" }
+  Invoke-NativeCommand -Description 'smoke child build' -Command {
+    & cl.exe /nologo /W4 /WX /O2 /MT "/Fo$smokeObject" (Join-Path $PSScriptRoot 'smoke-child.c') `
+      /link /SUBSYSTEM:CONSOLE /MACHINE:X64 "/OUT:$fixture" shell32.lib
+  } | Out-Null
 
   $unicodeValue = -join ([char[]](0xD55C, 0xAE00, 0x20, 0xAC12))
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
@@ -77,7 +79,9 @@ try {
   $missingProcess.WaitForExit()
   if ($missingProcess.ExitCode -eq 0) { throw 'missing child unexpectedly returned success' }
 
-  $headers = (& dumpbin.exe /headers $launcher) -join "`n"
+  $headers = (Invoke-NativeCommand -Description 'dumpbin.exe' -Command {
+    & dumpbin.exe /headers $launcher
+  }).Output
   if ($headers -notmatch '(?m)^\s*8664 machine' -or $headers -notmatch '(?m)^\s*2 subsystem') {
     throw "launcher is not an x64 Windows GUI executable:`n$headers"
   }

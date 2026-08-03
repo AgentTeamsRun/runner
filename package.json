@@ -26,7 +26,8 @@
     "start": "node dist/index.js",
     "init": "node dist/index.js init",
     "verify:native:win": "node native/win/verify-package.mjs .",
-    "prepublishOnly": "pnpm run build && pnpm run verify:native:win"
+    "verify:packed:native:win": "node native/win/verify-packed-package.mjs .",
+    "prepublishOnly": "pnpm run build && pnpm run verify:packed:native:win"
   },
   "publishConfig": {
     "access": "public"
