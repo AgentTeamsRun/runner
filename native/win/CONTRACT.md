@@ -33,8 +33,9 @@ Runner의 예약 작업과 웹 재시작 helper는 콘솔 서브시스템인 `po
   즉시 정리합니다(uninstall은 현재 런처까지 포함해 전부 제거).
 - `native/bin/win32-x64/`에는 `agentrunner-launcher.exe`와 `manifest.json`만
   존재해야 하며, `verify-packed-package.mjs`가 source와 npm tarball 해제본 모두에
-  이를 강제합니다. Windows CI는 같은 계약을 PowerShell 5/7에서 실행하고
-  `verify-lifecycle.ps1`만으로 설치·예약 작업·정리 수명주기를 검증합니다. 스모크
+  이를 강제합니다. Windows CI는 같은 계약을 PowerShell 5/7에서 실행하고,
+  GitHub-hosted runner에서만 `verify-lifecycle.ps1`로 설치·예약 작업·정리 수명주기를
+  검증합니다. 스모크
   픽스처는 배포 디렉터리가 아니라 빌드 임시 디렉터리에 만듭니다.
 - 지원 대상은 Windows x64와 x64 에뮬레이션을 제공하는 Windows 11 ARM64입니다.
   Windows 10 ARM64는 지원하지 않습니다.

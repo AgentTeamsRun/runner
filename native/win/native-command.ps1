@@ -22,8 +22,17 @@ function Invoke-NativeCommand {
     # explicit exit-code contract so PS5 and PS7 behave identically.
     $ErrorActionPreference = 'Continue'
     if ($hasNativePreference) { $PSNativeCommandUseErrorActionPreference = $false }
+    # A process launch failure does not update LASTEXITCODE. Clear the previous
+    # value so command-not-found and permission errors cannot inherit success.
+    $global:LASTEXITCODE = $null
     $output = & $Command 2>&1
-    $exitCode = $LASTEXITCODE
+    $exitCode = $global:LASTEXITCODE
+  } catch {
+    # Command discovery and process-start failures can be terminating even when
+    # native stderr is configured as non-terminating output. Normalize them to
+    # the same explicit launch-failure contract on PowerShell 5 and 7.
+    $output = @($_)
+    $exitCode = $null
   } finally {
     $ErrorActionPreference = $previousErrorActionPreference
     if ($hasNativePreference) { $PSNativeCommandUseErrorActionPreference = $previousNativePreference }
@@ -32,6 +41,9 @@ function Invoke-NativeCommand {
     $global:LASTEXITCODE = $previousExitCode
   }
   $normalizedOutput = ConvertTo-NativeOutputString -InputObject $output
+  if ($null -eq $exitCode) {
+    throw "$Description failed to start`n$normalizedOutput"
+  }
   if ($AllowedExitCodes -notcontains $exitCode) {
     throw "$Description failed with exit $exitCode`n$normalizedOutput"
   }

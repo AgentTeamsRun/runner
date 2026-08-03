@@ -6,6 +6,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native-command.ps1')
+. (Join-Path $PSScriptRoot 'hosted-runner-guard.ps1')
+Assert-GitHubHostedRunner
 
 $packageRootPath = (Resolve-Path -LiteralPath $PackageRoot).Path
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $packageRootPath '..')).Path

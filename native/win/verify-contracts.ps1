@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native-command.ps1')
+. (Join-Path $PSScriptRoot 'hosted-runner-guard.ps1')
 $global:LASTEXITCODE = 0
 
 Invoke-NativeCommand -Description 'package negative fixtures' -Command {
@@ -39,6 +40,26 @@ try {
 }
 if (-not $rejected) { throw 'unexpected native non-zero exit was not rejected' }
 if ($LASTEXITCODE -ne 0) { throw 'native command exit code leaked into the caller scope' }
+
+$missingExecutableRejected = $false
+try {
+  Invoke-NativeCommand -Description 'missing executable fixture' -Command {
+    & 'definitely-missing-agentrunner-fixture.exe'
+  } | Out-Null
+} catch {
+  $missingExecutableRejected = $_.Exception.Message -match `
+    'missing executable fixture failed (to start|with exit)'
+}
+if (-not $missingExecutableRejected) { throw 'missing executable fixture was not rejected' }
+if ($LASTEXITCODE -ne 0) { throw 'missing executable fixture leaked its exit status' }
+
+$lifecycleGuardRejected = $false
+try {
+  Assert-GitHubHostedRunner -GithubActions 'true' -RunnerEnvironment 'self-hosted'
+} catch {
+  $lifecycleGuardRejected = $_.Exception.Message -match 'GitHub-hosted'
+}
+if (-not $lifecycleGuardRejected) { throw 'self-hosted lifecycle guard fixture was not rejected' }
 
 Assert-WindowsLauncherVersion -BinaryPath $LauncherPath -ExpectedVersion $ExpectedVersion
 $versionMismatchRejected = $false

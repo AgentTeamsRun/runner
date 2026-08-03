@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { verifyPackage } from './verify-package.mjs';
 import { verifyPackedPackage } from './verify-packed-package.mjs';
+
+const scriptRoot = dirname(fileURLToPath(import.meta.url));
 
 const createFixture = async () => {
   const root = await mkdtemp(join(tmpdir(), 'agentrunner-package-contract-'));
@@ -70,5 +73,32 @@ describe('verifyPackage', () => {
         await rm(fixture.root, { recursive: true, force: true });
       }
     }
+  });
+});
+
+describe('PowerShell verification safety contracts', () => {
+  it('rejects a native process that never starts even after a successful command', async () => {
+    const helper = await readFile(join(scriptRoot, 'native-command.ps1'), 'utf8');
+    const contracts = await readFile(join(scriptRoot, 'verify-contracts.ps1'), 'utf8');
+
+    assert.match(helper, /\$global:LASTEXITCODE\s*=\s*\$null/);
+    assert.match(helper, /\$null\s+-eq\s+\$exitCode/);
+    assert.match(helper, /catch\s*\{[\s\S]*?\$exitCode\s*=\s*\$null/);
+    assert.match(contracts, /missing executable fixture/i);
+  });
+
+  it('guards the lifecycle before creating mutable state', async () => {
+    const lifecycle = await readFile(join(scriptRoot, 'verify-lifecycle.ps1'), 'utf8');
+    const guard = await readFile(join(scriptRoot, 'hosted-runner-guard.ps1'), 'utf8');
+    const contracts = await readFile(join(scriptRoot, 'verify-contracts.ps1'), 'utf8');
+    const guardCallIndex = lifecycle.indexOf('Assert-GitHubHostedRunner');
+    const firstMutationIndex = lifecycle.indexOf('New-Item');
+
+    assert.notEqual(guardCallIndex, -1);
+    assert.notEqual(firstMutationIndex, -1);
+    assert.ok(guardCallIndex < firstMutationIndex);
+    assert.match(guard, /RUNNER_ENVIRONMENT/);
+    assert.match(guard, /github-hosted/);
+    assert.match(contracts, /self-hosted lifecycle guard fixture/i);
   });
 });
