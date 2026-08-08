@@ -135,6 +135,28 @@ const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>
 
     return [...new Set([...configuredHomePaths, ...defaultHomePaths])];
   },
+  // Kiro CLI는 셸 rc를 수정해 PATH를 넓히는 방식으로 설치되지만, 러너는 비대화형
+  // 프로세스라 rc를 읽지 않는다(Kimi에서 동일 구조로 "Cannot find executable"이 났던 선례).
+  // 아래 경로는 macOS에서 실측한 설치 위치다(2026-08-08, kiro-cli 2.16.2):
+  //   ~/.local/bin/kiro-cli -> /Applications/Kiro CLI.app/Contents/MacOS/kiro-cli
+  // Windows 설치 경로는 실측하지 못했고 공식 문서도 명시하지 않으므로, Windows에서는
+  // 알려진 폴백 없이 PATH 탐색에만 의존한다.
+  'kiro-cli': (env, os) => {
+    if (os === 'win32') {
+      return [];
+    }
+
+    const userHome = env.HOME;
+    if (!userHome) {
+      return [];
+    }
+
+    const localBin = join(userHome, '.local', 'bin');
+    // 심볼릭 링크가 없을 때를 대비한 darwin 전용 2차 폴백(앱 번들 내부 실체 경로).
+    const macAppBundleBin = os === 'darwin' ? [join('/Applications', 'Kiro CLI.app', 'Contents', 'MacOS')] : [];
+
+    return [...new Set([localBin, ...macAppBundleBin])];
+  },
 };
 
 const getKnownInstallBinPaths = (name: string, deps: ExecutableDeps): string[] => {
