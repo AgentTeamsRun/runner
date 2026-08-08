@@ -149,6 +149,73 @@ test('resolveExecutablePath keeps the missing Kimi executable error when the ins
   );
 });
 
+test('resolveExecutablePath falls back to the Kiro install bin outside Windows', () => {
+  const resolved = resolveExecutablePath('kiro-cli', {
+    env: {
+      HOME: '/Users/justin',
+    },
+    platform: () => 'darwin',
+    execFileSync: (() => {
+      throw new Error('not found');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      /^[/\\]Users[/\\]justin[/\\]\.local[/\\]bin[/\\]kiro-cli$/u.test(path)) as typeof import('node:fs').existsSync,
+  });
+
+  assert.match(resolved, /^[/\\]Users[/\\]justin[/\\]\.local[/\\]bin[/\\]kiro-cli$/u);
+});
+
+test('resolveExecutablePath falls back to the macOS Kiro app bundle when the ~/.local/bin symlink is absent', () => {
+  const resolved = resolveExecutablePath('kiro-cli', {
+    env: {
+      HOME: '/Users/justin',
+    },
+    platform: () => 'darwin',
+    execFileSync: (() => {
+      throw new Error('not found');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      path === '/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli') as typeof import('node:fs').existsSync,
+  });
+
+  assert.equal(resolved, '/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli');
+});
+
+test('resolveExecutablePath keeps the missing Kiro executable error when no install path exists', () => {
+  // Windows 설치 경로는 실측되지 않아 알려진 폴백이 없다. PATH에도 없으면 명확히 실패해야 한다.
+  assert.throws(
+    () =>
+      resolveExecutablePath('kiro-cli', {
+        env: {
+          PATHEXT: '.COM;.EXE;.BAT;.CMD',
+          USERPROFILE: 'C:\\Users\\justin',
+        },
+        platform: () => 'win32',
+        execFileSync: (() => {
+          throw new Error('not found');
+        }) as unknown as typeof import('node:child_process').execFileSync,
+        existsSync: (() => false) as typeof import('node:fs').existsSync,
+      }),
+    /Cannot find 'kiro-cli' executable/u,
+  );
+});
+
+test('resolveExecutablePathWithPreference falls back to the Kiro install bin', () => {
+  const resolved = resolveExecutablePathWithPreference('kiro-cli', ['kiro-cli'], {
+    env: {
+      HOME: '/Users/justin',
+    },
+    platform: () => 'linux',
+    execFileSync: (() => {
+      throw new Error('not found');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      /^[/\\]Users[/\\]justin[/\\]\.local[/\\]bin[/\\]kiro-cli$/u.test(path)) as typeof import('node:fs').existsSync,
+  });
+
+  assert.match(resolved, /^[/\\]Users[/\\]justin[/\\]\.local[/\\]bin[/\\]kiro-cli$/u);
+});
+
 test('resolveExecutablePathWithPreference falls back to the Kimi install bin', () => {
   const resolved = resolveExecutablePathWithPreference('kimi', ['kimi'], {
     env: {

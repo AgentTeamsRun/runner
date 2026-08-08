@@ -10,10 +10,15 @@
 | **OpenCode**    | `opencode` | 없음                             | 없음                                            |
 | **Cursor CLI**  | `agent`    | `--force`                        | 명시적으로 거부되지 않은 명령 자동 허용         |
 | **Kimi CLI**    | `kimi`     | 없음 (`-p`의 auto 정책)          | 일반 tool 호출 자동 승인, 별도 우회 플래그 없음 |
+| **Kiro CLI**    | `kiro-cli` | `--trust-all-tools`              | 전체 스킵                                       |
 
 Cursor CLI의 `--force`는 비대화형 실행 중 파일 변경과 셸 명령을 자동 승인합니다. 신뢰할 수 있는 workspace에서만 사용하고, 가능하면 RunnerBox 또는 worktree로 실행 범위를 격리합니다. Cursor 로그인 세션과 `CURSOR_API_KEY`는 Cursor가 관리하며 AgentTeams는 인증 값이나 `.cursor` 설정을 생성·변경하지 않습니다.
 
 Kimi CLI는 `kimi -p <prompt>`를 사용해 비대화형으로 실행합니다. `-p` 모드의 일반 tool 호출은 Kimi의 `auto` 권한 정책으로 처리되며, `--yolo`, `--auto`, `--plan`을 함께 전달하지 않습니다. Kimi Code 로그인 세션은 Kimi가 관리하며 AgentTeams는 `.kimi` 설정이나 토큰을 생성·주입하지 않습니다. 신뢰할 수 있는 workspace에서만 사용하고, 가능하면 RunnerBox 또는 worktree로 실행 범위를 격리합니다.
+
+Kiro CLI는 `kiro-cli chat --no-interactive --trust-all-tools -- <prompt>`로 실행합니다. `--trust-all-tools`는 모델이 확인 절차 없이 모든 도구(파일 쓰기·셸 명령 포함)를 실행하도록 허용하므로, Claude Code의 `--dangerously-skip-permissions`와 같은 등급의 권한 우회입니다. 신뢰할 수 있는 workspace에서만 사용하고, 가능하면 RunnerBox 또는 worktree로 실행 범위를 격리합니다. 프롬프트를 `--` 뒤에 두는 이유는 위치 인자라서 `-`로 시작하는 프롬프트가 플래그로 오인되기 때문입니다(실측).
+
+**AgentTeams는 Kiro 인증 정보나 설정 파일을 생성·주입하지 않습니다.** Kiro 로그인 세션은 Kiro가 관리하며, 러너는 사용자가 이미 로그인한 세션을 그대로 사용합니다(2026-08-08 실측: `KIRO_API_KEY` 없이 `--no-interactive` 실행이 정상 동작). `KIRO_API_KEY`, `~/.kiro/**` 설정, `.kiro/agents/*.json`, `.kiro/steering/*.md`를 러너가 만들거나 수정하지 않습니다.
 
 ## 워크트리 설정 (`healWorktreeConfig`)
 
@@ -31,6 +36,7 @@ Kimi CLI는 `kimi -p <prompt>`를 사용해 비대화형으로 실행합니다. 
 | **OpenCode**    | plain text                                                          | 없음 (raw output 그대로)                                 | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록                                        |
 | **Cursor CLI**  | stream-json (`--output-format stream-json --stream-partial-output`) | `createCursorStreamJsonLineParser` → bounded 구조화 로그 | assistant delta를 병합하고 안전한 tool 상태만 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
 | **Kimi CLI**    | plain text (`-p`)                                                   | 없음                                                     | raw stdout/stderr를 `onStdoutChunk`로 전달, logStream에 기록                                 |
+| **Kiro CLI**    | plain text (`chat --no-interactive`)                                | 없음 (ANSI 이스케이프만 제거)                            | ANSI를 벗긴 stdout를 `onStdoutChunk`로 전달, raw를 logStream에 기록. stderr는 진행 로그 취급 |
 
 ### stream-json 파서 (`stream-json-parser.ts`)
 
@@ -41,6 +47,8 @@ Claude Code와 AMP의 stdout은 JSON lines 형식이며, 파서가 다음 타입
 - `result` — 최종 완료 상태 (duration, turn count)
 
 파서는 길이 제한을 적용: thinking 300자, text 500자, tool input 200자.
+
+Kiro CLI는 구조화 출력 플래그가 없어 파서를 붙이지 않습니다. 다만 파이프(비-TTY)로 리다이렉트해도 ANSI 이스케이프가 남고 `NO_COLOR`·`TERM=dumb`으로도 완전히 제거되지 않으므로(2026-08-08 실측), `stripAnsiSequences`로 제어 문자만 제거한 뒤 `onStdoutChunk`와 fallback history용 `outputText`에 담습니다. stderr에는 정상 실행 중에도 신뢰 경고 배너와 종료 시 `▸ Credits: N • Time: Ns` 요약이 실리므로 에러가 아닌 진행 로그로 강등하며, 실패 사유를 고를 때는 진행 로그가 원인을 덮지 않도록 오류로 보이는 stderr 청크를 우선합니다.
 
 Cursor CLI는 별도 상태형 파서를 사용합니다. 작은 `assistant` text delta는 문장·개행·도구 이벤트·`result`·종료 또는 800자 상한에서만 flush하고, 같은 turn의 partial 누적값과 동일한 최종 assistant 이벤트는 중복 기록하지 않습니다. `user` prompt, `system.apiKeySource`, 알 수 없는 이벤트, terminal 명령 본문과 `tool_call.completed.result` body는 서버 가시 로그에 전달하지 않고, 도구명·안전한 경로·시작/완료/실패 상태만 요약합니다. terminal `result.result`는 로그 body로 노출하지 않지만 fallback history용 `outputText`에는 보존합니다.
 

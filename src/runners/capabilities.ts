@@ -52,6 +52,11 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   COPILOT_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
   CURSOR_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
   KIMI_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
+  // kiro-cli는 `chat --model <MODEL>`을 실제로 소비한다(2026-08-08 실측).
+  // effort는 `--effort` 플래그가 존재하지만 잘못된 레벨도 조용히 수용되고 low/max가 동일
+  // 크레딧을 소모해 효과를 실증하지 못했으므로 false로 둔다.
+  // subAgentDelegation은 Kiro 서브에이전트가 메인 에이전트의 완료 대기(blocking) 모델이라 false.
+  KIRO_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
 };
 
 const DEFAULT_CAPABILITIES: RunnerCapabilities = {
