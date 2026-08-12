@@ -19,6 +19,14 @@ type RunExecutableSyncOptions = ExecutableDeps & {
 
 type KnownInstallBinResolver = (env: NodeJS.ProcessEnv, os: NodeJS.Platform) => string[];
 
+const resolveUserLocalBin: KnownInstallBinResolver = (env, os) => {
+  if (os === 'win32' || !env.HOME) {
+    return [];
+  }
+
+  return [join(env.HOME, '.local', 'bin')];
+};
+
 const getOutputLines = (output: string): string[] =>
   output
     .split(/\r?\n/u)
@@ -128,6 +136,11 @@ const resolveFromNpmGlobalBin = (name: string, deps: ExecutableDeps): string | n
 
 const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>> = {
   agy: (env, os) => (os === 'win32' && env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, 'agy', 'bin')] : []),
+  // Claude Code와 Codex의 공식 standalone 설치는 macOS/Linux에서 ~/.local/bin에
+  // 실행 파일 링크를 만든다. 비대화형 러너는 셸 프로필의 PATH 보강을 읽지 않으므로
+  // 설치가 정상이어도 이 사용자 로컬 경로를 놓칠 수 있다.
+  claude: resolveUserLocalBin,
+  codex: resolveUserLocalBin,
   kimi: (env, os) => {
     const configuredHomePaths = env.KIMI_CODE_HOME ? [join(env.KIMI_CODE_HOME, 'bin')] : [];
     const userHome = os === 'win32' ? env.USERPROFILE : env.HOME;

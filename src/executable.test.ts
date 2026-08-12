@@ -113,6 +113,41 @@ test('resolveExecutablePath falls back to the Kimi install bin outside Windows',
   assert.match(resolved, /^[/\\]Users[/\\]justin[/\\]\.kimi-code[/\\]bin[/\\]kimi$/u);
 });
 
+for (const executable of ['claude', 'codex']) {
+  test(`resolveExecutablePath falls back to the ${executable} user-local install bin outside Windows`, () => {
+    const resolved = resolveExecutablePath(executable, {
+      env: {
+        HOME: '/Users/justin',
+      },
+      platform: () => 'darwin',
+      execFileSync: (() => {
+        throw new Error('not found');
+      }) as unknown as typeof import('node:child_process').execFileSync,
+      existsSync: ((path: string) =>
+        path === `/Users/justin/.local/bin/${executable}`) as typeof import('node:fs').existsSync,
+    });
+
+    assert.equal(resolved, `/Users/justin/.local/bin/${executable}`);
+  });
+}
+
+test('resolveExecutablePath reports known install paths when claude is absent', () => {
+  assert.throws(
+    () =>
+      resolveExecutablePath('claude', {
+        env: {
+          HOME: '/Users/justin',
+        },
+        platform: () => 'linux',
+        execFileSync: (() => {
+          throw new Error('not found');
+        }) as unknown as typeof import('node:child_process').execFileSync,
+        existsSync: (() => false) as typeof import('node:fs').existsSync,
+      }),
+    /Checked PATH, npm global bin, and known app install paths/u,
+  );
+});
+
 test('resolveExecutablePath falls back to the Kimi install bin on Windows', () => {
   const resolved = resolveExecutablePath('kimi', {
     env: {
