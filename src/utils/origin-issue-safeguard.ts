@@ -3,7 +3,7 @@
  *
  * 사용자 프롬프트에 이슈 entityReference가 있고,
  * 러너 히스토리에서 플랜 생성이 감지되면,
- * `agentteams plan issue` CLI를 실행하여 이슈를 연결합니다.
+ * `agentteams plan link-issue` CLI를 실행하여 이슈를 연결합니다.
  */
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -152,30 +152,41 @@ function extractCreatedPlanIds(historyMarkdown: string): string[] {
 }
 
 /**
- * `agentteams plan issue` CLI를 실행합니다 (fire-and-forget).
+ * `agentteams plan link-issue` 호출 인자를 만듭니다.
+ *
+ * CLI는 러너와 별도 패키지로 배포되므로 여기서 쓰는 액션 이름이 CLI 계약과
+ * 어긋나면 런타임 경고로만 조용히 실패합니다. 인자 조립을 분리해 테스트로 고정합니다.
  */
-function execPlanIssue(cwd: string, planId: string, issue: IssueRef): Promise<void> {
+export function buildPlanLinkIssueArgs(planId: string, issue: IssueRef): string[] {
+  const args = [
+    'plan',
+    'link-issue',
+    '--id',
+    planId,
+    '--provider',
+    issue.provider,
+    '--external-id',
+    issue.externalId,
+    '--external-url',
+    issue.externalUrl || 'unknown',
+  ];
+  if (issue.externalTitle) {
+    args.push('--title', issue.externalTitle);
+  }
+  return args;
+}
+
+/**
+ * `agentteams plan link-issue` CLI를 실행합니다 (fire-and-forget).
+ */
+function execPlanLinkIssue(cwd: string, planId: string, issue: IssueRef): Promise<void> {
   return new Promise((resolve) => {
-    const args = [
-      'plan',
-      'issue',
-      '--id',
-      planId,
-      '--provider',
-      issue.provider,
-      '--external-id',
-      issue.externalId,
-      '--external-url',
-      issue.externalUrl || 'unknown',
-    ];
-    if (issue.externalTitle) {
-      args.push('--title', issue.externalTitle);
-    }
+    const args = buildPlanLinkIssueArgs(planId, issue);
 
     execFile('agentteams', args, { cwd, timeout: 15000, windowsHide: true }, (error: Error | null) => {
       if (error) {
         // 409 or other failure — skip silently
-        logger.warn('Origin issue safeguard: plan issue command failed', {
+        logger.warn('Origin issue safeguard: plan link-issue command failed', {
           planId,
           provider: issue.provider,
           externalId: issue.externalId,
@@ -191,11 +202,18 @@ function execPlanIssue(cwd: string, planId: string, issue: IssueRef): Promise<vo
  * 트리거 완료 후 origin issue 자동 연결 안전장치를 실행합니다.
  * fire-and-forget: 실패해도 트리거 완료에 영향 없음.
  */
+export interface OriginIssueSafeguardDeps {
+  /** 테스트에서 CLI 실행을 가로채기 위한 seam. 기본값은 실제 execFile 호출입니다. */
+  runCli?: (cwd: string, planId: string, issue: IssueRef) => Promise<void>;
+}
+
 export async function runOriginIssueSafeguard(
   prompt: string | Record<string, unknown>,
   historyPath: string | null,
   authPath: string | null,
+  deps: OriginIssueSafeguardDeps = {},
 ): Promise<void> {
+  const runCli = deps.runCli ?? execPlanLinkIssue;
   if (!historyPath || !authPath) return;
 
   try {
@@ -222,7 +240,7 @@ export async function runOriginIssueSafeguard(
 
     for (const planId of planIds) {
       for (const issue of issueRefs) {
-        await execPlanIssue(authPath, planId, issue);
+        await runCli(authPath, planId, issue);
       }
     }
   } catch (error) {
