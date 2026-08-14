@@ -6,6 +6,7 @@ import test, { mock } from 'node:test';
 import { logger } from './logger.js';
 import { startPolling } from './poller.js';
 import type { DaemonTrigger, PollStateResponse, RuntimeConfig } from './types.js';
+import type { EnumeratedModel } from './utils/model-enumerator.js';
 
 const config: RuntimeConfig = {
   daemonToken: 'daemon-token',
@@ -71,6 +72,7 @@ type PollClientOverrides = {
   notifyUpdate?: () => Promise<void>;
   ackRestartRequest?: () => Promise<void>;
   reportDetectedEngines?: (engines: string[]) => Promise<void>;
+  reportDetectedModels?: (models: Array<{ runnerType: string; values: EnumeratedModel[] }>) => Promise<void>;
 };
 
 // 기본은 idle(아무 작업 없음) 러너 클라이언트. 필요한 동작만 override한다.
@@ -82,6 +84,110 @@ const makeClient = (overrides: PollClientOverrides = {}) => ({
   notifyUpdate: overrides.notifyUpdate ?? (async () => undefined),
   ackRestartRequest: overrides.ackRestartRequest ?? (async () => undefined),
   ...(overrides.reportDetectedEngines ? { reportDetectedEngines: overrides.reportDetectedEngines } : {}),
+  ...(overrides.reportDetectedModels ? { reportDetectedModels: overrides.reportDetectedModels } : {}),
+});
+
+test('startPolling enumerates only installed supported engines and respects the longer interval', async () => {
+  const timeouts = createTimeoutRecorder();
+  const enumerationCalls: string[] = [];
+  const reports: Array<Array<{ runnerType: string; values: EnumeratedModel[] }>> = [];
+  const warnings: string[] = [];
+  mock.method(logger, 'warn', (message: string) => warnings.push(message));
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () =>
+      makeClient({
+        reportDetectedEngines: async () => undefined,
+        reportDetectedModels: async (models) => {
+          reports.push(models);
+        },
+      }),
+    probeInstalledEngines: async () => ({
+      engines: ['KIRO_CLI', 'CURSOR_CLI', 'CODEX'],
+      reliable: true,
+    }),
+    enumerateModels: async (runnerType) => {
+      enumerationCalls.push(runnerType);
+      if (runnerType === 'CURSOR_CLI') return { status: 'FORMAT_MISMATCH' };
+      return {
+        status: 'SUCCESS',
+        values: [{ value: 'model-a', label: 'Model A', maxInputTokens: 200000 }],
+      };
+    },
+    runCleanup: async () => undefined,
+    runConventionSync: async () => undefined,
+    setTimeout: timeouts.setTimeoutMock,
+    clearTimeout: timeouts.clearTimeoutMock,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    now: () => 0,
+    keepAlive: () =>
+      new Promise<void>((resolve) => {
+        keepAliveResolve = resolve;
+      }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(enumerationCalls, ['KIRO_CLI', 'CURSOR_CLI']);
+  assert.deepEqual(reports, [
+    [
+      {
+        runnerType: 'KIRO_CLI',
+        values: [{ value: 'model-a', label: 'Model A', maxInputTokens: 200000 }],
+      },
+    ],
+  ]);
+  assert.ok(warnings.includes('Skipped model detection report for runner'));
+  (keepAliveResolve as unknown as () => void)();
+  await pollingPromise;
+});
+
+test('startPolling keeps polling when the model report fails', async () => {
+  const warnings: string[] = [];
+  mock.method(logger, 'warn', (message: string) => warnings.push(message));
+  const timeouts = createTimeoutRecorder();
+  let fetchCalls = 0;
+  let keepAliveResolve: (() => void) | null = null;
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () =>
+      makeClient({
+        fetchPollState: async () => {
+          fetchCalls += 1;
+          return pollState();
+        },
+        reportDetectedEngines: async () => undefined,
+        reportDetectedModels: async () => {
+          throw new Error('offline');
+        },
+      }),
+    probeInstalledEngines: async () => ({ engines: ['KIRO_CLI'], reliable: true }),
+    enumerateModels: async () => ({
+      status: 'SUCCESS',
+      values: [{ value: 'auto', label: 'auto', maxInputTokens: 1000000 }],
+    }),
+    setTimeout: timeouts.setTimeoutMock,
+    clearTimeout: timeouts.clearTimeoutMock,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    now: () => 0,
+    keepAlive: () =>
+      new Promise<void>((resolve) => {
+        keepAliveResolve = resolve;
+      }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(fetchCalls, 2);
+  assert.ok(warnings.includes('Model detection report failed'));
+  (keepAliveResolve as unknown as () => void)();
+  await pollingPromise;
 });
 
 test('startPolling reports detected engines immediately and does not probe again inside the interval', async () => {

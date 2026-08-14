@@ -11,6 +11,9 @@ import { maybeAutoUpdate } from './utils/auto-update.js';
 import { executeRestartRequest } from './daemon-control.js';
 import { createPowerSaveBlocker, type PowerSaveBlocker } from './utils/power-save-blocker.js';
 import { probeInstalledEngines } from './utils/engine-probe.js';
+import { enumerateModels } from './utils/model-enumerator.js';
+import { RUNNER_CAPABILITIES } from './runners/capabilities.js';
+import type { RunnerType } from '@agentteams/core-constants';
 
 type TriggerHandlerFactory = (
   onAuthPathDiscovered: (authPath: string) => void,
@@ -22,6 +25,8 @@ const CONVENTION_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const WORKTREE_DISCOVERY_INTERVAL_MS = 60 * 1000;
 // 실기 프로브가 약 0.66초였으므로 기동 직후 탐지는 유지하되 상시 폴링과 분리해 15분마다만 실행한다.
 const ENGINE_PROBE_INTERVAL_MS = 15 * 60 * 1000;
+// 모델 열거는 외부 CLI가 네트워크를 사용할 수 있어 설치 확인 프로브보다 훨씬 낮은 빈도로 실행한다.
+const MODEL_ENUMERATION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 // 한 polling cycle의 결과.
 // - ACTIVE: 처리할 일이 있었다(pending claim/실행, 고아 취소, 워크트리 제거, restart 중 하나 이상).
@@ -40,7 +45,12 @@ type PollingDependencies = {
     | 'ackRestartRequest'
   > &
     // 발견 worktree 정합화는 선택 기능이라 기존 mock 호환을 위해 optional로 둔다.
-    Partial<Pick<DaemonApiClient, 'fetchDiscoveryRepositories' | 'syncDiscoveredWorktrees' | 'reportDetectedEngines'>>;
+    Partial<
+      Pick<
+        DaemonApiClient,
+        'fetchDiscoveryRepositories' | 'syncDiscoveredWorktrees' | 'reportDetectedEngines' | 'reportDetectedModels'
+      >
+    >;
   runCleanup?: (authPath: string) => Promise<void>;
   runConventionSync?: (authPath: string) => Promise<void>;
   reconcileDiscoveredWorktrees?: typeof reconcileDiscoveredWorktrees;
@@ -57,6 +67,7 @@ type PollingDependencies = {
   saveAuthPath?: (authPath: string) => string;
   powerSaveBlocker?: PowerSaveBlocker;
   probeInstalledEngines?: typeof probeInstalledEngines;
+  enumerateModels?: typeof enumerateModels;
 };
 
 export const startPolling = async (
@@ -85,6 +96,7 @@ export const startPolling = async (
   const loadPersistedAuthPaths = dependencies.loadAuthPaths ?? loadAuthPaths;
   const persistAuthPath = dependencies.saveAuthPath ?? saveAuthPath;
   const probeEngines = dependencies.probeInstalledEngines ?? probeInstalledEngines;
+  const enumerateRunnerModels = dependencies.enumerateModels ?? enumerateModels;
   // 절전 방지는 daemon polling lifecycle이 소유한다. daemon이 살아 있는 동안(폴링/대기/실행)
   // 절전을 막고, 종료 시 해제한다. (배터리/비 macOS는 유틸 내부에서 no-op)
   const powerSaveBlocker =
@@ -96,6 +108,9 @@ export const startPolling = async (
   let lastWorktreeDiscoveryAt = 0;
   let lastEngineProbeAt: number | null = null;
   let isProbingEngines = false;
+  let lastModelEnumerationAt: number | null = null;
+  let isEnumeratingModels = false;
+  let lastDetectedEngines: RunnerType[] | null = null;
   let isDiscoveringWorktrees = false;
   const lastConventionSyncAt = new Map<string, number>();
 
@@ -207,6 +222,7 @@ export const startPolling = async (
         return;
       }
 
+      lastDetectedEngines = result.engines;
       await reportDetectedEngines(result.engines);
     })()
       .catch((error) => {
@@ -216,6 +232,53 @@ export const startPolling = async (
       })
       .finally(() => {
         isProbingEngines = false;
+      });
+  };
+
+  const maybeReportDetectedModels = () => {
+    const reportDetectedModels = client.reportDetectedModels?.bind(client);
+    if (!reportDetectedModels || isEnumeratingModels || lastDetectedEngines === null) return;
+
+    const currentTime = now();
+    if (lastModelEnumerationAt !== null && currentTime - lastModelEnumerationAt < MODEL_ENUMERATION_INTERVAL_MS) {
+      return;
+    }
+    lastModelEnumerationAt = currentTime;
+
+    const enumerableEngines = lastDetectedEngines.filter(
+      (runnerType) => RUNNER_CAPABILITIES[runnerType].modelEnumeration,
+    );
+    if (enumerableEngines.length === 0) return;
+
+    isEnumeratingModels = true;
+    void (async () => {
+      const reports: Array<{
+        runnerType: RunnerType;
+        values: import('./utils/model-enumerator.js').EnumeratedModel[];
+      }> = [];
+
+      for (const runnerType of enumerableEngines) {
+        const result = await enumerateRunnerModels(runnerType);
+        if (result.status !== 'SUCCESS') {
+          logger.warn('Skipped model detection report for runner', {
+            runnerType,
+            status: result.status,
+            ...(result.message ? { error: result.message } : {}),
+          });
+          continue;
+        }
+        reports.push({ runnerType, values: result.values });
+      }
+
+      if (reports.length > 0) await reportDetectedModels(reports);
+    })()
+      .catch((error) => {
+        logger.warn('Model detection report failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        isEnumeratingModels = false;
       });
   };
 
@@ -297,6 +360,7 @@ export const startPolling = async (
       maybeRunConventionSync();
       maybeRunWorktreeDiscovery();
       maybeReportDetectedEngines();
+      maybeReportDetectedModels();
 
       // 한 polling cycle의 세 read(고아 취소 대상 / 워크트리 제거 대상 / pending)를 통합
       // snapshot 1회 조회로 가져온다. 실패 시 아래 catch에서 polling cycle 전체가 실패

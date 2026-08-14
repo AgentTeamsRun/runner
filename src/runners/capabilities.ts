@@ -22,6 +22,12 @@ export interface RunnerCapabilities {
    */
   effort: boolean;
   /**
+   * 설치된 하위 CLI가 현재 계정/머신에서 선택 가능한 모델 목록을 비대화형으로 열거하는가.
+   * 실제 열거 명령과 파서는 `utils/model-enumerator.ts`가 이 축을 기준으로 선택한다.
+   * 열거 서브커맨드가 없는 러너는 false다. AMP는 모델이 아니라 고정 `--mode` 축이다.
+   */
+  modelEnumeration: boolean;
+  /**
    * 서브 에이전트 위임을 비동기(백그라운드)로 수행해, 위임 호출 계층의 별도 응답 제한
    * (러너 idle/fail-safe timeout과 무관한 per-call 제한)을 회피할 수 있는 검증된
    * 메커니즘이 있는가. 러너 요청 프롬프트의 위임 정책 분기(전용 문구 vs 러너-무관 안전
@@ -40,29 +46,30 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // 두 옵션을 실제로 소비한다.
   // claude-code는 서브 에이전트(Task 도구)의 `run_in_background` 파라미터로 비동기 위임과
   // 결과 별도 회수를 지원하는 유일한 러너다(Claude Code 2.x 런타임 계약으로 확인).
-  CLAUDE_CODE: { model: true, fastMode: true, effort: true, subAgentDelegation: true },
-  CODEX: { model: true, fastMode: true, effort: true, subAgentDelegation: false },
+  CLAUDE_CODE: { model: true, fastMode: true, effort: true, modelEnumeration: false, subAgentDelegation: true },
+  CODEX: { model: true, fastMode: true, effort: true, modelEnumeration: false, subAgentDelegation: false },
   // opencode는 --model만 전달하며 fastMode/effort는 반영하지 않는다.
-  OPENCODE: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
+  OPENCODE: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
   // antigravity(agy --print)는 --model을 지원하지만 fastMode/effort는 반영하지 않는다.
-  ANTIGRAVITY: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
+  ANTIGRAVITY: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
   // AMP는 `--model`이 아니라 `--mode`로 실행 프로필을 선택하므로 model:true로 둔다.
   // 실제 인자 조립은 runners/amp.ts에서 AmpCode 전용 계약으로 문서화한다.
-  AMP: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
-  COPILOT_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
-  CURSOR_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
-  KIMI_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
+  AMP: { model: true, fastMode: false, effort: false, modelEnumeration: false, subAgentDelegation: false },
+  COPILOT_CLI: { model: true, fastMode: false, effort: false, modelEnumeration: false, subAgentDelegation: false },
+  CURSOR_CLI: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
+  KIMI_CLI: { model: true, fastMode: false, effort: false, modelEnumeration: false, subAgentDelegation: false },
   // kiro-cli는 `chat --model <MODEL>`을 실제로 소비한다(2026-08-08 실측).
   // effort는 `--effort` 플래그가 존재하지만 잘못된 레벨도 조용히 수용되고 low/max가 동일
   // 크레딧을 소모해 효과를 실증하지 못했으므로 false로 둔다.
   // subAgentDelegation은 Kiro 서브에이전트가 메인 에이전트의 완료 대기(blocking) 모델이라 false.
-  KIRO_CLI: { model: true, fastMode: false, effort: false, subAgentDelegation: false },
+  KIRO_CLI: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
 };
 
 const DEFAULT_CAPABILITIES: RunnerCapabilities = {
   model: false,
   fastMode: false,
   effort: false,
+  modelEnumeration: false,
   subAgentDelegation: false,
 };
 

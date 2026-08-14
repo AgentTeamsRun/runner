@@ -13,6 +13,7 @@ import type {
 } from './types.js';
 import { logger } from './logger.js';
 import { getMachineId } from './utils/machine-id.js';
+import type { EnumeratedModel } from './utils/model-enumerator.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json') as { version?: string };
@@ -330,6 +331,21 @@ export class DaemonApiClient {
 
     if (!response.ok) {
       throw new Error(`Failed to report detected engines (${response.status})`);
+    }
+  }
+
+  async reportDetectedModels(models: Array<{ runnerType: string; values: EnumeratedModel[] }>): Promise<void> {
+    const response = await this.requestWithRetry('/api/daemons/report-models', {
+      method: 'POST',
+      headers: {
+        ...this.daemonHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ models }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to report detected models (${response.status})`);
     }
   }
 
