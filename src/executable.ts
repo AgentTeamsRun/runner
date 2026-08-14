@@ -172,7 +172,39 @@ const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>
 
     return [...new Set([localBin, ...macAppBundleBin])];
   },
+  // Grok Build의 공식 설치기는 `$GROK_HOME/bin`(기본 `~/.grok/bin`)에 실행 파일을 두고
+  // macOS/Linux에서는 `~/.local/bin`에도 링크를 만든다(2026-08-14 실측, grok 1.0.3).
+  // Windows 설치 경로(`%USERPROFILE%\.grok\bin`)는 문서 기준이며 실측하지 못했다.
+  grok: (env, os) => {
+    const configuredHomePaths = env.GROK_HOME ? [join(env.GROK_HOME, 'bin')] : [];
+    const userHome = os === 'win32' ? env.USERPROFILE : env.HOME;
+    if (!userHome) {
+      return [...new Set(configuredHomePaths)];
+    }
+
+    const defaultHomeBin = join(userHome, '.grok', 'bin');
+    const userLocalBin = os === 'win32' ? [] : [join(userHome, '.local', 'bin')];
+
+    return [...new Set([...configuredHomePaths, defaultHomeBin, ...userLocalBin])];
+  },
 };
+
+/**
+ * 알려진 설치 경로를 PATH보다 **먼저** 보는 커맨드 목록(엔진별 opt-in).
+ *
+ * 기본 해석 순서는 PATH → npm global bin → 알려진 설치 경로다. 그런데 `grok`은 무관한
+ * npm 패키지(`@vibe-kit/grok-cli`)도 같은 이름의 바이너리를 설치하므로, 기본 순서라면
+ * 공식 Grok Build가 설치돼 있어도 서드파티가 이긴다. 그 CLI에는
+ * `--output-format`·`--permission-mode`가 없어 러너가 조용히 오작동한다.
+ *
+ * 여기에 등록된 커맨드만 순서를 뒤집고, 나머지 엔진의 해석 순서는 그대로 둔다.
+ * 이름이 겹칠 뿐 공식 설치본이 없는 환경에서는 알려진 경로 탐색이 그냥 실패하고
+ * 기존 순서대로 PATH로 넘어가므로, 서드파티만 있는 환경의 동작도 바뀌지 않는다.
+ */
+const KNOWN_INSTALL_BIN_FIRST_COMMANDS: ReadonlySet<string> = new Set(['grok']);
+
+const prefersKnownInstallBin = (name: string): boolean =>
+  KNOWN_INSTALL_BIN_FIRST_COMMANDS.has(getWindowsCommandBaseName(name));
 
 const getKnownInstallBinPaths = (name: string, deps: ExecutableDeps): string[] => {
   const env = deps.env ?? process.env;
@@ -208,8 +240,13 @@ export const buildPowerShellCommand = (executablePath: string, args: string[]): 
 };
 
 export const resolveExecutablePath = (name: string, deps: ExecutableDeps = {}): string => {
-  const resolvedPath =
-    resolveFromPathLookup(name, deps) ?? resolveFromNpmGlobalBin(name, deps) ?? resolveFromKnownInstallBin(name, deps);
+  const resolvedPath = prefersKnownInstallBin(name)
+    ? (resolveFromKnownInstallBin(name, deps) ??
+      resolveFromPathLookup(name, deps) ??
+      resolveFromNpmGlobalBin(name, deps))
+    : (resolveFromPathLookup(name, deps) ??
+      resolveFromNpmGlobalBin(name, deps) ??
+      resolveFromKnownInstallBin(name, deps));
   if (resolvedPath) {
     return resolvedPath;
   }
@@ -241,17 +278,64 @@ const probeExecOptions = {
   stdio: ['ignore', 'pipe', 'ignore'],
 } as const;
 
-const resolveFromPathLookupAsync = async (name: string, deps: AsyncExecutableDeps): Promise<string | null> => {
+const resolveAllFromPathLookupAsync = async (name: string, deps: AsyncExecutableDeps): Promise<string[]> => {
   const os = (deps.platform ?? getPlatform)();
   const run = deps.execFileAsync ?? execFileAsync;
   const lookupCommand = os === 'win32' ? 'where' : 'which';
+  const args = os === 'win32' ? [name] : ['-a', name];
 
   try {
-    const { stdout } = await run(lookupCommand, [name], probeExecOptions);
-    return selectPathLookupResult(name, String(stdout), os);
+    const { stdout } = await run(lookupCommand, args, probeExecOptions);
+    const lines = getOutputLines(String(stdout));
+    if (os !== 'win32') return lines;
+
+    const preferred = selectPathLookupResult(name, String(stdout), os);
+    return preferred ? [preferred, ...lines.filter((line) => line !== preferred)] : lines;
   } catch {
-    return null;
+    return [];
   }
+};
+
+const resolveAllFromKnownInstallBin = (name: string, deps: ExecutableDeps): string[] => {
+  const os = (deps.platform ?? getPlatform)();
+  const fileExists = deps.existsSync ?? existsSync;
+  const candidateNames = os === 'win32' ? getWindowsExecutableNames(name, deps.env ?? process.env) : [name];
+  const paths: string[] = [];
+
+  for (const binPath of getKnownInstallBinPaths(name, deps)) {
+    for (const candidateName of candidateNames) {
+      const candidatePath = join(binPath, candidateName);
+      if (fileExists(candidatePath)) paths.push(candidatePath);
+    }
+  }
+
+  return paths;
+};
+
+/**
+ * 신원 확인이 필요한 실행 파일을 위해 모든 후보를 실제 해석 우선순위대로 반환한다.
+ * `grok`처럼 이름이 충돌하는 도구는 첫 후보가 잘못됐다는 이유로 정상 후순위 설치를
+ * 버리면 안 되므로, 호출자가 각 후보를 검증할 수 있어야 한다.
+ */
+export const resolveExecutablePathsWithPreferenceAsync = async (
+  name: string,
+  preferredNames: string[],
+  deps: AsyncExecutableDeps = {},
+): Promise<string[]> => {
+  const candidates: string[] = [];
+
+  for (const candidateName of new Set([...preferredNames, name])) {
+    const known = resolveAllFromKnownInstallBin(candidateName, deps);
+    const path = await resolveAllFromPathLookupAsync(candidateName, deps);
+    const npm = resolveFromNpmGlobalBin(candidateName, deps);
+    candidates.push(
+      ...(prefersKnownInstallBin(candidateName)
+        ? [...known, ...path, ...(npm ? [npm] : [])]
+        : [...path, ...(npm ? [npm] : []), ...known]),
+    );
+  }
+
+  return [...new Set(candidates)];
 };
 
 /// 이벤트 루프를 막지 않는 실행 파일 해석. 러너 기동과 같은 선호 목록·폴백 순서를 쓰되,
@@ -261,17 +345,7 @@ export const resolveExecutablePathWithPreferenceAsync = async (
   preferredNames: string[],
   deps: AsyncExecutableDeps = {},
 ): Promise<string | null> => {
-  for (const candidateName of new Set([...preferredNames, name])) {
-    const resolvedPath =
-      (await resolveFromPathLookupAsync(candidateName, deps)) ??
-      resolveFromNpmGlobalBin(candidateName, deps) ??
-      resolveFromKnownInstallBin(candidateName, deps);
-    if (resolvedPath) {
-      return resolvedPath;
-    }
-  }
-
-  return null;
+  return (await resolveExecutablePathsWithPreferenceAsync(name, preferredNames, deps))[0] ?? null;
 };
 
 export const getNpmGlobalBinPathAsync = async (deps: AsyncExecutableDeps = {}): Promise<string | null> => {
@@ -322,10 +396,13 @@ export const resolveExecutablePathWithPreference = (
   deps: ExecutableDeps = {},
 ): string => {
   for (const preferredName of preferredNames) {
-    const resolvedPath =
-      resolveFromPathLookup(preferredName, deps) ??
-      resolveFromNpmGlobalBin(preferredName, deps) ??
-      resolveFromKnownInstallBin(preferredName, deps);
+    const resolvedPath = prefersKnownInstallBin(preferredName)
+      ? (resolveFromKnownInstallBin(preferredName, deps) ??
+        resolveFromPathLookup(preferredName, deps) ??
+        resolveFromNpmGlobalBin(preferredName, deps))
+      : (resolveFromPathLookup(preferredName, deps) ??
+        resolveFromNpmGlobalBin(preferredName, deps) ??
+        resolveFromKnownInstallBin(preferredName, deps));
     if (resolvedPath) {
       return resolvedPath;
     }

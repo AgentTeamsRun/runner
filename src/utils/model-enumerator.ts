@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import type { RunnerType } from '@agentteams/core-constants';
 import { resolveExecutablePathWithPreference } from '../executable.js';
 import { RUNNER_CAPABILITIES } from '../runners/capabilities.js';
+import { getGrokExecutablePreference } from '../runners/grok-build.js';
 import { getKiroExecutablePreference } from '../runners/kiro-cli.js';
 
 const execFileAsync = promisify(execFile);
@@ -173,6 +174,41 @@ export const parseCursorModels = (output: string): ModelEnumerationResult =>
     }),
   );
 
+/**
+ * `grok models`는 JSON 플래그가 없고 사람이 읽는 평문만 낸다(2026-08-14 실측, grok 1.0.3):
+ *
+ *   You are logged in with grok.com.
+ *
+ *   Default model: grok-4.6
+ *
+ *   Available models:
+ *     * grok-4.6 (default)
+ *
+ * `Available models:` 헤더 뒤의 글머리 줄만 읽는다. 헤더 앞줄에는 로그인 상태와
+ * `Default model:` 같은 진단 문구가 섞여 있어, 줄 형태만으로 거르면 그것들이 모델 값으로
+ * 새어 들어간다. 값 뒤의 `(default)` 표시는 값의 일부가 아니라 기본 모델 마커라 떼어낸다.
+ */
+export const parseGrokModels = (output: string): ModelEnumerationResult => {
+  if (output.trim().length === 0) return { status: 'EMPTY_OUTPUT' };
+
+  const lines = output.split(/\r?\n/u);
+  const headerIndex = lines.findIndex((line) => /^available models:\s*$/iu.test(line.trim()));
+  if (headerIndex < 0) return { status: 'FORMAT_MISMATCH' };
+
+  const models: EnumeratedModel[] = [];
+  for (const line of lines.slice(headerIndex + 1)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    const match = trimmed.match(/^[*\-•]\s+(\S+)(?:\s+\((.+)\))?$/u);
+    // 글머리 형태가 아닌 줄이 나오면 목록 구획이 끝난 것으로 본다.
+    if (!match) break;
+    const value = match[1] ?? '';
+    if (value.length > 0) models.push({ value, label: value });
+  }
+
+  return parsedResult(output, models);
+};
+
 const commandFailure = (error: unknown): ModelEnumerationResult => ({
   status: 'COMMAND_FAILED',
   message: error instanceof Error ? error.message : String(error),
@@ -216,6 +252,10 @@ export const enumerateModels = async (
       case 'CURSOR_CLI': {
         const executable = deps.resolveExecutable('agent', isWindows ? ['agent.cmd', 'agent'] : ['agent']);
         return parseCursorModels((await deps.execute(executable, ['models'])).stdout);
+      }
+      case 'GROK_BUILD': {
+        const executable = deps.resolveExecutable('grok', getGrokExecutablePreference(isWindows));
+        return parseGrokModels((await deps.execute(executable, ['models'])).stdout);
       }
       default:
         return { status: 'UNSUPPORTED' };

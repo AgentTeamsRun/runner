@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   enumerateModels,
   parseCursorModels,
+  parseGrokModels,
   parseKiroModels,
   parseLineModels,
   parseOpenCodeVerboseModels,
@@ -79,10 +80,38 @@ describe('model enumerator parsers', () => {
     });
   });
 
+  test('reads only the Grok bullet list under the Available models header', async () => {
+    assert.deepEqual(parseGrokModels(await fixture('grok-models.txt')), {
+      status: 'SUCCESS',
+      values: [{ value: 'grok-4.6', label: 'grok-4.6' }],
+    });
+  });
+
+  // 헤더 앞에는 로그인 상태와 `Default model:` 진단 줄이 있다. 줄 형태만으로 거르면
+  // 그 값들이 모델로 새어 들어간다.
+  test('does not leak Grok diagnostic lines above the header as models', () => {
+    const output = ['You are logged in with grok.com.', '', 'Default model: grok-4.6', ''].join('\n');
+    assert.deepEqual(parseGrokModels(output), { status: 'FORMAT_MISMATCH' });
+  });
+
+  test('stops the Grok list at the first non-bullet line and strips the default marker', () => {
+    const output = ['Available models:', '  * grok-4.6 (default)', '  * grok-mini', '', 'Notes: something else'].join(
+      '\n',
+    );
+    assert.deepEqual(parseGrokModels(output), {
+      status: 'SUCCESS',
+      values: [
+        { value: 'grok-4.6', label: 'grok-4.6' },
+        { value: 'grok-mini', label: 'grok-mini' },
+      ],
+    });
+  });
+
   test('distinguishes empty output, format mismatch, and reserved values', () => {
     assert.deepEqual(parseLineModels('', 'tab'), { status: 'EMPTY_OUTPUT' });
     assert.deepEqual(parseCursorModels('Available models\ninvalid'), { status: 'FORMAT_MISMATCH' });
     assert.deepEqual(parseLineModels('__fast__:hidden\tHidden', 'tab'), { status: 'FORMAT_MISMATCH' });
+    assert.deepEqual(parseGrokModels(''), { status: 'EMPTY_OUTPUT' });
   });
 });
 

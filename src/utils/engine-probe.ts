@@ -3,14 +3,17 @@ import {
   getNpmGlobalBinPathAsync,
   isExecutableLookupAvailable,
   resolveExecutablePathWithPreferenceAsync,
+  resolveExecutablePathsWithPreferenceAsync,
   runProbeCommand,
   type AsyncExecutableDeps,
 } from '../executable.js';
 import { ENGINE_COMMANDS, getEngineCommand, getEngineExecutablePreference } from '../runners/engine-commands.js';
+import { findGrokBuildExecutable } from '../runners/grok-build-identity.js';
 
 type EngineProbeDependencies = AsyncExecutableDeps & {
   getNpmGlobalBinPathAsync?: typeof getNpmGlobalBinPathAsync;
   resolveExecutablePathWithPreferenceAsync?: typeof resolveExecutablePathWithPreferenceAsync;
+  resolveExecutablePathsWithPreferenceAsync?: typeof resolveExecutablePathsWithPreferenceAsync;
   isExecutableLookupAvailable?: typeof isExecutableLookupAvailable;
   runProbeCommand?: typeof runProbeCommand;
 };
@@ -48,6 +51,23 @@ export const probeInstalledEngines = async (
   const engines: RunnerType[] = [];
 
   for (const runnerType of Object.keys(ENGINE_COMMANDS) as RunnerType[]) {
+    if (runnerType === 'GROK_BUILD') {
+      const preferredNames = getEngineExecutablePreference(runnerType, runnerCmd, isWindows);
+      const grokDependencies =
+        deps.resolveExecutablePathWithPreferenceAsync && !deps.resolveExecutablePathsWithPreferenceAsync
+          ? {
+              ...executableDeps,
+              runProbeCommand: runCommand,
+              resolveExecutablePathsWithPreferenceAsync: async (name: string, preference: string[]) => {
+                const candidate = await resolve(name, preference, executableDeps);
+                return candidate ? [candidate] : [];
+              },
+            }
+          : { ...executableDeps, runProbeCommand: runCommand };
+      if (await findGrokBuildExecutable(preferredNames, grokDependencies)) engines.push(runnerType);
+      continue;
+    }
+
     const executablePath = await resolve(
       getEngineCommand(runnerType, runnerCmd),
       getEngineExecutablePreference(runnerType, runnerCmd, isWindows),

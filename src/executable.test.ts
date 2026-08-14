@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildPowerShellCommand, resolveExecutablePath, resolveExecutablePathWithPreference } from './executable.js';
+import {
+  buildPowerShellCommand,
+  resolveExecutablePath,
+  resolveExecutablePathsWithPreferenceAsync,
+  resolveExecutablePathWithPreference,
+} from './executable.js';
 
 test('resolveExecutablePath falls back to npm global bin on Windows', () => {
   const resolved = resolveExecutablePath('opencode', {
@@ -346,4 +351,88 @@ test('buildPowerShellCommand preserves multiline arguments and escapes single qu
   ]);
 
   assert.equal(command, "& 'C:\\Users\\rlaru\\AppData\\Roaming\\npm\\opencode.cmd' 'run' 'line 1\nline ''2'''");
+});
+
+// `grok`은 무관한 npm 패키지(@vibe-kit/grok-cli)도 설치하는 이름이다. 기본 해석 순서
+// (PATH → npm global bin → 알려진 설치 경로)를 그대로 두면 서드파티가 이기고, 그 CLI에는
+// --output-format/--permission-mode가 없어 러너가 조용히 오작동한다.
+test('resolveExecutablePath prefers the Grok install bin over a third-party grok on PATH', () => {
+  const resolved = resolveExecutablePath('grok', {
+    env: {
+      HOME: '/Users/justin',
+    },
+    platform: () => 'darwin',
+    // PATH 조회는 서드파티 npm shim을 먼저 돌려준다.
+    execFileSync: (() =>
+      '/Users/justin/.nvm/versions/node/v24.16.0/bin/grok\n') as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      path === '/Users/justin/.grok/bin/grok' ||
+      path === '/Users/justin/.nvm/versions/node/v24.16.0/bin/grok') as typeof import('node:fs').existsSync,
+  });
+
+  assert.equal(resolved, '/Users/justin/.grok/bin/grok');
+});
+
+test('resolveExecutablePath honours GROK_HOME ahead of the default ~/.grok/bin', () => {
+  const resolved = resolveExecutablePath('grok', {
+    env: {
+      HOME: '/Users/justin',
+      GROK_HOME: '/opt/grok-home',
+    },
+    platform: () => 'linux',
+    execFileSync: (() => {
+      throw new Error('not found');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      path === '/opt/grok-home/bin/grok' ||
+      path === '/Users/justin/.grok/bin/grok') as typeof import('node:fs').existsSync,
+  });
+
+  assert.equal(resolved, '/opt/grok-home/bin/grok');
+});
+
+// 공식 설치본이 없는 환경에서는 알려진 경로 탐색이 실패하고 기존 순서대로 PATH로 넘어가야 한다.
+// (서드파티만 있는 환경의 동작을 바꾸지 않는다는 보장)
+test('resolveExecutablePath still falls back to PATH when no official Grok install exists', () => {
+  const resolved = resolveExecutablePath('grok', {
+    env: {
+      HOME: '/Users/justin',
+    },
+    platform: () => 'darwin',
+    execFileSync: (() => '/usr/local/bin/grok\n') as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) => path === '/usr/local/bin/grok') as typeof import('node:fs').existsSync,
+  });
+
+  assert.equal(resolved, '/usr/local/bin/grok');
+});
+
+test('resolveExecutablePathWithPreference prefers the Grok install bin over PATH', () => {
+  const resolved = resolveExecutablePathWithPreference('grok', ['grok'], {
+    env: {
+      HOME: '/Users/justin',
+    },
+    platform: () => 'darwin',
+    execFileSync: (() =>
+      '/Users/justin/.nvm/versions/node/v24.16.0/bin/grok\n') as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      path === '/Users/justin/.grok/bin/grok' ||
+      path === '/Users/justin/.nvm/versions/node/v24.16.0/bin/grok') as typeof import('node:fs').existsSync,
+  });
+
+  assert.equal(resolved, '/Users/justin/.grok/bin/grok');
+});
+
+test('resolveExecutablePathsWithPreferenceAsync keeps every Grok candidate in priority order', async () => {
+  const resolved = await resolveExecutablePathsWithPreferenceAsync('grok', ['grok'], {
+    env: { HOME: '/Users/justin' },
+    platform: () => 'darwin',
+    npmGlobalBinPath: null,
+    execFileAsync: (async () => ({
+      stdout: '/usr/local/bin/grok\n/opt/homebrew/bin/grok\n',
+      stderr: '',
+    })) as never,
+    existsSync: ((path: string) => path === '/Users/justin/.grok/bin/grok') as typeof import('node:fs').existsSync,
+  });
+
+  assert.deepEqual(resolved, ['/Users/justin/.grok/bin/grok', '/usr/local/bin/grok', '/opt/homebrew/bin/grok']);
 });

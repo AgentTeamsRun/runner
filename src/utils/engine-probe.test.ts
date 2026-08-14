@@ -51,6 +51,7 @@ describe('probeInstalledEngines', () => {
     assert.deepEqual(preferences.get('kimi'), ['kimi.cmd', 'kimi']);
     assert.deepEqual(preferences.get('kiro-cli'), ['kiro-cli.exe', 'kiro-cli']);
     assert.deepEqual(preferences.get('agent'), ['agent']);
+    assert.deepEqual(preferences.get('grok'), ['grok.exe', 'grok']);
   });
 
   it('accepts Cursor only when the executable identifies itself as Cursor Agent', async () => {
@@ -65,6 +66,39 @@ describe('probeInstalledEngines', () => {
     assert.deepEqual((await probe('Unrelated agent utility')).engines, []);
     // 타임아웃으로 죽은 --help는 null을 돌려주며, 오탐 대신 미설치로 취급한다.
     assert.deepEqual((await probe(null)).engines, []);
+  });
+
+  // `grok`은 무관한 npm 패키지(@vibe-kit/grok-cli)도 쓰는 이름이라, 공식 help 문구가 없으면
+  // 설치된 것으로 보고하면 안 된다. 서드파티를 GROK_BUILD로 오탐하면 실행이 통째로 깨진다.
+  it('accepts Grok only when the executable identifies itself as Grok Build', async () => {
+    const probe = (helpText: string | null) =>
+      probeInstalledEngines('opencode', {
+        getNpmGlobalBinPathAsync: async () => null,
+        runProbeCommand: async () => helpText,
+        resolveExecutablePathWithPreferenceAsync: async (name) => (name === 'grok' ? '/bin/grok' : null),
+      });
+
+    assert.deepEqual((await probe('Grok Build TUI\n\nUsage: grok [OPTIONS] [PROMPT]')).engines, ['GROK_BUILD']);
+    // 서드파티 @vibe-kit/grok-cli의 help에는 이 문구가 없다.
+    assert.deepEqual((await probe('Grok CLI - AI assistant in your terminal')).engines, []);
+    assert.deepEqual((await probe(null)).engines, []);
+  });
+
+  it('skips a conflicting Grok candidate and accepts the next official installation', async () => {
+    const probed: string[] = [];
+    const result = await probeInstalledEngines('opencode', {
+      getNpmGlobalBinPathAsync: async () => null,
+      resolveExecutablePathsWithPreferenceAsync: async (name) =>
+        name === 'grok' ? ['/custom/bin/grok', '/usr/local/bin/grok'] : [],
+      resolveExecutablePathWithPreferenceAsync: async () => null,
+      runProbeCommand: async (executablePath) => {
+        probed.push(executablePath);
+        return executablePath === '/usr/local/bin/grok' ? 'Grok Build TUI' : 'Grok CLI - AI assistant';
+      },
+    });
+
+    assert.deepEqual(probed, ['/custom/bin/grok', '/usr/local/bin/grok']);
+    assert.deepEqual(result.engines, ['GROK_BUILD']);
   });
 
   // 빈 목록은 서버에서 "제한 없음"으로 해석되므로, 조회 자체가 불가능한 환경은 보고 대상에서 빼야 한다.

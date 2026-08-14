@@ -19,6 +19,7 @@ test('only claude-code and codex support fastMode', () => {
   assert.equal(RUNNER_CAPABILITIES.CURSOR_CLI.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.KIMI_CLI.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.KIRO_CLI.fastMode, false);
+  assert.equal(RUNNER_CAPABILITIES.GROK_BUILD.fastMode, false);
   assert.equal(runnerSupportsFastMode('CODEX'), true);
   assert.equal(runnerSupportsFastMode('OPENCODE'), false);
 });
@@ -28,12 +29,12 @@ test('antigravity supports model selection', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.model, true);
 });
 
-test('only OpenCode, Antigravity, Cursor CLI, and Kiro CLI support model enumeration', () => {
+test('only OpenCode, Antigravity, Cursor CLI, Kiro CLI, and Grok Build support model enumeration', () => {
   const supported = Object.entries(RUNNER_CAPABILITIES)
     .filter(([, capabilities]) => capabilities.modelEnumeration)
     .map(([runnerType]) => runnerType);
 
-  assert.deepEqual(supported, ['OPENCODE', 'ANTIGRAVITY', 'CURSOR_CLI', 'KIRO_CLI']);
+  assert.deepEqual(supported, ['OPENCODE', 'ANTIGRAVITY', 'CURSOR_CLI', 'KIRO_CLI', 'GROK_BUILD']);
 });
 
 test('Copilot CLI supports model selection but not fast mode or sub-agent delegation', () => {

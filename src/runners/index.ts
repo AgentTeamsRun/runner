@@ -7,6 +7,7 @@ import { CopilotCliRunner } from './copilot-cli.js';
 import { CursorCliRunner } from './cursor-cli.js';
 import { KimiCliRunner } from './kimi-cli.js';
 import { KiroCliRunner } from './kiro-cli.js';
+import { GrokBuildRunner } from './grok-build.js';
 import type { Runner } from './types.js';
 // 러너 타입 집합의 단일 진실 소스(SSOT). `import type`이므로 컴파일 시 완전히 제거되어
 // daemon 런타임/배포 산출물(dist)에는 이 패키지 의존이 남지 않는다(zero-dependency 유지).
@@ -37,6 +38,8 @@ export const createRunnerFactory = (runnerCmd: string) => {
         return new KimiCliRunner();
       case 'KIRO_CLI':
         return new KiroCliRunner();
+      case 'GROK_BUILD':
+        return new GrokBuildRunner();
       // TODO: AIDER
       // TODO: GOOSE
       // TODO: PLANDEX

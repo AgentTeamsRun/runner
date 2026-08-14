@@ -156,6 +156,60 @@ export const summarizeToolUse = (name: string, input: Record<string, unknown> | 
       return query ? `ToolSearch: ${truncate(query, 80)}` : 'ToolSearch';
     }
 
+    // Grok Build의 내장 도구 이름은 Claude Code와 다르다(snake_case, 입력 키도 다름).
+    // 아래 case가 없으면 `read_file(target_file)` 같은 default 요약만 남아 로그가 읽히지
+    // 않는다. Claude/AMP는 이 이름들을 내보내지 않으므로 기존 러너 동작은 그대로다.
+    // 입력 키는 grok 1.0.3 실행 캡처에서 확인했다(2026-08-14).
+    case 'read_file': {
+      const filePath = stringField(safeInput, 'target_file');
+      return filePath ? `read_file: ${shortenPath(filePath, cwd)}` : 'read_file';
+    }
+
+    case 'write': {
+      const filePath = stringField(safeInput, 'file_path');
+      return filePath ? `write: ${shortenPath(filePath, cwd)}` : 'write';
+    }
+
+    case 'search_replace': {
+      const filePath = stringField(safeInput, 'file_path');
+      return filePath ? `search_replace: ${shortenPath(filePath, cwd)}` : 'search_replace';
+    }
+
+    case 'grep': {
+      const pattern = stringField(safeInput, 'pattern');
+      const path = stringField(safeInput, 'path');
+      const location = path ? ` in ${shortenPath(path, cwd)}` : '';
+      return pattern ? `grep: "${truncate(pattern, 60)}"${location}` : 'grep';
+    }
+
+    case 'list_dir': {
+      const directory = stringField(safeInput, 'target_directory');
+      return directory ? `list_dir: ${shortenPath(directory, cwd)}` : 'list_dir';
+    }
+
+    case 'run_terminal_command': {
+      const raw = stringField(safeInput, 'command').trim().split(/\r?\n/)[0] ?? '';
+      const command = cwd && raw.includes(cwd) ? raw.split(cwd).join('.') : raw;
+      return command ? `run_terminal_command: ${truncate(command, BASH_PREVIEW_MAX)}` : 'run_terminal_command';
+    }
+
+    case 'spawn_subagent': {
+      const description = stringField(safeInput, 'description');
+      return description ? `spawn_subagent: ${truncate(description, 80)}` : 'spawn_subagent';
+    }
+
+    case 'get_command_or_subagent_output': {
+      const taskIds = safeInput.task_ids;
+      const count = Array.isArray(taskIds) ? taskIds.length : 0;
+      return `get_command_or_subagent_output: ${count} task(s)`;
+    }
+
+    case 'todo_write': {
+      const todos = safeInput.todos;
+      const count = Array.isArray(todos) ? todos.length : 0;
+      return `todo_write: ${count} item(s)`;
+    }
+
     default: {
       const keys = Object.keys(safeInput).slice(0, 3).join(',');
       return keys ? `${name}(${keys})` : name;

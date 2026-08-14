@@ -63,6 +63,17 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // 크레딧을 소모해 효과를 실증하지 못했으므로 false로 둔다.
   // subAgentDelegation은 Kiro 서브에이전트가 메인 에이전트의 완료 대기(blocking) 모델이라 false.
   KIRO_CLI: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
+  // grok(Grok Build)은 `-m <MODEL>`을 실제로 소비한다(2026-08-14 실측, grok 1.0.3).
+  // `grok models`가 노출하는 유일한 값 `grok-4.6`은 exit 0으로 실행되고 result.modelUsage에
+  // 그대로 보고된다. 알 수 없는 값은 exit 1 + `unknown model id`라 조용한 폴백이 없다.
+  // modelEnumeration은 `grok models`가 `Available models:` 아래 `  * <id> (default)` 형태의
+  // 기계 파싱 가능한 목록을 내보내 true다(JSON 출력 플래그는 없다).
+  // effort는 `--reasoning-effort`(alias `--effort`)가 존재하고 무효 레벨을 거부하지만
+  // (`use one of: xhigh, high, medium, low`), 동일 프롬프트에서 low↔xhigh의 reasoning
+  // 토큰 차이가 935↔996으로 노이즈 수준이라 효과를 실증하지 못해 false로 둔다(Kiro와 같은 기준).
+  // subAgentDelegation은 `spawn_subagent`로 위임하고 `get_command_or_subagent_output`
+  // (task_ids + timeout_ms)으로 결과를 별도 회수하는 흐름이 헤드리스 실행에서 동작함을 실측했다.
+  GROK_BUILD: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: true },
 };
 
 const DEFAULT_CAPABILITIES: RunnerCapabilities = {
