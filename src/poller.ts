@@ -10,6 +10,7 @@ import type { DaemonTrigger, RuntimeConfig } from './types.js';
 import { maybeAutoUpdate } from './utils/auto-update.js';
 import { executeRestartRequest } from './daemon-control.js';
 import { createPowerSaveBlocker, type PowerSaveBlocker } from './utils/power-save-blocker.js';
+import { probeInstalledEngines } from './utils/engine-probe.js';
 
 type TriggerHandlerFactory = (
   onAuthPathDiscovered: (authPath: string) => void,
@@ -19,6 +20,8 @@ const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CONVENTION_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 // 발견 worktree 정합화 주기. 신규 linked worktree가 곧 등록되도록 짧게 두되, 매 30s 폴마다 git을 돌리지는 않는다.
 const WORKTREE_DISCOVERY_INTERVAL_MS = 60 * 1000;
+// 실기 프로브가 약 0.66초였으므로 기동 직후 탐지는 유지하되 상시 폴링과 분리해 15분마다만 실행한다.
+const ENGINE_PROBE_INTERVAL_MS = 15 * 60 * 1000;
 
 // 한 polling cycle의 결과.
 // - ACTIVE: 처리할 일이 있었다(pending claim/실행, 고아 취소, 워크트리 제거, restart 중 하나 이상).
@@ -37,7 +40,7 @@ type PollingDependencies = {
     | 'ackRestartRequest'
   > &
     // 발견 worktree 정합화는 선택 기능이라 기존 mock 호환을 위해 optional로 둔다.
-    Partial<Pick<DaemonApiClient, 'fetchDiscoveryRepositories' | 'syncDiscoveredWorktrees'>>;
+    Partial<Pick<DaemonApiClient, 'fetchDiscoveryRepositories' | 'syncDiscoveredWorktrees' | 'reportDetectedEngines'>>;
   runCleanup?: (authPath: string) => Promise<void>;
   runConventionSync?: (authPath: string) => Promise<void>;
   reconcileDiscoveredWorktrees?: typeof reconcileDiscoveredWorktrees;
@@ -53,6 +56,7 @@ type PollingDependencies = {
   loadAuthPaths?: () => string[];
   saveAuthPath?: (authPath: string) => string;
   powerSaveBlocker?: PowerSaveBlocker;
+  probeInstalledEngines?: typeof probeInstalledEngines;
 };
 
 export const startPolling = async (
@@ -80,6 +84,7 @@ export const startPolling = async (
       }));
   const loadPersistedAuthPaths = dependencies.loadAuthPaths ?? loadAuthPaths;
   const persistAuthPath = dependencies.saveAuthPath ?? saveAuthPath;
+  const probeEngines = dependencies.probeInstalledEngines ?? probeInstalledEngines;
   // 절전 방지는 daemon polling lifecycle이 소유한다. daemon이 살아 있는 동안(폴링/대기/실행)
   // 절전을 막고, 종료 시 해제한다. (배터리/비 macOS는 유틸 내부에서 no-op)
   const powerSaveBlocker =
@@ -89,6 +94,8 @@ export const startPolling = async (
   const knownAuthPaths = new Set<string>(loadPersistedAuthPaths());
   let lastCleanupAt = 0;
   let lastWorktreeDiscoveryAt = 0;
+  let lastEngineProbeAt: number | null = null;
+  let isProbingEngines = false;
   let isDiscoveringWorktrees = false;
   const lastConventionSyncAt = new Map<string, number>();
 
@@ -177,6 +184,41 @@ export const startPolling = async (
       });
   };
 
+  // 설치 엔진 탐지·보고. 하위 프로세스 실행과 네트워크 재시도가 폴 사이클을 붙잡지 않도록
+  // 다른 주기 유지보수 작업들과 같은 fire-and-forget 패턴으로 돌린다.
+  const maybeReportDetectedEngines = () => {
+    const reportDetectedEngines = client.reportDetectedEngines?.bind(client);
+    if (!reportDetectedEngines || isProbingEngines) {
+      return;
+    }
+
+    const currentTime = now();
+    if (lastEngineProbeAt !== null && currentTime - lastEngineProbeAt < ENGINE_PROBE_INTERVAL_MS) {
+      return;
+    }
+    lastEngineProbeAt = currentTime;
+    isProbingEngines = true;
+
+    void (async () => {
+      const result = await probeEngines(config.runnerCmd);
+      // 탐지 실패를 빈 목록으로 보고하면 서버가 "제한 없음"으로 해석해 탐지 축이 조용히 무력화된다.
+      if (!result.reliable) {
+        logger.warn('Skipped engine detection report: probe could not resolve executables on this machine');
+        return;
+      }
+
+      await reportDetectedEngines(result.engines);
+    })()
+      .catch((error) => {
+        logger.warn('Engine detection report failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        isProbingEngines = false;
+      });
+  };
+
   // 통합 snapshot에서 받은 고아 취소 대상 ID들을 개별 mutation으로 처리한다.
   const autoCancelOrphanedTriggers = async (triggerIds: string[]) => {
     for (const triggerId of triggerIds) {
@@ -254,6 +296,7 @@ export const startPolling = async (
       maybeRunCleanup();
       maybeRunConventionSync();
       maybeRunWorktreeDiscovery();
+      maybeReportDetectedEngines();
 
       // 한 polling cycle의 세 read(고아 취소 대상 / 워크트리 제거 대상 / pending)를 통합
       // snapshot 1회 조회로 가져온다. 실패 시 아래 catch에서 polling cycle 전체가 실패

@@ -1,14 +1,16 @@
-import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { platform as getPlatform } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 
 const DEFAULT_WINDOWS_EXTENSIONS = ['.com', '.exe', '.bat', '.cmd'];
 
-type ExecutableDeps = {
+export type ExecutableDeps = {
   env?: NodeJS.ProcessEnv;
   execFileSync?: typeof execFileSync;
   existsSync?: typeof existsSync;
+  npmGlobalBinPath?: string | null;
   platform?: typeof getPlatform;
 };
 
@@ -89,7 +91,7 @@ const getWindowsExecutableNames = (name: string, env: NodeJS.ProcessEnv): string
   return [name, ...extensions.map((extension) => `${name}${extension}`)];
 };
 
-const getNpmGlobalBinPath = (deps: ExecutableDeps): string | null => {
+export const getNpmGlobalBinPath = (deps: ExecutableDeps = {}): string | null => {
   const run = deps.execFileSync ?? execFileSync;
 
   try {
@@ -116,7 +118,7 @@ const resolveFromPathLookup = (name: string, deps: ExecutableDeps): string | nul
 const resolveFromNpmGlobalBin = (name: string, deps: ExecutableDeps): string | null => {
   const os = (deps.platform ?? getPlatform)();
   const fileExists = deps.existsSync ?? existsSync;
-  const npmGlobalBinPath = getNpmGlobalBinPath(deps);
+  const npmGlobalBinPath = deps.npmGlobalBinPath !== undefined ? deps.npmGlobalBinPath : getNpmGlobalBinPath(deps);
 
   if (!npmGlobalBinPath) {
     return null;
@@ -219,6 +221,99 @@ export const resolveExecutablePath = (name: string, deps: ExecutableDeps = {}): 
   throw new Error(
     `Cannot find '${name}' executable. Checked ${checkedLocations}. Ensure it is installed and available globally.`,
   );
+};
+
+const execFileAsync = promisify(execFile);
+
+export type AsyncExecutableDeps = ExecutableDeps & {
+  execFileAsync?: typeof execFileAsync;
+};
+
+/// 설치 탐지용 하위 프로세스 호출 상한. 응답하지 않는 바이너리가 러너를 붙잡지 못하게 한다.
+export const EXECUTABLE_PROBE_TIMEOUT_MS = 5_000;
+
+const probeExecOptions = {
+  encoding: 'utf8',
+  windowsHide: true,
+  timeout: EXECUTABLE_PROBE_TIMEOUT_MS,
+  killSignal: 'SIGKILL',
+  // 대화형 바이너리가 stdin을 기다리며 매달리지 않도록 입력을 닫는다.
+  stdio: ['ignore', 'pipe', 'ignore'],
+} as const;
+
+const resolveFromPathLookupAsync = async (name: string, deps: AsyncExecutableDeps): Promise<string | null> => {
+  const os = (deps.platform ?? getPlatform)();
+  const run = deps.execFileAsync ?? execFileAsync;
+  const lookupCommand = os === 'win32' ? 'where' : 'which';
+
+  try {
+    const { stdout } = await run(lookupCommand, [name], probeExecOptions);
+    return selectPathLookupResult(name, String(stdout), os);
+  } catch {
+    return null;
+  }
+};
+
+/// 이벤트 루프를 막지 않는 실행 파일 해석. 러너 기동과 같은 선호 목록·폴백 순서를 쓰되,
+/// 탐지 용도이므로 실패는 예외 대신 null로 돌려준다.
+export const resolveExecutablePathWithPreferenceAsync = async (
+  name: string,
+  preferredNames: string[],
+  deps: AsyncExecutableDeps = {},
+): Promise<string | null> => {
+  for (const candidateName of new Set([...preferredNames, name])) {
+    const resolvedPath =
+      (await resolveFromPathLookupAsync(candidateName, deps)) ??
+      resolveFromNpmGlobalBin(candidateName, deps) ??
+      resolveFromKnownInstallBin(candidateName, deps);
+    if (resolvedPath) {
+      return resolvedPath;
+    }
+  }
+
+  return null;
+};
+
+export const getNpmGlobalBinPathAsync = async (deps: AsyncExecutableDeps = {}): Promise<string | null> => {
+  const run = deps.execFileAsync ?? execFileAsync;
+
+  try {
+    const { stdout } = await run('npm', ['prefix', '-g'], probeExecOptions);
+    const output = String(stdout).trim();
+    return output.length > 0 ? output : null;
+  } catch {
+    return null;
+  }
+};
+
+/// PATH 조회 명령 자체를 실행할 수 있는지. 실행조차 못 하면(ENOENT) 탐지 결과 전체를 믿을 수 없다.
+/// "찾지 못함"(exit 1)은 조회가 동작한 것이므로 사용 가능으로 본다.
+export const isExecutableLookupAvailable = async (deps: AsyncExecutableDeps = {}): Promise<boolean> => {
+  const os = (deps.platform ?? getPlatform)();
+  const run = deps.execFileAsync ?? execFileAsync;
+  const lookupCommand = os === 'win32' ? 'where' : 'which';
+
+  try {
+    await run(lookupCommand, [lookupCommand], probeExecOptions);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | null)?.code !== 'ENOENT';
+  }
+};
+
+export const runProbeCommand = async (
+  executablePath: string,
+  args: string[],
+  deps: AsyncExecutableDeps = {},
+): Promise<string | null> => {
+  const run = deps.execFileAsync ?? execFileAsync;
+
+  try {
+    const { stdout } = await run(executablePath, args, probeExecOptions);
+    return String(stdout);
+  } catch {
+    return null;
+  }
 };
 
 export const resolveExecutablePathWithPreference = (

@@ -70,6 +70,7 @@ type PollClientOverrides = {
   reportWorktreeStatus?: (triggerId: string, status: string, worktreeError?: string) => Promise<void>;
   notifyUpdate?: () => Promise<void>;
   ackRestartRequest?: () => Promise<void>;
+  reportDetectedEngines?: (engines: string[]) => Promise<void>;
 };
 
 // 기본은 idle(아무 작업 없음) 러너 클라이언트. 필요한 동작만 override한다.
@@ -80,6 +81,115 @@ const makeClient = (overrides: PollClientOverrides = {}) => ({
   reportWorktreeStatus: overrides.reportWorktreeStatus ?? (async () => undefined),
   notifyUpdate: overrides.notifyUpdate ?? (async () => undefined),
   ackRestartRequest: overrides.ackRestartRequest ?? (async () => undefined),
+  ...(overrides.reportDetectedEngines ? { reportDetectedEngines: overrides.reportDetectedEngines } : {}),
+});
+
+test('startPolling reports detected engines immediately and does not probe again inside the interval', async () => {
+  const timeouts = createTimeoutRecorder();
+  const reports: string[][] = [];
+  let probeCalls = 0;
+  let keepAliveResolve: (() => void) | null = null;
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () =>
+      makeClient({
+        reportDetectedEngines: async (engines) => {
+          reports.push(engines);
+        },
+      }),
+    probeInstalledEngines: async () => {
+      probeCalls += 1;
+      return { engines: ['CODEX'], reliable: true };
+    },
+    runCleanup: async () => undefined,
+    runConventionSync: async () => undefined,
+    setTimeout: timeouts.setTimeoutMock,
+    clearTimeout: timeouts.clearTimeoutMock,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    now: () => 0,
+    keepAlive: () =>
+      new Promise<void>((resolve) => {
+        keepAliveResolve = resolve;
+      }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(probeCalls, 1);
+  assert.deepEqual(reports, [['CODEX']]);
+  (keepAliveResolve as unknown as () => void)();
+  await pollingPromise;
+});
+
+test('startPolling keeps polling when the engine report fails', async () => {
+  const warnings: string[] = [];
+  mock.method(logger, 'warn', (message: string) => warnings.push(message));
+  let fetchCalls = 0;
+  let keepAliveResolve: (() => void) | null = null;
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () =>
+      makeClient({
+        fetchPollState: async () => {
+          fetchCalls += 1;
+          return pollState();
+        },
+        reportDetectedEngines: async () => {
+          throw new Error('offline');
+        },
+      }),
+    probeInstalledEngines: async () => ({ engines: ['CODEX'], reliable: true }),
+    setTimeout: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    now: () => 0,
+    keepAlive: () =>
+      new Promise<void>((resolve) => {
+        keepAliveResolve = resolve;
+      }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fetchCalls, 1);
+  assert.ok(warnings.includes('Engine detection report failed'));
+  (keepAliveResolve as unknown as () => void)();
+  await pollingPromise;
+});
+
+// 빈 목록은 서버에서 "제한 없음"으로 해석되므로, 신뢰할 수 없는 탐지는 보고 자체를 건너뛰어야 한다.
+test('startPolling skips the engine report when the probe is unreliable', async () => {
+  const warnings: string[] = [];
+  mock.method(logger, 'warn', (message: string) => warnings.push(message));
+  const reports: string[][] = [];
+  let keepAliveResolve: (() => void) | null = null;
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () =>
+      makeClient({
+        reportDetectedEngines: async (engines) => {
+          reports.push(engines);
+        },
+      }),
+    probeInstalledEngines: async () => ({ engines: [], reliable: false }),
+    setTimeout: (() => ({ ref() {}, unref() {} }) as unknown as NodeJS.Timeout) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    now: () => 0,
+    keepAlive: () =>
+      new Promise<void>((resolve) => {
+        keepAliveResolve = resolve;
+      }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(reports, []);
+  assert.ok(
+    warnings.some((warning) => warning.startsWith('Skipped engine detection report')),
+    'expected an explicit skip warning',
+  );
+  (keepAliveResolve as unknown as () => void)();
+  await pollingPromise;
 });
 
 // setTimeout 주입 목: 예약된 폴 콜백과 delay를 캡처해 수동으로 구동한다.

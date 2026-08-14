@@ -318,6 +318,21 @@ export class DaemonApiClient {
     }
   }
 
+  async reportDetectedEngines(engines: readonly string[]): Promise<void> {
+    const response = await this.requestWithRetry('/api/daemons/report-engines', {
+      method: 'POST',
+      headers: {
+        ...this.daemonHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ detectedEngines: engines }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to report detected engines (${response.status})`);
+    }
+  }
+
   async notifyUpdate(version: string, pkg: 'cli' | 'runner' = 'runner'): Promise<void> {
     const response = await this.requestWithRetry('/api/daemons/notify-update', {
       method: 'POST',
