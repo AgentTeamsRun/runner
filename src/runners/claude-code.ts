@@ -9,6 +9,7 @@ import { selectRunnerFailureMessage } from './failure-message.js';
 import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import { applyAgentTeamsSessionEnv, buildAgentTeamsSessionEnv } from './session-env.js';
 
 const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
@@ -25,7 +26,7 @@ export const buildClaudeCodeEnv = (
   runnerEnv: Record<string, string>,
   options?: { effortRequested?: boolean },
 ): NodeJS.ProcessEnv => {
-  const env = { ...baseEnv, ...runnerEnv };
+  const env = applyAgentTeamsSessionEnv(baseEnv, runnerEnv);
 
   // The prompt contract requires background Task delegation. Do not inherit the
   // Claude Code escape hatch that silently converts those tasks back to blocking calls.
@@ -154,17 +155,7 @@ export class ClaudeCodeRunner implements Runner {
       ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, opts.fastMode === true, opts.effort)
       : null;
     const claudeArgs = buildClaudeCodeArgs(opts.model, opts.fastMode === true, opts.effort);
-    const childEnv = buildClaudeCodeEnv(
-      process.env,
-      {
-        AGENTTEAMS_API_KEY: opts.apiKey,
-        AGENTTEAMS_API_URL: opts.apiUrl,
-        AGENTTEAMS_TEAM_ID: opts.teamId,
-        AGENTTEAMS_PROJECT_ID: opts.projectId,
-        AGENTTEAMS_AGENT_NAME: opts.agentConfigId,
-      },
-      { effortRequested },
-    );
+    const childEnv = buildClaudeCodeEnv(process.env, buildAgentTeamsSessionEnv(opts), { effortRequested });
     const executableInfo = describeExecutableResolution('claude', {
       platform: () => (isWindows ? 'win32' : platform()),
     });

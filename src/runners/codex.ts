@@ -9,6 +9,7 @@ import { createCodexFinalTextCapturer, createCodexJsonLineParser } from './codex
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import { buildRunnerChildEnv } from './session-env.js';
 
 const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
@@ -189,28 +190,14 @@ export class CodexRunner implements Runner {
             shell: false,
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: {
-              ...process.env,
-              AGENTTEAMS_API_KEY: opts.apiKey,
-              AGENTTEAMS_API_URL: opts.apiUrl,
-              AGENTTEAMS_TEAM_ID: opts.teamId,
-              AGENTTEAMS_PROJECT_ID: opts.projectId,
-              AGENTTEAMS_AGENT_NAME: opts.agentConfigId,
-            },
+            env: buildRunnerChildEnv(process.env, opts),
           },
         )
       : spawnExecutable('codex', codexArgs, {
           cwd,
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: {
-            ...process.env,
-            AGENTTEAMS_API_KEY: opts.apiKey,
-            AGENTTEAMS_API_URL: opts.apiUrl,
-            AGENTTEAMS_TEAM_ID: opts.teamId,
-            AGENTTEAMS_PROJECT_ID: opts.projectId,
-            AGENTTEAMS_AGENT_NAME: opts.agentConfigId,
-          },
+          env: buildRunnerChildEnv(process.env, opts),
         });
 
     const logStream = createWriteStream(logPath, { flags: 'a' });

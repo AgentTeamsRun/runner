@@ -79,6 +79,7 @@ const baseOptions = (overrides: Partial<RunnerOptions> = {}): RunnerOptions => (
   timeoutMs: 1_000,
   idleTimeoutMs: 1_000,
   agentConfigId: 'agent-id',
+  runnerType: 'CURSOR_CLI',
   model: 'default',
   ...overrides,
 });
@@ -180,6 +181,21 @@ test('Unix runner launches the resolved agent directly with shell=false and a de
   assert.equal(calls.spawned[0]?.options.detached, true);
   assert.equal(calls.writes.length, 0);
   assert.equal(calls.removed.length, 0);
+});
+
+test('spawns the child with the execution snapshot session variables', async () => {
+  const { calls, runner } = createHarness({
+    os: 'linux',
+    onSpawn: (child) => child.emit('close', 0),
+  });
+  await runner.run(baseOptions({ prompt: 'hello', model: 'composer-2' }));
+
+  const env = calls.spawned[0]?.options.env as Record<string, string> | undefined;
+  assert.equal(env?.AGENTTEAMS_RUNNER_TYPE, 'CURSOR_CLI');
+  assert.equal(env?.AGENTTEAMS_MODEL, 'composer-2');
+  // CURSOR_CLI는 fast mode 미지원이라 트리거 핸들러가 false로 내려보낸다 — 키가 없어야 한다.
+  assert.equal(env !== undefined && 'AGENTTEAMS_FAST_MODE' in env, false);
+  assert.equal(env?.AGENTTEAMS_AGENT_NAME, 'agent-id');
 });
 
 test('runner preserves a terminal result after the head-capped output buffer is full', async () => {

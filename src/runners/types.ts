@@ -1,4 +1,7 @@
 import type { TriggerLogCategory } from '../types.js';
+// 러너 타입 집합의 단일 진실 소스(SSOT). `import type`이므로 컴파일 시 완전히 제거되어
+// daemon 런타임/배포 산출물(dist)에는 이 패키지 의존이 남지 않는다(zero-dependency 유지).
+import type { RunnerType } from '@agentteams/core-constants';
 
 export interface Runner {
   run(opts: RunnerOptions): Promise<RunResult>;
@@ -15,6 +18,10 @@ export interface RunnerOptions {
   timeoutMs: number;
   idleTimeoutMs: number;
   agentConfigId: string;
+  /// 이 실행을 수행하는 러너 엔진. 자식 프로세스의 실행 스냅샷 환경변수로 전달되어
+  /// CLI의 `--runner-type` 폴백 값이 된다. 러너가 자기 타입 문자열을 파일마다 하드코딩하지
+  /// 않도록, 값은 호출자(트리거 핸들러)가 SSOT에서 받은 것을 그대로 실어 보낸다.
+  runnerType: RunnerType;
   model?: string | null;
   fastMode?: boolean;
   /// 서버가 확정한 추론 강도(Effort) 레벨. null/미지정이면 모델/클라이언트 기본값을 사용한다.

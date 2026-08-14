@@ -88,6 +88,7 @@ test('KimiCliRunner launches print mode and captures text output', async () => {
     timeoutMs: 1_000,
     idleTimeoutMs: 1_000,
     agentConfigId: 'agent',
+    runnerType: 'KIMI_CLI',
     model: 'k3',
     onStderrChunk: () => assert.fail('Kimi stderr progress must not be reported as an error chunk'),
   };
@@ -101,6 +102,12 @@ test('KimiCliRunner launches print mode and captures text output', async () => {
   assert.equal(spawned[0]?.command, '/usr/local/bin/kimi');
   assert.deepEqual(spawned[0]?.args, ['-p', 'hello', '-m', 'k3']);
   assert.equal(spawned[0]?.options.windowsHide, true);
+
+  // 실행 스냅샷 3종이 자식 프로세스 환경에 실려야 CLI가 --runner-type/--model을 폴백할 수 있다.
+  const env = spawned[0]?.options.env as Record<string, string> | undefined;
+  assert.equal(env?.AGENTTEAMS_RUNNER_TYPE, 'KIMI_CLI');
+  assert.equal(env?.AGENTTEAMS_MODEL, 'k3');
+  assert.equal(env !== undefined && 'AGENTTEAMS_FAST_MODE' in env, false);
 });
 
 test('uses Kimi stderr only as the failure message when the process exits unsuccessfully', async () => {
@@ -137,6 +144,7 @@ test('uses Kimi stderr only as the failure message when the process exits unsucc
     timeoutMs: 1_000,
     idleTimeoutMs: 1_000,
     agentConfigId: 'agent',
+    runnerType: 'KIMI_CLI',
   });
 
   assert.equal(result.outputText, undefined);
@@ -178,6 +186,7 @@ test('returns the last Kimi stderr preview when the process exits unsuccessfully
     timeoutMs: 1_000,
     idleTimeoutMs: 1_000,
     agentConfigId: 'agent',
+    runnerType: 'KIMI_CLI',
   });
 
   assert.equal(result.errorMessage, 'No model configured');

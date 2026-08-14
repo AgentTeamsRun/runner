@@ -57,6 +57,21 @@ test('buildClaudeCodeEnv preserves background delegation when the parent disable
   assert.equal(env.AGENTTEAMS_API_KEY, 'runner-key');
 });
 
+test('buildClaudeCodeEnv drops a stale inherited execution snapshot', () => {
+  const env = buildClaudeCodeEnv(
+    {
+      PATH: '/usr/bin',
+      AGENTTEAMS_MODEL: 'stale-model',
+      AGENTTEAMS_FAST_MODE: 'true',
+    },
+    { AGENTTEAMS_API_KEY: 'runner-key' },
+  );
+
+  assert.equal('AGENTTEAMS_MODEL' in env, false);
+  assert.equal('AGENTTEAMS_FAST_MODE' in env, false);
+  assert.equal(env.PATH, '/usr/bin');
+});
+
 test('extractResultTextFromStreamJson returns the final result payload', () => {
   const output = [
     '{"type":"message_start"}',
