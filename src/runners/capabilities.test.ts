@@ -19,6 +19,7 @@ test('only claude-code and codex support fastMode', () => {
   assert.equal(RUNNER_CAPABILITIES.CURSOR_CLI.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.KIMI_CLI.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.KIRO_CLI.fastMode, false);
+  assert.equal(RUNNER_CAPABILITIES.GROK_BUILD.fastMode, false);
   assert.equal(runnerSupportsFastMode('CODEX'), true);
   assert.equal(runnerSupportsFastMode('OPENCODE'), false);
 });
@@ -28,11 +29,20 @@ test('antigravity supports model selection', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.model, true);
 });
 
+test('only OpenCode, Antigravity, Cursor CLI, Kiro CLI, and Grok Build support model enumeration', () => {
+  const supported = Object.entries(RUNNER_CAPABILITIES)
+    .filter(([, capabilities]) => capabilities.modelEnumeration)
+    .map(([runnerType]) => runnerType);
+
+  assert.deepEqual(supported, ['OPENCODE', 'ANTIGRAVITY', 'CURSOR_CLI', 'KIRO_CLI', 'GROK_BUILD']);
+});
+
 test('Copilot CLI supports model selection but not fast mode or sub-agent delegation', () => {
   assert.deepEqual(getRunnerCapabilities('COPILOT_CLI'), {
     model: true,
     fastMode: false,
     effort: false,
+    modelEnumeration: false,
     subAgentDelegation: false,
   });
   assert.deepEqual(describeUnsupportedRunnerOptions('COPILOT_CLI', { model: 'gpt-5', fastMode: false }), []);
@@ -43,6 +53,7 @@ test('Cursor CLI supports model selection but not fast mode, effort, or sub-agen
     model: true,
     fastMode: false,
     effort: false,
+    modelEnumeration: true,
     subAgentDelegation: false,
   });
   assert.deepEqual(describeUnsupportedRunnerOptions('CURSOR_CLI', { model: 'client-default', fastMode: false }), []);
@@ -53,6 +64,7 @@ test('Kimi CLI supports model selection but not fast mode, effort, or sub-agent 
     model: true,
     fastMode: false,
     effort: false,
+    modelEnumeration: false,
     subAgentDelegation: false,
   });
   assert.deepEqual(describeUnsupportedRunnerOptions('KIMI_CLI', { model: 'k3', fastMode: false }), []);
@@ -64,6 +76,7 @@ test('Kiro CLI supports model selection but not fast mode, effort, or sub-agent 
     model: true,
     fastMode: false,
     effort: false,
+    modelEnumeration: true,
     subAgentDelegation: false,
   });
   assert.deepEqual(describeUnsupportedRunnerOptions('KIRO_CLI', { model: 'auto', fastMode: false }), []);
@@ -88,6 +101,7 @@ test('unknown runner types default to no capabilities', () => {
     model: false,
     fastMode: false,
     effort: false,
+    modelEnumeration: false,
     subAgentDelegation: false,
   });
   assert.equal(runnerSupportsFastMode('SOMETHING_ELSE'), false);

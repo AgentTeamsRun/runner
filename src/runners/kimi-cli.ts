@@ -8,6 +8,7 @@ import { logger } from '../logger.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import { buildRunnerChildEnv } from './session-env.js';
 
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
@@ -136,14 +137,7 @@ export class KimiCliRunner implements Runner {
       windowsWrapper: isWindows ? 'powershell.exe -EncodedCommand' : null,
     });
 
-    const env = {
-      ...process.env,
-      AGENTTEAMS_API_KEY: opts.apiKey,
-      AGENTTEAMS_API_URL: opts.apiUrl,
-      AGENTTEAMS_TEAM_ID: opts.teamId,
-      AGENTTEAMS_PROJECT_ID: opts.projectId,
-      AGENTTEAMS_AGENT_NAME: opts.agentConfigId,
-    };
+    const env = buildRunnerChildEnv(process.env, opts);
 
     let child: ChildProcess;
     try {

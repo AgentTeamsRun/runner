@@ -110,6 +110,32 @@ test('fetchPollState throws an endpoint-specific error on non-2xx responses', as
   await assert.rejects(() => client.fetchPollState(), /Failed to fetch poll state \(503\)/);
 });
 
+test('reportDetectedModels POSTs model metadata to the daemon report endpoint', async () => {
+  const calls: Array<{ url: string; options?: RequestInit }> = [];
+  globalThis.fetch = (async (url, options) => {
+    calls.push({ url: String(url), options });
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+
+  const client = new DaemonApiClient('https://api.example', 'daemon-token');
+  await client.reportDetectedModels([
+    {
+      runnerType: 'KIRO_CLI',
+      values: [{ value: 'model-a', label: 'Model A', maxInputTokens: 200000 }],
+    },
+  ]);
+
+  assert.equal(calls[0]?.url, 'https://api.example/api/daemons/report-models');
+  assert.deepEqual(JSON.parse(String(calls[0]?.options?.body)), {
+    models: [
+      {
+        runnerType: 'KIRO_CLI',
+        values: [{ value: 'model-a', label: 'Model A', maxInputTokens: 200000 }],
+      },
+    ],
+  });
+});
+
 test('claimTrigger returns conflict=false/ok=true on success and conflict=true on 409', async () => {
   const calls: Array<RequestInit | undefined> = [];
   const responses = [new Response(null, { status: 200 }), new Response(null, { status: 409 })];

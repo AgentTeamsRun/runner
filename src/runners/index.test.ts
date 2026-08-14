@@ -11,6 +11,7 @@ import { CopilotCliRunner } from './copilot-cli.js';
 import { CursorCliRunner } from './cursor-cli.js';
 import { KimiCliRunner } from './kimi-cli.js';
 import { KiroCliRunner } from './kiro-cli.js';
+import { GrokBuildRunner } from './grok-build.js';
 
 test('createRunnerFactory returns the expected runner implementations', () => {
   const createRunner = createRunnerFactory('custom-opencode');
@@ -24,6 +25,7 @@ test('createRunnerFactory returns the expected runner implementations', () => {
   assert.equal(createRunner('CURSOR_CLI') instanceof CursorCliRunner, true);
   assert.equal(createRunner('KIMI_CLI') instanceof KimiCliRunner, true);
   assert.equal(createRunner('KIRO_CLI') instanceof KiroCliRunner, true);
+  assert.equal(createRunner('GROK_BUILD') instanceof GrokBuildRunner, true);
 });
 
 // SSOT(@agentteams/core-constants)와 factory가 처리하는 러너 타입 집합이 정확히

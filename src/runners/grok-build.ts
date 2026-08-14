@@ -1,38 +1,84 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describeExecutableResolution, resolveExecutablePath } from '../executable.js';
+import { resolveExecutablePathsWithPreferenceAsync, runProbeCommand } from '../executable.js';
 import { logger } from '../logger.js';
-import { extractResultTextFromStreamJson } from './claude-code.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
-import { createCursorStreamJsonLineParser, createResultLineCapturer } from './stream-json-parser.js';
+import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 import { buildRunnerChildEnv } from './session-env.js';
+import { findGrokBuildExecutable, isGrokBuildExecutable } from './grok-build-identity.js';
 
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
+/**
+ * Grok Build emits update notices on stderr and would otherwise self-update mid-run.
+ * The CLI has no `--no-auto-update` flag (verified against grok 1.0.3); this env var is the
+ * only documented suppression switch, and it keeps stdout reserved for the NDJSON stream.
+ */
+export const GROK_AUTOUPDATER_ENV = 'GROK_DISABLE_AUTOUPDATER';
+
 const normalizedModel = (model?: string | null): string => (typeof model === 'string' ? model.trim() : '');
 
-export const buildCursorCliArgs = (prompt: string, model?: string | null): string[] => {
+/**
+ * Headless argument contract, measured against grok 1.0.3 (1a29d5bc12d4) on 2026-08-14.
+ *
+ * - The prompt is passed via `--prompt-file`, never `-p/--single`. A prompt whose first
+ *   character is `-` (every runner prompt starts with a markdown bullet) makes clap abort
+ *   with `error: unexpected argument '- ' found` and exit code 2 before the agent starts.
+ * - `--output-format streaming-messages-json` produces the Anthropic Messages wire format,
+ *   which the shared stream-json parser already understands. The native `streaming-json`
+ *   alternative streams per-token `thought` deltas (63 lines vs 5 for the same prompt) and
+ *   would need a dedicated parser for no gain.
+ * - Permission bypass is `--permission-mode bypassPermissions`. The documented `--yolo`
+ *   alias does not exist in this build.
+ * - `--effort` is accepted and validates its levels (xhigh|high|medium|low), but the effect
+ *   was not reproducible, so the runner does not pass it (see capabilities.ts).
+ */
+export const buildGrokBuildArgs = (promptFilePath: string, cwd: string, model?: string | null): string[] => {
   const selectedModel = normalizedModel(model);
-  const modelArgs = selectedModel.length > 0 && selectedModel !== 'default' ? ['--model', selectedModel] : [];
-  return ['-p', '--force', '--output-format', 'stream-json', '--stream-partial-output', ...modelArgs, prompt];
+  // `default` is the platform sentinel for "no model pinned"; Grok would reject it as an
+  // unknown model id and exit 1.
+  const modelArgs = selectedModel.length > 0 && selectedModel !== 'default' ? ['-m', selectedModel] : [];
+  return [
+    '--prompt-file',
+    promptFilePath,
+    '--cwd',
+    cwd,
+    '--output-format',
+    'streaming-messages-json',
+    '--permission-mode',
+    'bypassPermissions',
+    ...modelArgs,
+  ];
 };
+
+/**
+ * The official installer links the binary into `$GROK_HOME/bin` (default `~/.grok/bin`) and
+ * `~/.local/bin`. An unrelated npm package (`@vibe-kit/grok-cli`) also installs a `grok`
+ * binary, so name resolution alone is not enough — see `resolveGrokBuildExecutable` and the
+ * identity check in `utils/engine-probe.ts`.
+ */
+export const getGrokExecutablePreference = (isWindows: boolean): string[] =>
+  isWindows ? ['grok.exe', 'grok'] : ['grok'];
 
 const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
-export const toCursorPowerShellEncodedCommand = (
+export const toGrokBuildPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
   promptFilePath: string,
+  cwd: string,
   model?: string | null,
 ): string => {
-  const selectedModel = normalizedModel(model);
-  const modelSegment =
-    selectedModel.length > 0 && selectedModel !== 'default' ? ` '--model' ${toPowerShellLiteral(selectedModel)}` : '';
+  // The Windows path must carry the same structured-output flags as the POSIX argv, or the
+  // runner would silently fall back to plain text there.
+  const argSegment = buildGrokBuildArgs(promptFilePath, cwd, model)
+    .map((arg) => ` ${toPowerShellLiteral(arg)}`)
+    .join('');
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
     '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
@@ -40,8 +86,7 @@ export const toCursorPowerShellEncodedCommand = (
     '[Console]::OutputEncoding = $utf8NoBom',
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
-    `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '-p' '--force' '--output-format' 'stream-json' '--stream-partial-output'${modelSegment} $promptText`,
+    `& ${toPowerShellLiteral(resolvedExecutablePath)}${argSegment}`,
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -52,10 +97,40 @@ const toOutputPreview = (chunk: unknown): string => {
   return text.length <= OUTPUT_PREVIEW_MAX ? text : `${text.slice(0, OUTPUT_PREVIEW_MAX)}...`;
 };
 
-type CursorCliRunnerDependencies = {
+/**
+ * Pulls the final answer out of the captured NDJSON so the history fallback shows prose
+ * instead of a JSON dump. Mirrors the claude-code helper because the wire format is the same.
+ */
+export const extractGrokResultText = (outputText: string): string => {
+  const trimmedOutput = outputText.trim();
+  const lines = trimmedOutput
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line.includes('"type":"result"')) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(line) as { type?: string; result?: unknown };
+      if (parsed.type === 'result' && typeof parsed.result === 'string' && parsed.result.trim().length > 0) {
+        return parsed.result.trim();
+      }
+    } catch {
+      return trimmedOutput;
+    }
+  }
+
+  return trimmedOutput;
+};
+
+type GrokBuildRunnerDependencies = {
   platform: typeof platform;
-  resolveExecutablePath: typeof resolveExecutablePath;
-  describeExecutableResolution: typeof describeExecutableResolution;
+  resolveExecutablePathsWithPreferenceAsync: typeof resolveExecutablePathsWithPreferenceAsync;
+  runProbeCommand: typeof runProbeCommand;
   spawn: typeof spawn;
   createWriteStream: typeof createWriteStream;
   mkdir: typeof mkdir;
@@ -65,10 +140,10 @@ type CursorCliRunnerDependencies = {
   terminateRunnerChild: typeof terminateRunnerChild;
 };
 
-const defaultDependencies: CursorCliRunnerDependencies = {
+const defaultDependencies: GrokBuildRunnerDependencies = {
   platform,
-  resolveExecutablePath,
-  describeExecutableResolution,
+  resolveExecutablePathsWithPreferenceAsync,
+  runProbeCommand,
   spawn,
   createWriteStream,
   mkdir,
@@ -78,10 +153,10 @@ const defaultDependencies: CursorCliRunnerDependencies = {
   terminateRunnerChild,
 };
 
-export class CursorCliRunner implements Runner {
-  private readonly deps: CursorCliRunnerDependencies;
+export class GrokBuildRunner implements Runner {
+  private readonly deps: GrokBuildRunnerDependencies;
 
-  constructor(dependencies: Partial<CursorCliRunnerDependencies> = {}) {
+  constructor(dependencies: Partial<GrokBuildRunnerDependencies> = {}) {
     this.deps = { ...defaultDependencies, ...dependencies };
   }
 
@@ -95,47 +170,70 @@ export class CursorCliRunner implements Runner {
     const logPath = join(cwd, '.agentteams', 'runner', 'log', `${opts.triggerId}.log`);
     await this.deps.mkdir(dirname(logPath), { recursive: true });
     const isWindows = this.deps.platform() === 'win32';
-    const resolvedExecutablePath = this.deps.resolveExecutablePath('agent');
-    const windowsPromptFilePath = isWindows
-      ? join(cwd, '.agentteams', 'runner', 'tmp', `${opts.triggerId}.prompt.txt`)
-      : null;
-
-    if (windowsPromptFilePath) {
-      await this.deps.mkdir(dirname(windowsPromptFilePath), { recursive: true });
-      await this.deps.writeFile(windowsPromptFilePath, opts.prompt, { encoding: 'utf8' });
+    const resolvedExecutablePath = await findGrokBuildExecutable(getGrokExecutablePreference(isWindows), {
+      resolveExecutablePathsWithPreferenceAsync: this.deps.resolveExecutablePathsWithPreferenceAsync,
+      runProbeCommand: this.deps.runProbeCommand,
+      platform: this.deps.platform,
+    });
+    if (!resolvedExecutablePath) {
+      const message =
+        "Cannot find an official Grok Build executable. Every 'grok' candidate failed the 'Grok Build TUI' identity check.";
+      logger.error('Grok Build executable identity check failed', { triggerId: opts.triggerId });
+      return { exitCode: 1, errorMessage: message };
     }
 
-    const removeWindowsPromptFile = async (): Promise<void> => {
-      if (!windowsPromptFilePath) return;
+    // Unlike other runners this file is not a Windows-only workaround: `--prompt-file` is the
+    // only safe way to hand Grok a markdown prompt on every platform.
+    const promptFilePath = join(cwd, '.agentteams', 'runner', 'tmp', `${opts.triggerId}.prompt.md`);
+    await this.deps.mkdir(dirname(promptFilePath), { recursive: true });
+    await this.deps.writeFile(promptFilePath, opts.prompt, { encoding: 'utf8' });
+
+    const removePromptFile = async (): Promise<void> => {
       try {
-        await this.deps.rm(windowsPromptFilePath, { force: true });
+        await this.deps.rm(promptFilePath, { force: true });
       } catch (error) {
-        logger.warn('Failed to remove Windows prompt temp file', {
+        logger.warn('Failed to remove Grok Build prompt temp file', {
           triggerId: opts.triggerId,
-          promptFilePath: windowsPromptFilePath,
+          promptFilePath,
           error: error instanceof Error ? error.message : String(error),
         });
       }
     };
 
-    const args = buildCursorCliArgs(opts.prompt, opts.model);
-    const executableInfo = this.deps.describeExecutableResolution('agent', {
-      platform: () => (isWindows ? 'win32' : this.deps.platform()),
-    });
+    const args = buildGrokBuildArgs(promptFilePath, cwd, opts.model);
     logger.info('Runner prompt prepared', {
       triggerId: opts.triggerId,
       promptLength: opts.prompt.length,
-      requestedCommand: executableInfo.requestedCommand,
+      promptFilePath,
+      requestedCommand: 'grok',
       resolvedExecutablePath,
-      platform: executableInfo.platform,
+      platform: isWindows ? 'win32' : this.deps.platform(),
       shell: false,
       detached: !isWindows,
       windowsWrapper: isWindows ? 'powershell.exe -EncodedCommand' : null,
     });
 
     const env = buildRunnerChildEnv(process.env, opts);
+    // AgentTeams never writes Grok credentials; this only stops the self-updater from
+    // interleaving its notice with the NDJSON stream.
+    env[GROK_AUTOUPDATER_ENV] = '1';
 
-    let child: ReturnType<typeof spawn>;
+    // Re-check the exact resolved path immediately before spawn. Detection and candidate
+    // selection can precede execution, so a replaced symlink/binary must fail closed before
+    // it receives the prompt file path or permission-bypass arguments.
+    if (
+      !(await isGrokBuildExecutable(resolvedExecutablePath, {
+        runProbeCommand: this.deps.runProbeCommand,
+        platform: this.deps.platform,
+      }))
+    ) {
+      await removePromptFile();
+      const message = 'The resolved Grok Build executable changed identity before launch; execution was refused.';
+      logger.error('Grok Build executable identity changed before launch', { triggerId: opts.triggerId });
+      return { exitCode: 1, errorMessage: message };
+    }
+
+    let child: ChildProcess;
     try {
       child = isWindows
         ? this.deps.spawn(
@@ -146,7 +244,7 @@ export class CursorCliRunner implements Runner {
               '-ExecutionPolicy',
               'Bypass',
               '-EncodedCommand',
-              toCursorPowerShellEncodedCommand(resolvedExecutablePath, windowsPromptFilePath ?? '', opts.model),
+              toGrokBuildPowerShellEncodedCommand(resolvedExecutablePath, promptFilePath, cwd, opts.model),
             ],
             { cwd, detached: false, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env },
           )
@@ -154,11 +252,12 @@ export class CursorCliRunner implements Runner {
             cwd,
             detached: true,
             shell: false,
+            windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
             env,
           });
     } catch (error) {
-      await removeWindowsPromptFile();
+      await removePromptFile();
       const message = error instanceof Error ? error.message : String(error);
       logger.error('Runner process launch failed', { triggerId: opts.triggerId, error: message });
       return { exitCode: 1, errorMessage: message };
@@ -179,6 +278,9 @@ export class CursorCliRunner implements Runner {
         outputText += chunk.slice(0, OUTPUT_CAPTURE_MAX - outputText.length);
       }
     };
+
+    // The head-capped capture can drop the terminal `result` line on long runs; keep it aside
+    // so the history fallback still ends with the final answer.
     const resultLineCapturer = createResultLineCapturer();
     const finalizeOutputText = (): string | undefined => {
       const trimmed = outputText.trim();
@@ -186,12 +288,16 @@ export class CursorCliRunner implements Runner {
       if (resultLine && !trimmed.includes('"type":"result"')) {
         return trimmed.length > 0 ? `${trimmed}\n${resultLine}` : resultLine;
       }
+
       return trimmed || undefined;
     };
+
     const idleTimer = { reset: (): void => {} };
-    const streamParser = createCursorStreamJsonLineParser(
+    const streamParser = createStreamJsonLineParser(
       (entries) => {
-        for (const entry of entries) opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
+        for (const entry of entries) {
+          opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
+        }
       },
       { cwd },
     );
@@ -211,7 +317,6 @@ export class CursorCliRunner implements Runner {
     child.stderr?.on('data', (chunk) => {
       const output = toOutputPreview(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
       if (output.length > 0) {
-        lastOutput = output;
         lastErrorOutput = output;
         idleTimer.reset();
         opts.onStderrChunk?.(output, 'STDERR');
@@ -253,7 +358,7 @@ export class CursorCliRunner implements Runner {
         if (idleTimeoutId) clearTimeout(idleTimeoutId);
         idleTimer.reset = (): void => {};
         logStream.end();
-        await removeWindowsPromptFile();
+        await removePromptFile();
         opts.signal?.removeEventListener('abort', handleAbort);
       };
       const timeoutId = setTimeout(() => {
@@ -280,16 +385,15 @@ export class CursorCliRunner implements Runner {
         await cleanup();
         logger.info('Runner process closed', { triggerId: opts.triggerId, pid: child.pid, exitCode: code, timedOut });
 
-        const finalizedOutputText = finalizeOutputText();
         if (timedOut) {
+          const finalizedOutputText = finalizeOutputText();
+          const resolvedOutputText =
+            idleTimedOut && finalizedOutputText ? extractGrokResultText(finalizedOutputText) : finalizedOutputText;
           resolve({
             exitCode: 1,
             idleTimedOut,
             lastOutput,
-            outputText:
-              idleTimedOut && finalizedOutputText
-                ? extractResultTextFromStreamJson(finalizedOutputText)
-                : finalizedOutputText,
+            outputText: resolvedOutputText,
             errorMessage: idleTimedOut
               ? `Runner idle timed out after ${Math.round(opts.idleTimeoutMs / 60_000)}m of no output`
               : `Runner fail-safe timed out after ${Math.round(opts.timeoutMs / 3_600_000)}h`,
@@ -301,7 +405,7 @@ export class CursorCliRunner implements Runner {
             exitCode: 1,
             cancelled: true,
             lastOutput,
-            outputText: finalizedOutputText,
+            outputText: finalizeOutputText(),
             errorMessage: 'Runner cancelled by user',
           });
           return;
@@ -309,7 +413,7 @@ export class CursorCliRunner implements Runner {
         resolve({
           exitCode: code ?? 1,
           lastOutput,
-          outputText: finalizedOutputText,
+          outputText: finalizeOutputText(),
           errorMessage: selectRunnerFailureMessage({ exitCode: code, lastErrorOutput, lastOutput }),
         });
       });

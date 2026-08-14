@@ -177,6 +177,7 @@ const baseOptions: RunnerOptions = {
   timeoutMs: 1_000,
   idleTimeoutMs: 1_000,
   agentConfigId: 'agent',
+  runnerType: 'KIRO_CLI',
 };
 
 test('KiroCliRunner launches headless chat and captures ANSI-stripped text output', async () => {

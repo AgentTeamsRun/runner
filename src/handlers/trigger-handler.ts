@@ -1,4 +1,6 @@
 import type { DaemonTrigger, RuntimeConfig, TriggerRuntimeAttachment } from '../types.js';
+// 러너 타입 집합의 SSOT. `import type`이므로 dist에 런타임 의존이 남지 않는다(zero-dependency 유지).
+import type { RunnerType } from '@agentteams/core-constants';
 import { DaemonApiClient } from '../api-client.js';
 import { createRunnerFactory } from '../runners/index.js';
 import { TriggerLogReporter } from '../runners/log-reporter.js';
@@ -579,6 +581,9 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         timeoutMs: config.timeoutMs,
         idleTimeoutMs: config.idleTimeoutMs,
         agentConfigId: runtime.agentConfigId,
+        // 러너 인스턴스는 자기 타입을 모르므로 호출자가 실어 보낸다. 이 지점은 createRunner()가
+        // 이미 성공한 뒤이고 팩토리가 SSOT에 없는 값을 throw로 거르므로, 좁히기는 안전하다.
+        runnerType: trigger.runnerType as RunnerType,
         model: trigger.model,
         fastMode: runnerFastMode,
         effort: runnerEffort,
