@@ -36,7 +36,7 @@ export interface RunnerCapabilities {
    * [Intentional mirror] 프롬프트는 API가 조립하지만 daemon은 zero-dependency 원칙상
    * API가 런타임에 이 파일을 참조할 수 없으므로, 판정 결과를
    * `api/src/services/runnerCapabilities.ts`에 미러링한다. 이 값을 바꾸면 그쪽도 함께
-   * 갱신한다.
+   * 갱신한다. 어긋나면 `scripts/runner-capability-contract.test.mjs`가 잡는다.
    */
   subAgentDelegation: boolean;
 }
