@@ -363,4 +363,24 @@ export class DaemonApiClient {
       throw new Error(`Failed to notify update (${response.status})`);
     }
   }
+
+  async notifyUpdateFailure(
+    version: string,
+    pkg: 'cli' | 'runner',
+    reason: 'PERMISSION_DENIED' | 'UNKNOWN',
+    message: string,
+  ): Promise<void> {
+    const response = await this.requestWithRetry('/api/daemons/notify-update-failure', {
+      method: 'POST',
+      headers: {
+        ...this.daemonHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ version, package: pkg, reason, message }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to notify update failure (${response.status})`);
+    }
+  }
 }

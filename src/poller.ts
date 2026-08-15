@@ -48,7 +48,12 @@ type PollingDependencies = {
     Partial<
       Pick<
         DaemonApiClient,
-        'fetchDiscoveryRepositories' | 'syncDiscoveredWorktrees' | 'reportDetectedEngines' | 'reportDetectedModels'
+        | 'fetchDiscoveryRepositories'
+        | 'syncDiscoveredWorktrees'
+        | 'reportDetectedEngines'
+        | 'reportDetectedModels'
+        // 자동 업데이트 실패 보고도 구버전 mock 호환을 위해 optional이다.
+        | 'notifyUpdateFailure'
       >
     >;
   runCleanup?: (authPath: string) => Promise<void>;
@@ -400,7 +405,11 @@ export const startPolling = async (
         // idle 상태에서 자동 업데이트 시도
         try {
           await autoUpdate(pollState.meta, {
-            onRunnerUpdated: (version) => client.notifyUpdate(version, 'runner'),
+            // CLI 성공도 보고해야 서버에 남은 해당 패키지의 실패 상태가 해제된다.
+            onUpdateSucceeded: (input) => client.notifyUpdate(input.version, input.package),
+            onUpdateFailed: async (input) => {
+              await client.notifyUpdateFailure?.(input.version, input.package, input.reason, input.message);
+            },
           });
         } catch (error) {
           logger.error('Auto-update check failed', {
