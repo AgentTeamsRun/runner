@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { restartDaemon } from '../daemon-control.js';
 import { runExecutableSync } from '../executable.js';
 import { logger } from '../logger.js';
+import { normalizeInstallError } from '../utils/npm-install-error.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../../package.json') as { version?: string };
@@ -26,18 +27,6 @@ const readLatestVersion = (deps: Pick<Required<UpdateDeps>, 'runExecutableSync' 
     });
     return null;
   }
-};
-
-const normalizeInstallError = (error: unknown): Error => {
-  const message = error instanceof Error ? error.message : String(error);
-
-  if (message.includes('EACCES') || message.includes('EPERM') || message.toLowerCase().includes('permission denied')) {
-    return new Error(
-      'Global npm install requires elevated permissions. Configure a user-level npm prefix or rerun the update with appropriate permissions.',
-    );
-  }
-
-  return new Error(`Failed to install the latest AgentRunner package: ${message}`);
 };
 
 export const runUpdateCommand = async (deps: UpdateDeps = {}): Promise<void> => {
