@@ -28,6 +28,12 @@ const ENGINE_PROBE_INTERVAL_MS = 15 * 60 * 1000;
 // 모델 열거는 외부 CLI가 네트워크를 사용할 수 있어 설치 확인 프로브보다 훨씬 낮은 빈도로 실행한다.
 const MODEL_ENUMERATION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+// 엔진 1개가 한 번의 보고에 실을 수 있는 모델 값의 상한. api/src/schemas/daemon.ts의
+// MAX_REPORTED_MODEL_VALUES_PER_RUNNER와 같은 값이어야 한다. daemon은 서브트리 배포·zero-dependency라
+// 서버 스키마 상수를 런타임 import할 수 없어 미러링하며, poller.test.ts의 SSOT 대조 테스트가 드리프트를
+// 잡는다(cli/test/runner-types.test.ts 선례). 이 상한을 넘기면 서버가 보고 전체를 400으로 거절한다.
+export const MAX_REPORTED_MODEL_VALUES_PER_RUNNER = 500;
+
 // 한 polling cycle의 결과.
 // - ACTIVE: 처리할 일이 있었다(pending claim/실행, 고아 취소, 워크트리 제거, restart 중 하나 이상).
 // - IDLE: 순수 idle cycle(또는 cycle 실패) — 백오프 대상.
@@ -272,7 +278,19 @@ export const startPolling = async (
           });
           continue;
         }
-        reports.push({ runnerType, values: result.values });
+
+        // 서버 상한을 넘는 값은 전송 전에 잘라낸다. 열거 출력의 앞에서부터 상한까지 취하는 결정적 절단으로,
+        // 같은 열거 결과면 매 보고 주기마다 같은 부분집합이 전송되어 승인 대기 목록이 흔들리지 않는다.
+        const boundedValues = result.values.slice(0, MAX_REPORTED_MODEL_VALUES_PER_RUNNER);
+        if (boundedValues.length < result.values.length) {
+          // 조용한 절단은 이번 사고(보고 전체 400 거절로 탐지 영구 실패)와 같은 형태의 재발이다.
+          logger.warn('Truncated model detection report to the per-runner limit', {
+            runnerType,
+            droppedCount: result.values.length - boundedValues.length,
+            limit: MAX_REPORTED_MODEL_VALUES_PER_RUNNER,
+          });
+        }
+        reports.push({ runnerType, values: boundedValues });
       }
 
       if (reports.length > 0) await reportDetectedModels(reports);

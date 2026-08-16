@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test, { mock } from 'node:test';
 import { logger } from './logger.js';
-import { startPolling } from './poller.js';
+import { MAX_REPORTED_MODEL_VALUES_PER_RUNNER, startPolling } from './poller.js';
 import type { DaemonTrigger, PollStateResponse, RuntimeConfig } from './types.js';
 import type { EnumeratedModel } from './utils/model-enumerator.js';
 
@@ -188,6 +188,94 @@ test('startPolling keeps polling when the model report fails', async () => {
   assert.ok(warnings.includes('Model detection report failed'));
   (keepAliveResolve as unknown as () => void)();
   await pollingPromise;
+});
+
+// Cursor CLI 실측(2026-08-16)이 엔진당 203 모델로 서버 values 상한을 넘으면서 보고 전체가 400으로
+// 거절되는 사고(맥북에어 러너 모델 탐지 영구 실패)의 재현. 러너는 상한 초과 입력을 상한 이하로
+// 결정적으로 잘라 전송해야 한다. 현재 코드에서는 600건이 그대로 넘어가 이 테스트는 실패한다.
+test('startPolling truncates oversized per-engine model reports deterministically before sending', async () => {
+  const timeouts = createTimeoutRecorder();
+  const reports: Array<Array<{ runnerType: string; values: EnumeratedModel[] }>> = [];
+  const warnings: Array<{ message: string; context?: unknown }> = [];
+  mock.method(logger, 'warn', (message: string, context?: unknown) => warnings.push({ message, context }));
+  let fakeNow = 0;
+  let keepAliveResolve: (() => void) | null = null;
+
+  // 열거 출력 순서는 CLI 출력 순서로 결정적이다. 절단도 같은 순서의 앞부분을 취해야 한다.
+  const enumerated: EnumeratedModel[] = Array.from({ length: 600 }, (_, index) => ({
+    value: `cursor-${String(index + 1).padStart(3, '0')}`,
+    label: `Cursor ${index + 1}`,
+  }));
+
+  const pollingPromise = startPolling(config, () => async () => undefined, {
+    createClient: () =>
+      makeClient({
+        reportDetectedEngines: async () => undefined,
+        reportDetectedModels: async (models) => {
+          reports.push(models);
+        },
+      }),
+    probeInstalledEngines: async () => ({ engines: ['CURSOR_CLI'], reliable: true }),
+    enumerateModels: async () => ({ status: 'SUCCESS', values: enumerated }),
+    runCleanup: async () => undefined,
+    runConventionSync: async () => undefined,
+    setTimeout: timeouts.setTimeoutMock,
+    clearTimeout: timeouts.clearTimeoutMock,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    now: () => fakeNow,
+    keepAlive: () =>
+      new Promise<void>((resolve) => {
+        keepAliveResolve = resolve;
+      }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(reports.length, 1);
+  const sentValues = reports[0]![0]!.values;
+  assert.ok(
+    sentValues.length < enumerated.length,
+    `oversized enumeration must be truncated before reporting (sent ${sentValues.length})`,
+  );
+  assert.equal(sentValues.length, MAX_REPORTED_MODEL_VALUES_PER_RUNNER);
+  // 절단은 앞부분을 취하는 결정적 절단이어야 한다 — 같은 입력이면 같은 부분집합.
+  assert.deepEqual(sentValues, enumerated.slice(0, sentValues.length));
+
+  // 조용한 절단은 금지다. 무엇이 몇 건 잘렸는지 runnerType와 함께 남는다.
+  const truncationWarning = warnings.find((entry) => entry.message.toLowerCase().includes('truncat'));
+  assert.ok(truncationWarning, 'truncation must leave a warning');
+  const truncationContext = truncationWarning!.context as { runnerType?: string; droppedCount?: number } | undefined;
+  assert.equal(truncationContext?.runnerType, 'CURSOR_CLI');
+  assert.equal(truncationContext?.droppedCount, enumerated.length - sentValues.length);
+
+  // 다음 탐지 주기에도 같은 입력이면 동일한 부분집합을 보낸다.
+  fakeNow += 7 * 60 * 60 * 1000;
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(reports.length, 2);
+  assert.deepEqual(reports[1]![0]!.values, sentValues);
+
+  (keepAliveResolve as unknown as () => void)();
+  await pollingPromise;
+});
+
+// daemon은 서브트리 배포·zero-dependency라 api 스키마 상수를 런타임 import할 수 없다. 미러 상수가
+// SSOT(api/src/schemas/daemon.ts)와 어긋나면 서버가 보고 전체를 400으로 거절하는 사고가 재발하므로
+// SSOT 선언을 읽어 대조한다(cli/test/runner-types.test.ts 선례). 모노레포에서만 실행 가능한 테스트다.
+test('MAX_REPORTED_MODEL_VALUES_PER_RUNNER mirrors the api schema SSOT', () => {
+  const schemaPath = path.join(process.cwd(), '..', 'api', 'src', 'schemas', 'daemon.ts');
+  assert.ok(fsModule.existsSync(schemaPath), `api schema source must exist in the monorepo: ${schemaPath}`);
+  const source = fsModule.readFileSync(schemaPath, 'utf-8');
+  const declaration = /export const MAX_REPORTED_MODEL_VALUES_PER_RUNNER = (\d+);/.exec(source);
+  assert.ok(declaration, 'SSOT declaration for the per-runner values cap must exist');
+  assert.equal(
+    MAX_REPORTED_MODEL_VALUES_PER_RUNNER,
+    Number(declaration![1]),
+    'daemon mirror must match the api schema SSOT',
+  );
 });
 
 test('startPolling reports detected engines immediately and does not probe again inside the interval', async () => {
