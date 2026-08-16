@@ -1,15 +1,25 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
-import { promisify } from 'node:util';
 import type { RunnerType } from '@agentteams/core-constants';
 import { resolveExecutablePathWithPreference } from '../executable.js';
+import { sanitizeAntigravityInternalLogLine } from '../runners/antigravity.js';
 import { RUNNER_CAPABILITIES } from '../runners/capabilities.js';
 import { getGrokExecutablePreference } from '../runners/grok-build.js';
 import { getKiroExecutablePreference } from '../runners/kiro-cli.js';
 
-const execFileAsync = promisify(execFile);
 const RESERVED_MODEL_PREFIX = '__fast__:';
 const ENUMERATION_TIMEOUT_MS = 30_000;
+const MAX_ERROR_OUTPUT_LENGTH = 500;
+
+export const sanitizeErrorOutput = (output: string): string => {
+  const trimmed = output.trim();
+  if (trimmed.length === 0) return '';
+  const sanitized = sanitizeAntigravityInternalLogLine(trimmed);
+  if (sanitized.length <= MAX_ERROR_OUTPUT_LENGTH) {
+    return sanitized;
+  }
+  return `${sanitized.slice(0, MAX_ERROR_OUTPUT_LENGTH)}...`;
+};
 
 export type EnumeratedModel = {
   value: string;
@@ -27,17 +37,82 @@ export type ModelEnumeratorDependencies = {
   resolveExecutable: (name: string, preferredNames: string[]) => string;
 };
 
-const defaultDependencies: ModelEnumeratorDependencies = {
-  execute: async (executablePath, args) => {
-    const { stdout } = await execFileAsync(executablePath, args, {
-      encoding: 'utf8',
+export const executeModelEnumerationCommand = (
+  executablePath: string,
+  args: string[],
+  options: {
+    timeoutMs?: number;
+    maxBufferBytes?: number;
+  } = {},
+): Promise<{ stdout: string }> => {
+  const timeoutMs = options.timeoutMs ?? ENUMERATION_TIMEOUT_MS;
+  const maxBuffer = options.maxBufferBytes ?? 10 * 1024 * 1024;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(executablePath, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      timeout: ENUMERATION_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-      maxBuffer: 10 * 1024 * 1024,
     });
-    return { stdout: String(stdout) };
-  },
+
+    let stdout = '';
+    let stderr = '';
+    let stdoutBytes = 0;
+    let timedOut = false;
+    let killed = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killed = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      const str = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      stdoutBytes += Buffer.byteLength(str);
+      if (stdoutBytes > maxBuffer && !killed) {
+        killed = true;
+        child.kill('SIGKILL');
+        clearTimeout(timer);
+        reject(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
+        return;
+      }
+      stdout += str;
+    });
+
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      const str = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      if (stderr.length < 64 * 1024) {
+        stderr += str.slice(0, 64 * 1024 - stderr.length);
+      }
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`Command timed out after ${timeoutMs}ms: ${executablePath} ${args.join(' ')}`));
+        return;
+      }
+      if (code !== 0) {
+        const exitInfo = signal ? `signal ${signal}` : `exit code ${code}`;
+        const trimmedStderr = stderr.trim();
+        const rawMessage = trimmedStderr
+          ? `Command failed (${exitInfo}): ${executablePath} ${args.join(' ')}\n${trimmedStderr}`
+          : `Command failed (${exitInfo}): ${executablePath} ${args.join(' ')}`;
+        reject(new Error(sanitizeErrorOutput(rawMessage)));
+        return;
+      }
+      resolve({ stdout });
+    });
+  });
+};
+
+const defaultDependencies: ModelEnumeratorDependencies = {
+  execute: (executablePath, args) => executeModelEnumerationCommand(executablePath, args),
   platform,
   resolveExecutable: resolveExecutablePathWithPreference,
 };

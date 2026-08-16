@@ -4,11 +4,13 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   enumerateModels,
+  executeModelEnumerationCommand,
   parseCursorModels,
   parseGrokModels,
   parseKiroModels,
   parseLineModels,
   parseOpenCodeVerboseModels,
+  sanitizeErrorOutput,
   type ModelEnumeratorDependencies,
 } from './model-enumerator.js';
 
@@ -160,5 +162,100 @@ describe('enumerateModels', () => {
     );
     assert.deepEqual(result, { status: 'UNSUPPORTED' });
     assert.equal(called, false);
+  });
+
+  test('enumerates ANTIGRAVITY models with tab parser', async () => {
+    const calls: string[][] = [];
+    const result = await enumerateModels(
+      'ANTIGRAVITY',
+      dependencies(async (_executable, args) => {
+        calls.push(args);
+        return { stdout: 'gemini-3.7-flash-high\tGemini 3.7 Flash (High)\n' };
+      }),
+    );
+    assert.deepEqual(calls, [['models']]);
+    assert.deepEqual(result, {
+      status: 'SUCCESS',
+      values: [{ value: 'gemini-3.7-flash-high', label: 'Gemini 3.7 Flash (High)' }],
+    });
+  });
+});
+
+describe('sanitizeErrorOutput', () => {
+  test('redacts sensitive credentials and JWTs from error output', () => {
+    const raw =
+      'Error: Bearer secret-token-123 failed with api_key: key-456 cookie: sess=abc eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.xyz';
+    const sanitized = sanitizeErrorOutput(raw);
+    assert.equal(
+      sanitized,
+      'Error: Bearer [REDACTED] failed with api_key: [REDACTED] cookie: [REDACTED] [REDACTED_JWT]',
+    );
+  });
+
+  test('truncates error output exceeding max length', () => {
+    const longString = 'x'.repeat(600);
+    const sanitized = sanitizeErrorOutput(longString);
+    assert.equal(sanitized.length, 503);
+    assert.ok(sanitized.endsWith('...'));
+  });
+
+  test('returns empty string for blank input', () => {
+    assert.equal(sanitizeErrorOutput(''), '');
+    assert.equal(sanitizeErrorOutput('   \n  '), '');
+  });
+});
+
+describe('executeModelEnumerationCommand', () => {
+  test('executes command with ignored stdin so process does not hang on stdin', async () => {
+    const res = await executeModelEnumerationCommand(process.execPath, [
+      '-e',
+      'let receivedData = false; process.stdin.on("data", () => { receivedData = true; }); process.stdin.on("end", () => { console.log(receivedData ? "data" : "no-data-eof"); }); process.stdin.resume();',
+    ]);
+    assert.equal(res.stdout.trim(), 'no-data-eof');
+  });
+
+  test('captures and sanitizes stderr on non-zero exit code', async () => {
+    await assert.rejects(
+      async () => {
+        await executeModelEnumerationCommand(process.execPath, [
+          '-e',
+          'console.error("fatal error: Bearer secret-token-abc"); process.exit(1);',
+        ]);
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('Command failed (exit code 1)'));
+        assert.ok(err.message.includes('Bearer [REDACTED]'));
+        assert.ok(!err.message.includes('secret-token-abc'));
+        return true;
+      },
+    );
+  });
+
+  test('enforces timeout and kills hanging processes', async () => {
+    await assert.rejects(
+      async () => {
+        await executeModelEnumerationCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], {
+          timeoutMs: 100,
+        });
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('Command timed out after 100ms'));
+        return true;
+      },
+    );
+  });
+
+  test('enforces stdout maxBuffer limit', async () => {
+    await assert.rejects(
+      async () => {
+        await executeModelEnumerationCommand(process.execPath, ['-e', 'console.log("x".repeat(1000));'], {
+          maxBufferBytes: 100,
+        });
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes('stdout maxBuffer exceeded'));
+        return true;
+      },
+    );
   });
 });
