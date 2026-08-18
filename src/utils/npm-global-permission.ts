@@ -1,6 +1,6 @@
 import { accessSync, constants } from 'node:fs';
 import { platform as getPlatform } from 'node:os';
-import { dirname, join } from 'node:path';
+import { posix, win32 } from 'node:path';
 import { getNpmGlobalBinPath } from '../executable.js';
 
 /**
@@ -21,7 +21,10 @@ export type NpmGlobalPermissionDeps = {
 
 /** 전역 모듈 루트 경로. win32는 prefix 바로 아래, POSIX는 `<prefix>/lib/node_modules`. */
 const resolveGlobalModulesRoot = (prefix: string, os: NodeJS.Platform): string =>
-  os === 'win32' ? join(prefix, 'node_modules') : join(prefix, 'lib', 'node_modules');
+  os === 'win32' ? win32.join(prefix, 'node_modules') : posix.join(prefix, 'lib', 'node_modules');
+
+const getDirname = (path: string, os: NodeJS.Platform): string =>
+  os === 'win32' ? win32.dirname(path) : posix.dirname(path);
 
 export const canWriteGlobalNpmRoot = (deps: NpmGlobalPermissionDeps = {}): boolean => {
   const resolvePrefix = deps.npmGlobalPrefix ?? (() => getNpmGlobalBinPath());
@@ -47,7 +50,7 @@ export const canWriteGlobalNpmRoot = (deps: NpmGlobalPermissionDeps = {}): boole
           return false; // EACCES/EPERM 등 → 쓰기 불가로 확정
         }
 
-        const parent = dirname(candidate);
+        const parent = getDirname(candidate, os);
         if (parent === candidate) {
           return true; // 루트까지 올라가도 못 찾음 → 판정 불가 → fail-open
         }
