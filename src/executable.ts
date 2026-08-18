@@ -1,10 +1,13 @@
 import { execFile, execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { platform as getPlatform } from 'node:os';
-import { join } from 'node:path';
+import { posix, win32 } from 'node:path';
 import { promisify } from 'node:util';
 
 const DEFAULT_WINDOWS_EXTENSIONS = ['.com', '.exe', '.bat', '.cmd'];
+
+const joinPath = (os: NodeJS.Platform, ...segments: string[]): string =>
+  os === 'win32' ? win32.join(...segments) : posix.join(...segments);
 
 export type ExecutableDeps = {
   env?: NodeJS.ProcessEnv;
@@ -26,7 +29,7 @@ const resolveUserLocalBin: KnownInstallBinResolver = (env, os) => {
     return [];
   }
 
-  return [join(env.HOME, '.local', 'bin')];
+  return [joinPath(os, env.HOME, '.local', 'bin')];
 };
 
 const getOutputLines = (output: string): string[] =>
@@ -127,7 +130,7 @@ const resolveFromNpmGlobalBin = (name: string, deps: ExecutableDeps): string | n
   const candidateNames = os === 'win32' ? getWindowsExecutableNames(name, deps.env ?? process.env) : [name];
 
   for (const candidateName of candidateNames) {
-    const candidatePath = join(npmGlobalBinPath, candidateName);
+    const candidatePath = joinPath(os, npmGlobalBinPath, candidateName);
     if (fileExists(candidatePath)) {
       return candidatePath;
     }
@@ -137,16 +140,16 @@ const resolveFromNpmGlobalBin = (name: string, deps: ExecutableDeps): string | n
 };
 
 const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>> = {
-  agy: (env, os) => (os === 'win32' && env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, 'agy', 'bin')] : []),
+  agy: (env, os) => (os === 'win32' && env.LOCALAPPDATA ? [joinPath(os, env.LOCALAPPDATA, 'agy', 'bin')] : []),
   // Claude Code와 Codex의 공식 standalone 설치는 macOS/Linux에서 ~/.local/bin에
   // 실행 파일 링크를 만든다. 비대화형 러너는 셸 프로필의 PATH 보강을 읽지 않으므로
   // 설치가 정상이어도 이 사용자 로컬 경로를 놓칠 수 있다.
   claude: resolveUserLocalBin,
   codex: resolveUserLocalBin,
   kimi: (env, os) => {
-    const configuredHomePaths = env.KIMI_CODE_HOME ? [join(env.KIMI_CODE_HOME, 'bin')] : [];
+    const configuredHomePaths = env.KIMI_CODE_HOME ? [joinPath(os, env.KIMI_CODE_HOME, 'bin')] : [];
     const userHome = os === 'win32' ? env.USERPROFILE : env.HOME;
-    const defaultHomePaths = userHome ? [join(userHome, '.kimi-code', 'bin')] : [];
+    const defaultHomePaths = userHome ? [joinPath(os, userHome, '.kimi-code', 'bin')] : [];
 
     return [...new Set([...configuredHomePaths, ...defaultHomePaths])];
   },
@@ -166,9 +169,9 @@ const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>
       return [];
     }
 
-    const localBin = join(userHome, '.local', 'bin');
+    const localBin = joinPath(os, userHome, '.local', 'bin');
     // 심볼릭 링크가 없을 때를 대비한 darwin 전용 2차 폴백(앱 번들 내부 실체 경로).
-    const macAppBundleBin = os === 'darwin' ? [join('/Applications', 'Kiro CLI.app', 'Contents', 'MacOS')] : [];
+    const macAppBundleBin = os === 'darwin' ? [joinPath(os, '/Applications', 'Kiro CLI.app', 'Contents', 'MacOS')] : [];
 
     return [...new Set([localBin, ...macAppBundleBin])];
   },
@@ -176,14 +179,14 @@ const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>
   // macOS/Linux에서는 `~/.local/bin`에도 링크를 만든다(2026-08-14 실측, grok 1.0.3).
   // Windows 설치 경로(`%USERPROFILE%\.grok\bin`)는 문서 기준이며 실측하지 못했다.
   grok: (env, os) => {
-    const configuredHomePaths = env.GROK_HOME ? [join(env.GROK_HOME, 'bin')] : [];
+    const configuredHomePaths = env.GROK_HOME ? [joinPath(os, env.GROK_HOME, 'bin')] : [];
     const userHome = os === 'win32' ? env.USERPROFILE : env.HOME;
     if (!userHome) {
       return [...new Set(configuredHomePaths)];
     }
 
-    const defaultHomeBin = join(userHome, '.grok', 'bin');
-    const userLocalBin = os === 'win32' ? [] : [join(userHome, '.local', 'bin')];
+    const defaultHomeBin = joinPath(os, userHome, '.grok', 'bin');
+    const userLocalBin = os === 'win32' ? [] : [joinPath(os, userHome, '.local', 'bin')];
 
     return [...new Set([...configuredHomePaths, defaultHomeBin, ...userLocalBin])];
   },
@@ -222,7 +225,7 @@ const resolveFromKnownInstallBin = (name: string, deps: ExecutableDeps): string 
 
   for (const binPath of getKnownInstallBinPaths(name, deps)) {
     for (const candidateName of candidateNames) {
-      const candidatePath = join(binPath, candidateName);
+      const candidatePath = joinPath(os, binPath, candidateName);
       if (fileExists(candidatePath)) {
         return candidatePath;
       }
@@ -304,7 +307,7 @@ const resolveAllFromKnownInstallBin = (name: string, deps: ExecutableDeps): stri
 
   for (const binPath of getKnownInstallBinPaths(name, deps)) {
     for (const candidateName of candidateNames) {
-      const candidatePath = join(binPath, candidateName);
+      const candidatePath = joinPath(os, binPath, candidateName);
       if (fileExists(candidatePath)) paths.push(candidatePath);
     }
   }
@@ -380,10 +383,25 @@ export const runProbeCommand = async (
   args: string[],
   deps: AsyncExecutableDeps = {},
 ): Promise<string | null> => {
+  const os = (deps.platform ?? getPlatform)();
   const run = deps.execFileAsync ?? execFileAsync;
 
   try {
-    const { stdout } = await run(executablePath, args, probeExecOptions);
+    const { stdout } =
+      os === 'win32'
+        ? await run(
+            'powershell.exe',
+            [
+              '-NoLogo',
+              '-NonInteractive',
+              '-ExecutionPolicy',
+              'Bypass',
+              '-Command',
+              buildPowerShellCommand(executablePath, args),
+            ],
+            probeExecOptions,
+          )
+        : await run(executablePath, args, probeExecOptions);
     return String(stdout);
   } catch {
     return null;

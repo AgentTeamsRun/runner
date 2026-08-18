@@ -5,6 +5,7 @@ import {
   resolveExecutablePath,
   resolveExecutablePathsWithPreferenceAsync,
   resolveExecutablePathWithPreference,
+  runProbeCommand,
 } from './executable.js';
 
 test('resolveExecutablePath falls back to npm global bin on Windows', () => {
@@ -435,4 +436,47 @@ test('resolveExecutablePathsWithPreferenceAsync keeps every Grok candidate in pr
   });
 
   assert.deepEqual(resolved, ['/Users/justin/.grok/bin/grok', '/usr/local/bin/grok', '/opt/homebrew/bin/grok']);
+});
+
+test('runProbeCommand launches powershell.exe with -Command on Windows', async () => {
+  const calls: Array<{ file: string; args: readonly string[] | undefined }> = [];
+  const fakeExecFileAsync = (async (file: string, args: readonly string[] | undefined) => {
+    calls.push({ file, args });
+    return { stdout: 'Cursor Agent 1.0\n', stderr: '' };
+  }) as never;
+
+  const result = await runProbeCommand('C:\\tools\\agent.cmd', ['--help'], {
+    platform: () => 'win32',
+    execFileAsync: fakeExecFileAsync,
+  });
+
+  assert.equal(result, 'Cursor Agent 1.0\n');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.file, 'powershell.exe');
+  assert.deepEqual(calls[0]?.args, [
+    '-NoLogo',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-Command',
+    "& 'C:\\tools\\agent.cmd' '--help'",
+  ]);
+});
+
+test('runProbeCommand executes command directly on non-Windows', async () => {
+  const calls: Array<{ file: string; args: readonly string[] | undefined }> = [];
+  const fakeExecFileAsync = (async (file: string, args: readonly string[] | undefined) => {
+    calls.push({ file, args });
+    return { stdout: 'Cursor Agent 1.0\n', stderr: '' };
+  }) as never;
+
+  const result = await runProbeCommand('/usr/local/bin/agent', ['--help'], {
+    platform: () => 'darwin',
+    execFileAsync: fakeExecFileAsync,
+  });
+
+  assert.equal(result, 'Cursor Agent 1.0\n');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.file, '/usr/local/bin/agent');
+  assert.deepEqual(calls[0]?.args, ['--help']);
 });

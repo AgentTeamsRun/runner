@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
 import type { RunnerType } from '@agentteams/core-constants';
-import { resolveExecutablePathWithPreference } from '../executable.js';
+import { buildPowerShellCommand, resolveExecutablePathWithPreference } from '../executable.js';
 import { sanitizeAntigravityInternalLogLine } from '../runners/antigravity.js';
 import { RUNNER_CAPABILITIES } from '../runners/capabilities.js';
 import { getGrokExecutablePreference } from '../runners/grok-build.js';
@@ -37,22 +37,45 @@ export type ModelEnumeratorDependencies = {
   resolveExecutable: (name: string, preferredNames: string[]) => string;
 };
 
+export type ExecuteModelEnumerationOptions = {
+  timeoutMs?: number;
+  maxBufferBytes?: number;
+  platform?: () => NodeJS.Platform;
+  spawn?: typeof spawn;
+};
+
 export const executeModelEnumerationCommand = (
   executablePath: string,
   args: string[],
-  options: {
-    timeoutMs?: number;
-    maxBufferBytes?: number;
-  } = {},
+  options: ExecuteModelEnumerationOptions = {},
 ): Promise<{ stdout: string }> => {
   const timeoutMs = options.timeoutMs ?? ENUMERATION_TIMEOUT_MS;
   const maxBuffer = options.maxBufferBytes ?? 10 * 1024 * 1024;
+  const spawnFn = options.spawn ?? spawn;
+  const os = (options.platform ?? platform)();
 
   return new Promise((resolve, reject) => {
-    const child = spawn(executablePath, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    const child =
+      os === 'win32'
+        ? spawnFn(
+            'powershell.exe',
+            [
+              '-NoLogo',
+              '-NonInteractive',
+              '-ExecutionPolicy',
+              'Bypass',
+              '-Command',
+              buildPowerShellCommand(executablePath, args),
+            ],
+            {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              windowsHide: true,
+            },
+          )
+        : spawnFn(executablePath, args, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+          });
 
     let stdout = '';
     let stderr = '';

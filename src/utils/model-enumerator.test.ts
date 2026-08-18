@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
@@ -209,7 +214,7 @@ describe('executeModelEnumerationCommand', () => {
   test('executes command with ignored stdin so process does not hang on stdin', async () => {
     const res = await executeModelEnumerationCommand(process.execPath, [
       '-e',
-      'let receivedData = false; process.stdin.on("data", () => { receivedData = true; }); process.stdin.on("end", () => { console.log(receivedData ? "data" : "no-data-eof"); }); process.stdin.resume();',
+      "let receivedData = false; process.stdin.on('data', () => { receivedData = true; }); process.stdin.on('end', () => { console.log(receivedData ? 'data' : 'no-data-eof'); }); process.stdin.resume();",
     ]);
     assert.equal(res.stdout.trim(), 'no-data-eof');
   });
@@ -219,7 +224,7 @@ describe('executeModelEnumerationCommand', () => {
       async () => {
         await executeModelEnumerationCommand(process.execPath, [
           '-e',
-          'console.error("fatal error: Bearer secret-token-abc"); process.exit(1);',
+          "console.error('fatal error: Bearer secret-token-abc'); process.exit(1);",
         ]);
       },
       (err: Error) => {
@@ -248,7 +253,7 @@ describe('executeModelEnumerationCommand', () => {
   test('enforces stdout maxBuffer limit', async () => {
     await assert.rejects(
       async () => {
-        await executeModelEnumerationCommand(process.execPath, ['-e', 'console.log("x".repeat(1000));'], {
+        await executeModelEnumerationCommand(process.execPath, ['-e', "console.log('x'.repeat(1000));"], {
           maxBufferBytes: 100,
         });
       },
@@ -257,5 +262,83 @@ describe('executeModelEnumerationCommand', () => {
         return true;
       },
     );
+  });
+
+  test('spawns powershell.exe with -Command launcher on win32', async () => {
+    const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
+    const mockSpawn = ((command: string, args: string[], options: unknown) => {
+      calls.push({ command, args, options });
+      const child = new EventEmitter() as ChildProcess;
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      child.stdout = stdout;
+      child.stderr = stderr;
+      child.kill = () => true;
+      setImmediate(() => {
+        stdout.end('provider/model-1\n');
+        stderr.end();
+        child.emit('close', 0, null);
+      });
+      return child;
+    }) as unknown as typeof import('node:child_process').spawn;
+
+    const res = await executeModelEnumerationCommand('C:\\tools\\opencode.cmd', ['models'], {
+      platform: () => 'win32',
+      spawn: mockSpawn,
+    });
+
+    assert.equal(res.stdout, 'provider/model-1\n');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.command, 'powershell.exe');
+    assert.deepEqual(calls[0]?.args, [
+      '-NoLogo',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      "& 'C:\\tools\\opencode.cmd' 'models'",
+    ]);
+  });
+
+  test('spawns executable directly on non-win32', async () => {
+    const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
+    const mockSpawn = ((command: string, args: string[], options: unknown) => {
+      calls.push({ command, args, options });
+      const child = new EventEmitter() as ChildProcess;
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      child.stdout = stdout;
+      child.stderr = stderr;
+      child.kill = () => true;
+      setImmediate(() => {
+        stdout.end('provider/model-1\n');
+        stderr.end();
+        child.emit('close', 0, null);
+      });
+      return child;
+    }) as unknown as typeof import('node:child_process').spawn;
+
+    const res = await executeModelEnumerationCommand('/usr/local/bin/opencode', ['models'], {
+      platform: () => 'darwin',
+      spawn: mockSpawn,
+    });
+
+    assert.equal(res.stdout, 'provider/model-1\n');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.command, '/usr/local/bin/opencode');
+    assert.deepEqual(calls[0]?.args, ['models']);
+  });
+
+  test('executes real .cmd file on Windows platform', { skip: process.platform !== 'win32' }, async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'enum-cmd-test-'));
+    const cmdPath = join(tempDir, 'fake-models.cmd');
+    await writeFile(cmdPath, '@echo off\r\necho test/model-1\r\necho test/model-2\r\n', 'utf8');
+
+    try {
+      const res = await executeModelEnumerationCommand(cmdPath, []);
+      assert.ok(res.stdout.includes('test/model-1'));
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
