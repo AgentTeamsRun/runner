@@ -10,34 +10,17 @@ import { runCleanupCommand } from './commands/cleanup.js';
 import { runRestartCommand } from './commands/restart.js';
 import { runUpdateCommand } from './commands/update.js';
 import { logger } from './logger.js';
+import { buildHelpText } from './help.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json') as { version?: string };
 const daemonVersion = packageJson.version ?? '0.0.0';
 
-const helpText = `Usage: agentrunner [command] [options]
-
-Commands:
-  start                       Start daemon polling (default)
-  init --token <token>        Initialize daemon config and register autostart
-  status                      Show daemon and autostart status
-  stop                        Stop running daemon
-  restart                     Restart daemon using autostart or background spawn
-  update                      Install latest AgentRunner package and restart
-  uninstall                   Stop daemon, remove autostart, clean up
-  cleanup --path <path>       Purge expired runner log/history files
-
-Options:
-  --no-autostart              Skip autostart registration (init only)
-  -h, --help                  Show help
-  -v, --version               Show version
-`;
-
 const main = async () => {
   const [, , command, ...args] = process.argv;
 
   if (command === '-h' || command === '--help' || command === 'help') {
-    process.stdout.write(helpText);
+    process.stdout.write(buildHelpText());
     return;
   }
 

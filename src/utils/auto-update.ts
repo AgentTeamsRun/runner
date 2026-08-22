@@ -2,7 +2,12 @@ import { createRequire } from 'node:module';
 import { runExecutableSync } from '../executable.js';
 import { logger } from '../logger.js';
 import type { PendingMeta } from '../types.js';
-import { classifyInstallError, describeInstallError, type InstallFailureReason } from './npm-install-error.js';
+import {
+  classifyInstallError,
+  describeInstallError,
+  requiresManualFix,
+  type InstallFailureReason,
+} from './npm-install-error.js';
 import { canWriteGlobalNpmRoot as canWriteGlobalNpmRootDefault } from './npm-global-permission.js';
 
 const require = createRequire(import.meta.url);
@@ -13,10 +18,10 @@ const RUNNER_PACKAGE = '@agentteams/runner';
 
 const COOLDOWN_MS = 60 * 60 * 1000; // 1시간
 /**
- * 권한 차단은 사용자가 직접 고치기 전에는 절대 풀리지 않는다. 1시간마다 같은 EACCES를 반복해도
- * 얻는 것이 없으므로 대상 버전이 바뀔 때까지 24시간 대기한다.
+ * 권한 차단·전역 bin 이름 충돌은 사용자가 직접 고치기 전에는 절대 풀리지 않는다. 1시간마다 같은
+ * EACCES/EEXIST를 반복해도 얻는 것이 없으므로 대상 버전이 바뀔 때까지 24시간 대기한다.
  */
-const PERMISSION_BLOCKED_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const MANUAL_FIX_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 const PERMISSION_BLOCKED_HINT =
   'AgentRunner cannot write to the global npm directory, so auto-update is blocked. ' +
@@ -50,8 +55,8 @@ let lastSuccessfulRunnerVersion: string | null = null;
 
 /** 패키지별 마지막 설치 시도. 대상 버전이 바뀌면 쿨다운과 무관하게 즉시 다시 시도한다. */
 const lastUpdateAttempts = new Map<UpdateFailurePackage, { at: number; targetVersion: string }>();
-/** 권한 차단으로 판정된 (package, version). 대상 버전이 바뀌면 즉시 재시도할 수 있게 버전을 함께 들고 있는다. */
-const permissionBlockedVersions = new Map<UpdateFailurePackage, string>();
+/** 사용자 조치 전까지 회복 불가로 판정된 (package, version). 대상 버전이 바뀌면 즉시 재시도할 수 있게 버전을 함께 들고 있는다. */
+const manualFixBlockedVersions = new Map<UpdateFailurePackage, string>();
 /** 아직 서버에 전달하지 못한 실패 보고. 설치 백오프와 무관하게 매 폴링마다 재시도한다. */
 const pendingFailureReports = new Map<UpdateFailurePackage, UpdateFailureInput>();
 /** 보고가 성공한 실패 식별자. 서버 중복 계약과 같은 (version, reason) 조합만 억제한다. */
@@ -89,21 +94,21 @@ const installPackage = (
   deps.runExecutableSync('npm', ['install', '-g', `${packageName}@${version}`]);
 };
 
-/** 권한 차단으로 백오프 중인지 판정한다. 대상 버전이 바뀌었으면 백오프를 해제한다. */
-const isPermissionBlocked = (pkg: UpdateFailurePackage, targetVersion: string): boolean =>
-  permissionBlockedVersions.get(pkg) === targetVersion;
+/** 사용자 조치 대기로 백오프 중인지 판정한다. 대상 버전이 바뀌었으면 백오프를 해제한다. */
+const isManualFixBlocked = (pkg: UpdateFailurePackage, targetVersion: string): boolean =>
+  manualFixBlockedVersions.get(pkg) === targetVersion;
 
 /**
  * 설치를 시도해도 되는 시점인지 판정한다.
  *
- * 대상 버전이 직전 시도와 다르면 쿨다운(권한 차단 24시간 포함)을 무시하고 즉시 시도한다.
+ * 대상 버전이 직전 시도와 다르면 쿨다운(사용자 조치 대기 24시간 포함)을 무시하고 즉시 시도한다.
  * 권한·패키징 문제를 고친 새 버전이 나왔는데 최대 1시간을 기다리는 일을 막는다.
  */
 const shouldAttemptInstall = (pkg: UpdateFailurePackage, targetVersion: string, now: number): boolean => {
   const lastAttempt = lastUpdateAttempts.get(pkg);
   if (!lastAttempt || lastAttempt.targetVersion !== targetVersion) return true;
 
-  const cooldown = isPermissionBlocked(pkg, targetVersion) ? PERMISSION_BLOCKED_COOLDOWN_MS : COOLDOWN_MS;
+  const cooldown = isManualFixBlocked(pkg, targetVersion) ? MANUAL_FIX_COOLDOWN_MS : COOLDOWN_MS;
   return now - lastAttempt.at >= cooldown;
 };
 
@@ -132,15 +137,18 @@ export const maybeAutoUpdate = async (
 
   /**
    * 실패를 미보고 큐에 넣는다. 전송은 설치 백오프와 분리된 `flushPendingReports`가 담당하므로,
-   * 24시간 권한 백오프에 걸린 뒤에도 다음 폴링마다 보고만 재시도된다.
+   * 24시간 백오프에 걸린 뒤에도 다음 폴링마다 보고만 재시도된다.
+   *
+   * `blockedUntilManualFix`는 서버로 보내는 `reason`과 별개다 — bin 이름 충돌은 `UNKNOWN`으로
+   * 보고되지만 사용자가 충돌 파일을 치우기 전까지는 재시도해도 소용없으므로 백오프 대상이다.
    */
-  const recordFailure = (input: UpdateFailureInput): void => {
-    if (input.reason === 'PERMISSION_DENIED') {
-      const alreadyBlocked = permissionBlockedVersions.get(input.package) === input.version;
-      permissionBlockedVersions.set(input.package, input.version);
+  const recordFailure = (input: UpdateFailureInput, blockedUntilManualFix: boolean): void => {
+    if (blockedUntilManualFix) {
+      const alreadyBlocked = manualFixBlockedVersions.get(input.package) === input.version;
+      manualFixBlockedVersions.set(input.package, input.version);
       if (!alreadyBlocked) {
         // 로그 폭주를 막기 위해 버전당 1회만 조치 안내를 남긴다.
-        resolvedLogger.warn(PERMISSION_BLOCKED_HINT, {
+        resolvedLogger.warn(input.reason === 'PERMISSION_DENIED' ? PERMISSION_BLOCKED_HINT : input.message, {
           package: input.package,
           targetVersion: input.version,
         });
@@ -154,7 +162,7 @@ export const maybeAutoUpdate = async (
 
   /** 설치 성공을 미보고 큐에 넣는다. 서버는 이 보고로 해당 패키지의 실패 상태를 해제한다. */
   const recordSuccess = (pkg: UpdateFailurePackage, version: string): void => {
-    permissionBlockedVersions.delete(pkg);
+    manualFixBlockedVersions.delete(pkg);
     pendingFailureReports.delete(pkg);
     reportedFailures.delete(pkg);
     pendingSuccessReports.set(pkg, version);
@@ -201,12 +209,15 @@ export const maybeAutoUpdate = async (
   const tryInstall = (pkg: UpdateFailurePackage, packageName: string, version: string): boolean => {
     if (!resolveCanWriteGlobalNpmRoot(deps)) {
       // 실행해봐야 EACCES로 죽는다. `npm install -g`를 아예 실행하지 않는다.
-      recordFailure({
-        package: pkg,
-        version,
-        reason: 'PERMISSION_DENIED',
-        message: PERMISSION_BLOCKED_HINT,
-      });
+      recordFailure(
+        {
+          package: pkg,
+          version,
+          reason: 'PERMISSION_DENIED',
+          message: PERMISSION_BLOCKED_HINT,
+        },
+        true,
+      );
       return false;
     }
 
@@ -220,12 +231,15 @@ export const maybeAutoUpdate = async (
         error: error instanceof Error ? error.message : String(error),
         reason,
       });
-      recordFailure({
-        package: pkg,
-        version,
-        reason,
-        message: describeInstallError(error),
-      });
+      recordFailure(
+        {
+          package: pkg,
+          version,
+          reason,
+          message: describeInstallError(error),
+        },
+        requiresManualFix(error),
+      );
       return false;
     }
   };
@@ -286,7 +300,7 @@ export const maybeAutoUpdate = async (
 export const resetAutoUpdateState = (): void => {
   lastSuccessfulRunnerVersion = null;
   lastUpdateAttempts.clear();
-  permissionBlockedVersions.clear();
+  manualFixBlockedVersions.clear();
   pendingFailureReports.clear();
   reportedFailures.clear();
   pendingSuccessReports.clear();

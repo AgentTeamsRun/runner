@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "agentrunner": "dist/index.js"
+    "agentrunner": "dist/index.js",
+    "agr": "dist/index.js"
   },
   "files": [
     "dist/**/*",

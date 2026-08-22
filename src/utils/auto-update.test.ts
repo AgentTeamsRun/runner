@@ -89,6 +89,13 @@ const EACCES_INSTALL_ERROR_MESSAGE = [
   'npm ERR! errno -13',
 ].join('\n');
 
+const EEXIST_INSTALL_ERROR_MESSAGE = [
+  'Command failed: /usr/bin/npm install -g @agentteams/runner@99.9.9',
+  'npm ERR! code EEXIST',
+  'npm ERR! path /usr/local/bin/agr',
+  'npm ERR! File exists: /usr/local/bin/agr',
+].join('\n');
+
 test('maybeAutoUpdate reports EACCES install failure as PERMISSION_DENIED exactly once', async () => {
   resetAutoUpdateState();
 
@@ -167,6 +174,57 @@ test('maybeAutoUpdate does not retry a permission-blocked install within 24 hour
 
   assert.equal(installCount, 1, 'should not retry install within the permission-blocked backoff');
   assert.equal(failureCount, 1, 'should not report the same failure again');
+});
+
+test('maybeAutoUpdate does not retry a global bin conflict within 24 hours', async () => {
+  resetAutoUpdateState();
+
+  let installCount = 0;
+  const failures: Array<{ reason: string; message: string }> = [];
+  const warnings: string[] = [];
+
+  const deps = {
+    runExecutableSync: (name: string, args: string[]) => {
+      if (name === 'npm' && args[0] === 'install') {
+        installCount++;
+        throw new Error(EEXIST_INSTALL_ERROR_MESSAGE);
+      }
+      return '';
+    },
+    logger: {
+      info: () => {},
+      warn: (message: string) => {
+        warnings.push(message);
+      },
+      error: () => {},
+    },
+    now: () => 20000000,
+    canWriteGlobalNpmRoot: () => true,
+    onUpdateFailed: async (input: { reason: string; message: string }) => {
+      failures.push(input);
+    },
+  };
+
+  const meta = {
+    cliLatestVersion: null,
+    runnerLatestVersion: '99.9.9',
+  };
+
+  await maybeAutoUpdate(meta, deps);
+  assert.equal(installCount, 1);
+  // 서버로 가는 reason 계약은 넓히지 않았으므로 UNKNOWN 그대로 보고한다.
+  assert.equal(failures[0]?.reason, 'UNKNOWN');
+  assert.match(failures[0]?.message ?? '', /remove or rename that file/u);
+  assert.equal(warnings.length, 1, 'the remediation hint should be logged once per target version');
+
+  // 1시간 쿨다운은 지났지만 사용자 조치 대기 백오프(24시간) 안이므로 재시도하지 않는다.
+  await maybeAutoUpdate(meta, { ...deps, now: () => 20000000 + 2 * 60 * 60 * 1000 });
+  assert.equal(installCount, 1, 'should not retry install within the manual-fix backoff');
+  assert.equal(failures.length, 1, 'should not report the same failure again');
+
+  // 24시간이 지나면 다시 시도한다 — 사용자가 충돌 파일을 치웠을 수 있다.
+  await maybeAutoUpdate(meta, { ...deps, now: () => 20000000 + 25 * 60 * 60 * 1000 });
+  assert.equal(installCount, 2, 'should retry once the manual-fix backoff elapses');
 });
 
 test('maybeAutoUpdate RETRIES notification if it failed before', async () => {
