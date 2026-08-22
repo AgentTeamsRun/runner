@@ -1,6 +1,10 @@
+import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { maybeAutoUpdate, resetAutoUpdateState } from './auto-update.js';
+
+const require = createRequire(import.meta.url);
+const installedRunnerVersion = (require('../../package.json') as { version: string }).version;
 
 test('maybeAutoUpdate calls onUpdateSucceeded after successful install', async () => {
   resetAutoUpdateState();
@@ -610,4 +614,268 @@ test('maybeAutoUpdate reports a CLI install success so the server can clear the 
   );
 
   assert.deepEqual(successes, [{ package: 'cli', version: '1.1.1' }]);
+});
+
+const installedCliVersion = (version: string) => (name: string, args: string[]) => {
+  if (name === 'npm' && args[0] === 'list') {
+    return JSON.stringify({ dependencies: { '@agentteams/cli': { version } } });
+  }
+  throw new Error(`unexpected command: ${name} ${args.join(' ')}`);
+};
+
+test('maybeAutoUpdate reports CLI success once when the installed version is already latest', async () => {
+  resetAutoUpdateState();
+
+  const successes: Array<{ package: string; version: string }> = [];
+  let now = 110000000;
+
+  const deps = {
+    runExecutableSync: installedCliVersion('1.2.3'),
+    logger: {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    },
+    now: () => now,
+    canWriteGlobalNpmRoot: () => true,
+    onUpdateSucceeded: async (input: { package: string; version: string }) => {
+      successes.push(input);
+    },
+  };
+
+  const meta = {
+    cliLatestVersion: '1.2.3',
+    runnerLatestVersion: null,
+  };
+
+  await maybeAutoUpdate(meta, deps);
+  await maybeAutoUpdate(meta, deps);
+  now += 60 * 1000;
+  await maybeAutoUpdate(meta, deps);
+
+  assert.deepEqual(successes, [{ package: 'cli', version: '1.2.3' }]);
+});
+
+test('maybeAutoUpdate retries the already-latest CLI success report if the first notify throws', async () => {
+  resetAutoUpdateState();
+
+  const successes: Array<{ package: string; version: string }> = [];
+  let shouldFail = true;
+
+  const deps = {
+    runExecutableSync: installedCliVersion('2.0.0'),
+    logger: {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    },
+    now: () => 120000000,
+    canWriteGlobalNpmRoot: () => true,
+    onUpdateSucceeded: async (input: { package: string; version: string }) => {
+      if (shouldFail) {
+        shouldFail = false;
+        throw new Error('Network error');
+      }
+      successes.push(input);
+    },
+  };
+
+  const meta = {
+    cliLatestVersion: '2.0.0',
+    runnerLatestVersion: null,
+  };
+
+  await maybeAutoUpdate(meta, deps);
+  assert.equal(successes.length, 0);
+
+  await maybeAutoUpdate(meta, deps);
+  assert.deepEqual(successes, [{ package: 'cli', version: '2.0.0' }]);
+});
+
+test('maybeAutoUpdate does not report runner success when the installed runner is already latest', async () => {
+  resetAutoUpdateState();
+
+  const successes: Array<{ package: string; version: string }> = [];
+
+  const deps = {
+    runExecutableSync: () => {
+      throw new Error('runner already-latest path must not install');
+    },
+    logger: {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    },
+    now: () => 130000000,
+    canWriteGlobalNpmRoot: () => true,
+    onUpdateSucceeded: async (input: { package: string; version: string }) => {
+      successes.push(input);
+    },
+  };
+
+  await maybeAutoUpdate({ cliLatestVersion: null, runnerLatestVersion: installedRunnerVersion }, deps);
+
+  assert.deepEqual(successes, []);
+});
+
+test('maybeAutoUpdate does not report CLI success when the installed version cannot be read', async () => {
+  resetAutoUpdateState();
+
+  const successes: Array<{ package: string; version: string }> = [];
+
+  const deps = {
+    runExecutableSync: () => {
+      throw new Error('npm list failed');
+    },
+    logger: {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    },
+    now: () => 140000000,
+    canWriteGlobalNpmRoot: () => true,
+    onUpdateSucceeded: async (input: { package: string; version: string }) => {
+      successes.push(input);
+    },
+  };
+
+  await maybeAutoUpdate({ cliLatestVersion: '3.0.0', runnerLatestVersion: null }, deps);
+
+  assert.deepEqual(successes, []);
+});
+
+test('resetAutoUpdateState allows another already-latest CLI success report', async () => {
+  resetAutoUpdateState();
+
+  const successes: Array<{ package: string; version: string }> = [];
+
+  const deps = {
+    runExecutableSync: installedCliVersion('4.0.0'),
+    logger: {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    },
+    now: () => 150000000,
+    canWriteGlobalNpmRoot: () => true,
+    onUpdateSucceeded: async (input: { package: string; version: string }) => {
+      successes.push(input);
+    },
+  };
+
+  const meta = {
+    cliLatestVersion: '4.0.0',
+    runnerLatestVersion: null,
+  };
+
+  await maybeAutoUpdate(meta, deps);
+  assert.equal(successes.length, 1);
+
+  resetAutoUpdateState();
+  await maybeAutoUpdate(meta, deps);
+  assert.deepEqual(successes, [
+    { package: 'cli', version: '4.0.0' },
+    { package: 'cli', version: '4.0.0' },
+  ]);
+});
+
+test('maybeAutoUpdate clears a permission-blocked CLI failure once the user installs it manually', async () => {
+  resetAutoUpdateState();
+
+  const successes: Array<{ package: string; version: string }> = [];
+  const failures: Array<{ package: string; version: string; reason: string }> = [];
+  let installedCli = '1.0.0';
+  let installCount = 0;
+  let now = 200000000;
+
+  const deps = {
+    runExecutableSync: (name: string, args: string[]) => {
+      if (name === 'npm' && args[0] === 'list') {
+        return JSON.stringify({ dependencies: { '@agentteams/cli': { version: installedCli } } });
+      }
+      if (name === 'npm' && args[0] === 'install') {
+        installCount++;
+        throw new Error(EACCES_INSTALL_ERROR_MESSAGE);
+      }
+      throw new Error(`unexpected command: ${name} ${args.join(' ')}`);
+    },
+    logger: {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    },
+    now: () => now,
+    canWriteGlobalNpmRoot: () => true,
+    onUpdateSucceeded: async (input: { package: string; version: string }) => {
+      successes.push(input);
+    },
+    onUpdateFailed: async (input: { package: string; version: string; reason: string }) => {
+      failures.push({ package: input.package, version: input.version, reason: input.reason });
+    },
+  };
+
+  const meta = { cliLatestVersion: '3.0.0', runnerLatestVersion: null };
+
+  await maybeAutoUpdate(meta, deps);
+  assert.equal(installCount, 1);
+  assert.deepEqual(failures, [{ package: 'cli', version: '3.0.0', reason: 'PERMISSION_DENIED' }]);
+
+  // 사용자가 안내대로 직접 설치했다. 설치는 24시간 백오프에 갇혀 있지만 최신 여부 프로브는 따로 돌아야 한다.
+  installedCli = '3.0.0';
+
+  now += 60 * 1000;
+  await maybeAutoUpdate(meta, deps);
+  assert.deepEqual(successes, [], '프로브 주기(5분) 안에서는 다시 확인하지 않는다');
+
+  now += 5 * 60 * 1000;
+  await maybeAutoUpdate(meta, deps);
+  assert.equal(installCount, 1, '자가 해제 프로브가 설치 백오프를 깨뜨려서는 안 된다');
+  assert.deepEqual(
+    successes,
+    [{ package: 'cli', version: '3.0.0' }],
+    '24시간 백오프를 기다리지 않고 성공 보고로 서버의 차단 상태를 해제해야 한다',
+  );
+
+  // 해제 이후에는 차단 상태가 없으므로 프로브도 멈추고 같은 보고를 반복하지 않는다.
+  now += 10 * 60 * 1000;
+  await maybeAutoUpdate(meta, deps);
+  assert.deepEqual(successes, [{ package: 'cli', version: '3.0.0' }]);
+});
+
+test('maybeAutoUpdate does not probe the installed CLI version while no failure is pending', async () => {
+  resetAutoUpdateState();
+
+  let listCount = 0;
+  let now = 210000000;
+
+  const deps = {
+    runExecutableSync: (name: string, args: string[]) => {
+      if (name === 'npm' && args[0] === 'list') {
+        listCount++;
+        return JSON.stringify({ dependencies: { '@agentteams/cli': { version: '1.0.0' } } });
+      }
+      if (name === 'npm' && args[0] === 'install') {
+        return '';
+      }
+      throw new Error(`unexpected command: ${name} ${args.join(' ')}`);
+    },
+    logger: {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    },
+    now: () => now,
+    canWriteGlobalNpmRoot: () => true,
+    onUpdateSucceeded: async () => {},
+  };
+
+  const meta = { cliLatestVersion: '3.0.0', runnerLatestVersion: null };
+
+  await maybeAutoUpdate(meta, deps);
+  assert.equal(listCount, 1);
+
+  // 설치가 성공한 뒤에는 차단 상태가 없다 — 설치 쿨다운(1시간) 밖의 프로브가 추가로 돌면 안 된다.
+  now += 30 * 60 * 1000;
+  await maybeAutoUpdate(meta, deps);
+  assert.equal(listCount, 1, '차단 상태가 없으면 설치 주기 밖에서 npm list를 돌리지 않는다');
 });

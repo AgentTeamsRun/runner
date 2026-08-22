@@ -22,6 +22,12 @@ const COOLDOWN_MS = 60 * 60 * 1000; // 1시간
  * EACCES/EEXIST를 반복해도 얻는 것이 없으므로 대상 버전이 바뀔 때까지 24시간 대기한다.
  */
 const MANUAL_FIX_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+/**
+ * 설치 실패가 아직 해소되지 않았을 때 "이미 최신인지"만 확인하는 프로브 주기.
+ * 설치 백오프(권한 실패 시 24시간)와 분리해, 사용자가 CLI를 직접 설치하면 최대 이 주기 안에
+ * 차단 상태가 자가 해제되게 한다. `npm list -g`는 동기 실행이라 폴링마다 돌리지는 않는다.
+ */
+const FAILURE_PROBE_COOLDOWN_MS = 5 * 60 * 1000;
 
 const PERMISSION_BLOCKED_HINT =
   'AgentRunner cannot write to the global npm directory, so auto-update is blocked. ' +
@@ -63,6 +69,13 @@ const pendingFailureReports = new Map<UpdateFailurePackage, UpdateFailureInput>(
 const reportedFailures = new Map<UpdateFailurePackage, string>();
 /** 아직 서버에 전달하지 못한 설치 성공 (package → version). 매 폴링마다 재시도한다. */
 const pendingSuccessReports = new Map<UpdateFailurePackage, string>();
+/**
+ * 이미 최신인 패키지를 성공으로 보고한 (package → version).
+ * 프로세스당 같은 조합을 한 번만 큐에 넣어 폴링마다 재보고하지 않는다.
+ */
+const upToDateReported = new Map<UpdateFailurePackage, string>();
+/** 설치 백오프와 무관하게 돌린 "이미 최신인지" 프로브의 마지막 실행 시각(package → at). */
+const lastFailureProbes = new Map<UpdateFailurePackage, number>();
 
 /** 서버의 중복 억제 계약과 동일하게 (version, reason)까지 봐야 사유 전환이 다시 보고된다. */
 const failureIdentity = (input: UpdateFailureInput): string => `${input.version}::${input.reason}`;
@@ -110,6 +123,23 @@ const shouldAttemptInstall = (pkg: UpdateFailurePackage, targetVersion: string, 
 
   const cooldown = isManualFixBlocked(pkg, targetVersion) ? MANUAL_FIX_COOLDOWN_MS : COOLDOWN_MS;
   return now - lastAttempt.at >= cooldown;
+};
+
+/** 서버에 남아 있는 차단 상태를 아직 해제하지 못했는지 판정한다. */
+const hasUnresolvedFailure = (pkg: UpdateFailurePackage): boolean =>
+  manualFixBlockedVersions.has(pkg) || pendingFailureReports.has(pkg) || reportedFailures.has(pkg);
+
+/**
+ * 설치 백오프에 걸려 있어도 "이미 최신인지"만 확인해도 되는 시점인지 판정한다.
+ *
+ * 사용자가 안내대로 CLI를 직접 설치하면 설치 쿨다운(권한 실패 시 24시간)이 끝날 때까지 기다리지 않고
+ * 자가 해제되어야 한다. 반대로 차단 상태가 없으면 프로브할 이유가 없으므로 설치 주기만 따른다.
+ */
+const shouldProbeWhileBlocked = (pkg: UpdateFailurePackage, now: number): boolean => {
+  if (!hasUnresolvedFailure(pkg)) return false;
+
+  const lastProbe = lastFailureProbes.get(pkg);
+  return lastProbe === undefined || now - lastProbe >= FAILURE_PROBE_COOLDOWN_MS;
 };
 
 /** 프리플라이트가 판정 불가로 throw하면 fail-open — 기존처럼 설치를 시도한다. */
@@ -166,6 +196,7 @@ export const maybeAutoUpdate = async (
     pendingFailureReports.delete(pkg);
     reportedFailures.delete(pkg);
     pendingSuccessReports.set(pkg, version);
+    upToDateReported.set(pkg, version);
   };
 
   /**
@@ -245,24 +276,41 @@ export const maybeAutoUpdate = async (
   };
 
   // CLI 업데이트
-  if (meta.cliLatestVersion && shouldAttemptInstall('cli', meta.cliLatestVersion, now)) {
-    lastUpdateAttempts.set('cli', { at: now, targetVersion: meta.cliLatestVersion });
-    const currentCliVersion = getInstalledCliVersion({
-      runExecutableSync: resolvedRunExecutableSync,
-      logger: resolvedLogger,
-    });
+  if (meta.cliLatestVersion) {
+    const canInstallCli = shouldAttemptInstall('cli', meta.cliLatestVersion, now);
+    // 설치가 백오프에 걸려 있어도 차단 상태가 남아 있으면 최신 여부 확인만 따로 돌린다.
+    const probeOnly = !canInstallCli && shouldProbeWhileBlocked('cli', now);
 
-    if (needsUpdate(currentCliVersion, meta.cliLatestVersion)) {
-      resolvedLogger.info('Auto-updating CLI', {
-        currentVersion: currentCliVersion,
-        targetVersion: meta.cliLatestVersion,
+    if (canInstallCli || probeOnly) {
+      if (canInstallCli) {
+        lastUpdateAttempts.set('cli', { at: now, targetVersion: meta.cliLatestVersion });
+      }
+      lastFailureProbes.set('cli', now);
+
+      const currentCliVersion = getInstalledCliVersion({
+        runExecutableSync: resolvedRunExecutableSync,
+        logger: resolvedLogger,
       });
 
-      if (tryInstall('cli', CLI_PACKAGE, meta.cliLatestVersion)) {
-        cliUpdated = true;
-        resolvedLogger.info('CLI auto-update completed', {
-          version: meta.cliLatestVersion,
-        });
+      if (needsUpdate(currentCliVersion, meta.cliLatestVersion)) {
+        if (canInstallCli) {
+          resolvedLogger.info('Auto-updating CLI', {
+            currentVersion: currentCliVersion,
+            targetVersion: meta.cliLatestVersion,
+          });
+
+          if (tryInstall('cli', CLI_PACKAGE, meta.cliLatestVersion)) {
+            cliUpdated = true;
+            resolvedLogger.info('CLI auto-update completed', {
+              version: meta.cliLatestVersion,
+            });
+          }
+        }
+      } else if (currentCliVersion !== null && upToDateReported.get('cli') !== meta.cliLatestVersion) {
+        // 사용자가 직접 최신 CLI를 깐 경우 설치를 건너뛰므로, 성공 보고를 1회 보내 서버의
+        // stale 실패 상태를 자가 해제한다. 로컬 실패 상태도 함께 지워 프로브를 수렴시킨다.
+        // runner 패키지는 pendingVersion을 덮어쓰므로 같은 no-op 보고를 하지 않는다.
+        recordSuccess('cli', meta.cliLatestVersion);
       }
     }
   }
@@ -304,4 +352,6 @@ export const resetAutoUpdateState = (): void => {
   pendingFailureReports.clear();
   reportedFailures.clear();
   pendingSuccessReports.clear();
+  upToDateReported.clear();
+  lastFailureProbes.clear();
 };
