@@ -21,6 +21,9 @@ const runnerVersion = packageJson.version ?? '0.0.0';
 
 const MAX_NETWORK_RETRIES = 3;
 const BASE_BACKOFF_MS = 1000;
+
+/** 자동 업데이트 실패 원문 전송 상한. 서버 저장 상한과 같은 값을 쓴다. */
+const UPDATE_FAILURE_MESSAGE_MAX_LENGTH = 500;
 export const DAEMON_API_TRANSPORT_TIMEOUT_MS = 30_000;
 
 class DaemonApiTimeoutError extends Error {
@@ -376,7 +379,14 @@ export class DaemonApiClient {
         ...this.daemonHeaders(),
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ version, package: pkg, reason, message }),
+      // npm 실패 message에는 stderr 전문이 붙어 수 KB에 이르므로 전송 전에 자른다.
+      // 저장 상한의 SSOT는 서버다 — 구버전 러너가 보낸 원문도 서버가 같은 길이로 잘라 저장한다.
+      body: JSON.stringify({
+        version,
+        package: pkg,
+        reason,
+        message: message.slice(0, UPDATE_FAILURE_MESSAGE_MAX_LENGTH),
+      }),
     });
 
     if (!response.ok) {

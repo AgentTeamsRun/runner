@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { logger } from '../logger.js';
 
 type ConventionSyncDeps = {
   spawn?: typeof spawn;
+  existsSync?: typeof existsSync;
   logger?: Pick<typeof logger, 'info' | 'warn'>;
 };
 
@@ -21,7 +23,13 @@ const runAgentteamsConventionCommand = async (
   args: string[],
   spawnFn: typeof spawn,
   log: Pick<typeof logger, 'warn'>,
+  pathExists: typeof existsSync,
 ): Promise<AgentteamsCommandResult | null> => {
+  if (!pathExists(authPath)) {
+    log.warn('Convention sync skipped; working directory no longer exists', { authPath });
+    return null;
+  }
+
   try {
     return await new Promise<AgentteamsCommandResult | null>((resolve) => {
       const child = spawnFn('agentteams', ['convention', ...args], {
@@ -40,11 +48,15 @@ const runAgentteamsConventionCommand = async (
       });
 
       child.on('error', (err) => {
-        log.warn('Convention sync spawn error', {
-          authPath,
-          command: `agentteams convention ${args.join(' ')}`,
-          error: err.message,
-        });
+        const isMissingExecutable = (err as NodeJS.ErrnoException).code === 'ENOENT';
+        log.warn(
+          isMissingExecutable ? 'Convention sync spawn error; CLI executable not found' : 'Convention sync spawn error',
+          {
+            authPath,
+            command: `agentteams convention ${args.join(' ')}`,
+            error: err.message,
+          },
+        );
         resolve(null);
       });
 
@@ -77,9 +89,10 @@ const parseConventionStatus = (stdout: string): ConventionStatusResult | null =>
 export const runConventionSync = async (authPath: string, deps: ConventionSyncDeps = {}): Promise<void> => {
   const log = deps.logger ?? logger;
   const spawnFn = deps.spawn ?? spawn;
+  const pathExists = deps.existsSync ?? existsSync;
 
   try {
-    const statusResult = await runAgentteamsConventionCommand(authPath, ['status'], spawnFn, log);
+    const statusResult = await runAgentteamsConventionCommand(authPath, ['status'], spawnFn, log, pathExists);
     if (statusResult === null) {
       return;
     }
@@ -114,7 +127,7 @@ export const runConventionSync = async (authPath: string, deps: ConventionSyncDe
       return;
     }
 
-    const downloadResult = await runAgentteamsConventionCommand(authPath, ['download'], spawnFn, log);
+    const downloadResult = await runAgentteamsConventionCommand(authPath, ['download'], spawnFn, log, pathExists);
     if (downloadResult === null) {
       return;
     }

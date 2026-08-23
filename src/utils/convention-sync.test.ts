@@ -17,6 +17,8 @@ type FakeSpawnResponse = {
   error?: Error;
 };
 
+const existingDir = () => true;
+
 const createFakeSpawn = (responses: FakeSpawnResponse[], calls: FakeSpawnCall[] = []) => {
   return (cmd: string, args: string[], opts: object): ChildProcess => {
     calls.push({ cmd, args, opts });
@@ -57,6 +59,7 @@ test('runConventionSync skips download when status reports no update', async () 
   await runConventionSync('/fake/path', {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     spawn: createFakeSpawn([{ exitCode: 0, stdout: JSON.stringify({ updateAvailable: false }) }], calls) as any,
+    existsSync: existingDir,
     logger: fakeLogger,
   });
 
@@ -87,6 +90,7 @@ test('runConventionSync downloads when status reports an update', async () => {
       [{ exitCode: 0, stdout: JSON.stringify({ updateAvailable: true }) }, { exitCode: 0 }],
       calls,
     ) as any,
+    existsSync: existingDir,
     logger: fakeLogger,
   });
 
@@ -117,6 +121,7 @@ test('runConventionSync logs warn when status exits non-zero', async () => {
   await runConventionSync('/fake/path', {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     spawn: createFakeSpawn([{ exitCode: 1, stderr: 'not configured' }], calls) as any,
+    existsSync: existingDir,
     logger: fakeLogger,
   });
 
@@ -143,6 +148,7 @@ test('runConventionSync logs warn when status returns invalid JSON', async () =>
   await runConventionSync('/fake/path', {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     spawn: createFakeSpawn([{ exitCode: 0, stdout: 'not-json' }]) as any,
+    existsSync: existingDir,
     logger: fakeLogger,
   });
 
@@ -168,6 +174,7 @@ test('runConventionSync logs warn when download exits non-zero', async () => {
       { exitCode: 0, stdout: JSON.stringify({ updateAvailable: true }) },
       { exitCode: 1, stderr: 'download failed' },
     ]) as any,
+    existsSync: existingDir,
     logger: fakeLogger,
   });
 
@@ -178,6 +185,7 @@ test('runConventionSync logs warn when download exits non-zero', async () => {
 
 test('runConventionSync logs warn on spawn error', async () => {
   const logs: Array<{ level: string; message: string; meta?: object }> = [];
+  const calls: FakeSpawnCall[] = [];
   const fakeLogger = {
     info: (message: string, meta?: object) => {
       logs.push({ level: 'info', message, meta });
@@ -187,15 +195,45 @@ test('runConventionSync logs warn on spawn error', async () => {
     },
   };
 
+  const spawnError = Object.assign(new Error('spawn agentteams ENOENT'), { code: 'ENOENT' });
   await runConventionSync('/fake/path', {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    spawn: createFakeSpawn([{ exitCode: null, error: new Error('ENOENT') }]) as any,
+    spawn: createFakeSpawn([{ exitCode: null, error: spawnError }], calls) as any,
+    existsSync: existingDir,
     logger: fakeLogger,
   });
 
+  assert.equal(calls.length, 1, 'cwd exists so spawn must still be attempted');
   assert.equal(logs.length, 1);
   assert.equal(logs[0]!.level, 'warn');
-  assert.match(logs[0]!.message, /spawn error/i);
+  assert.match(logs[0]!.message, /CLI executable not found/i);
+  assert.doesNotMatch(logs[0]!.message, /working directory no longer exists/i);
+});
+
+test('runConventionSync skips spawn when the working directory no longer exists', async () => {
+  const logs: Array<{ level: string; message: string; meta?: object }> = [];
+  const calls: FakeSpawnCall[] = [];
+  const fakeLogger = {
+    info: (message: string, meta?: object) => {
+      logs.push({ level: 'info', message, meta });
+    },
+    warn: (message: string, meta?: object) => {
+      logs.push({ level: 'warn', message, meta });
+    },
+  };
+
+  await runConventionSync('/deleted/worktree', {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    spawn: createFakeSpawn([{ exitCode: 0, stdout: JSON.stringify({ updateAvailable: false }) }], calls) as any,
+    existsSync: () => false,
+    logger: fakeLogger,
+  });
+
+  assert.equal(calls.length, 0, 'missing cwd must not spawn agentteams');
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]!.level, 'warn');
+  assert.match(logs[0]!.message, /working directory no longer exists/i);
+  assert.doesNotMatch(logs[0]!.message, /CLI executable not found/i);
 });
 
 test('runConventionSync never throws', async () => {
@@ -212,6 +250,7 @@ test('runConventionSync never throws', async () => {
     runConventionSync('/fake/path', {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       spawn: throwingSpawn as any,
+      existsSync: existingDir,
       logger: fakeLogger,
     }),
   );

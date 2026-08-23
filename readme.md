@@ -23,6 +23,18 @@ Verify the installation:
 agentrunner --help
 ```
 
+### Short alias (`agr`)
+
+`agentrunner` is also installed as `agr`. The canonical name keeps working — the alias is an addition, not a replacement.
+
+```bash
+agr --help    # same as: agentrunner --help
+```
+
+- The alias symlink is created at install time. If you installed an earlier version, rerun `npm install -g @agentteams/runner` to get it.
+- Use the alias only when you type commands yourself. Autostart entries, scripts, and agent guides should keep using `agentrunner`, which exists in every environment.
+- Usage text echoes the alias only where npm installs bins as symlinks (POSIX). Windows `.cmd`/`.ps1` shims and pnpm global installs are shell wrappers, so `agr --help` still prints `Usage: agentrunner ...` there. Running the alias itself works everywhere.
+
 ## Quick Start
 
 ### 1. Initialize
@@ -213,9 +225,9 @@ For a release smoke test on a disposable Windows test machine:
 
 ## Troubleshooting
 
-### `Missing token. Usage: agentrunner init --token <token> ...`
+### `Missing token. Usage: ... init --token <token> ...`
 
-The `--token` flag was not provided to `init`.
+The `--token` flag was not provided to `init`. The usage line names whichever executable you ran, so it reads `agentrunner init ...` or `agr init ...`.
 
 ### `Daemon token is missing. Run 'agentrunner init --token <token>' first.`
 
