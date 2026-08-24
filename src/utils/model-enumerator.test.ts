@@ -146,6 +146,42 @@ describe('enumerateModels', () => {
     });
   });
 
+  // 엔진 탐지(engine-commands.ts)와 러너 기동(opencode.ts)은 config.runnerCmd를 따르는데
+  // 열거만 'opencode'를 하드코딩하면, RUNNER_CMD를 바꾼 환경에서 탐지는 되고 열거만 실패한다.
+  test('enumerates OpenCode with the configured runner command', async () => {
+    const requestedNames: string[] = [];
+    const result = await enumerateModels(
+      'OPENCODE',
+      {
+        execute: async () => ({ stdout: 'provider/model-a\n' }),
+        platform: () => 'darwin',
+        resolveExecutable: (name) => {
+          requestedNames.push(name);
+          return `/bin/${name}`;
+        },
+      },
+      'custom-opencode',
+    );
+
+    assert.deepEqual(requestedNames, ['custom-opencode']);
+    assert.equal(result.status, 'SUCCESS');
+  });
+
+  // 인자를 주지 않는 기존 호출부는 그대로 'opencode'를 해석해야 한다.
+  test('falls back to the default OpenCode command when none is provided', async () => {
+    const requestedNames: string[] = [];
+    await enumerateModels('OPENCODE', {
+      execute: async () => ({ stdout: 'provider/model-a\n' }),
+      platform: () => 'darwin',
+      resolveExecutable: (name) => {
+        requestedNames.push(name);
+        return `/bin/${name}`;
+      },
+    });
+
+    assert.deepEqual(requestedNames, ['opencode']);
+  });
+
   test('classifies command failures instead of throwing', async () => {
     const result = await enumerateModels(
       'KIRO_CLI',
@@ -183,6 +219,24 @@ describe('enumerateModels', () => {
       status: 'SUCCESS',
       values: [{ value: 'gemini-3.7-flash-high', label: 'Gemini 3.7 Flash (High)' }],
     });
+  });
+
+  test('uses the engine command SSOT for Windows executable preferences', async () => {
+    const preferences = new Map<string, string[]>();
+    const deps: Partial<ModelEnumeratorDependencies> = {
+      execute: async () => ({ stdout: 'model-a\n' }),
+      platform: () => 'win32',
+      resolveExecutable: (name, preferredNames) => {
+        preferences.set(name, preferredNames);
+        return `C:\\bin\\${name}`;
+      },
+    };
+
+    await enumerateModels('CURSOR_CLI', deps);
+    await enumerateModels('ANTIGRAVITY', deps);
+
+    assert.deepEqual(preferences.get('agent'), ['agent']);
+    assert.deepEqual(preferences.get('agy'), ['agy.cmd', 'agy']);
   });
 });
 

@@ -1,7 +1,7 @@
 import { accessSync, constants } from 'node:fs';
 import { platform as getPlatform } from 'node:os';
 import { posix, win32 } from 'node:path';
-import { getNpmGlobalBinPath } from '../executable.js';
+import { getNpmGlobalPrefix } from '../executable.js';
 
 /**
  * 전역 npm 모듈 루트에 쓸 수 있는지 미리 판정한다.
@@ -27,7 +27,7 @@ const getDirname = (path: string, os: NodeJS.Platform): string =>
   os === 'win32' ? win32.dirname(path) : posix.dirname(path);
 
 export const canWriteGlobalNpmRoot = (deps: NpmGlobalPermissionDeps = {}): boolean => {
-  const resolvePrefix = deps.npmGlobalPrefix ?? (() => getNpmGlobalBinPath());
+  const resolvePrefix = deps.npmGlobalPrefix ?? (() => getNpmGlobalPrefix());
   const access = deps.accessSync ?? accessSync;
   const os = (deps.platform ?? getPlatform)();
 

@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { platform as getPlatform } from 'node:os';
 import { posix, win32 } from 'node:path';
 import { promisify } from 'node:util';
@@ -13,7 +13,9 @@ export type ExecutableDeps = {
   env?: NodeJS.ProcessEnv;
   execFileSync?: typeof execFileSync;
   existsSync?: typeof existsSync;
-  npmGlobalBinPath?: string | null;
+  isFile?: (path: string) => boolean;
+  /// `npm prefix -g`의 값(전역 **prefix**). bin 디렉터리가 아니므로 그대로 결합하지 말 것.
+  npmGlobalPrefix?: string | null;
   platform?: typeof getPlatform;
 };
 
@@ -94,7 +96,9 @@ const getWindowsExecutableNames = (name: string, env: NodeJS.ProcessEnv): string
   return [name, ...extensions.map((extension) => `${name}${extension}`)];
 };
 
-export const getNpmGlobalBinPath = (deps: ExecutableDeps = {}): string | null => {
+/// npm 전역 **prefix**를 돌려준다. bin 디렉터리가 아니다 — 그 둘을 같다고 본 것이
+/// POSIX 폴백이 조용히 죽어 있던 원인이었다. 실제 bin 경로는 `getNpmGlobalBinPaths`가 만든다.
+export const getNpmGlobalPrefix = (deps: ExecutableDeps = {}): string | null => {
   const run = deps.execFileSync ?? execFileSync;
 
   try {
@@ -102,6 +106,29 @@ export const getNpmGlobalBinPath = (deps: ExecutableDeps = {}): string | null =>
     return output.length > 0 ? output : null;
   } catch {
     return null;
+  }
+};
+
+/**
+ * npm 전역 prefix에서 실행 파일이 실제로 놓이는 디렉터리 후보.
+ *
+ * Windows는 prefix와 bin 디렉터리가 같지만, POSIX는 `<prefix>/bin`이다
+ * (2026-08-24 linux-dev 실측: `npm prefix -g` → `/home/justin/.local`,
+ * 실행 파일은 `/home/justin/.local/bin/*`). prefix를 그대로 bin으로 쓰던 기존 동작은
+ * 비표준 prefix 설정 환경에서 유효할 수 있으므로 후순위 후보로 남긴다.
+ */
+const getNpmGlobalBinPaths = (npmGlobalPrefix: string, os: NodeJS.Platform): string[] =>
+  os === 'win32' ? [npmGlobalPrefix] : [joinPath(os, npmGlobalPrefix, 'bin'), npmGlobalPrefix];
+
+const isExecutableFile = (path: string, deps: ExecutableDeps): boolean => {
+  if (deps.isFile) return deps.isFile(path);
+  // 기존 테스트·호출부의 가상 파일시스템 주입 계약을 유지한다.
+  if (deps.existsSync) return deps.existsSync(path);
+
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
   }
 };
 
@@ -120,19 +147,20 @@ const resolveFromPathLookup = (name: string, deps: ExecutableDeps): string | nul
 
 const resolveFromNpmGlobalBin = (name: string, deps: ExecutableDeps): string | null => {
   const os = (deps.platform ?? getPlatform)();
-  const fileExists = deps.existsSync ?? existsSync;
-  const npmGlobalBinPath = deps.npmGlobalBinPath !== undefined ? deps.npmGlobalBinPath : getNpmGlobalBinPath(deps);
+  const npmGlobalPrefix = deps.npmGlobalPrefix !== undefined ? deps.npmGlobalPrefix : getNpmGlobalPrefix(deps);
 
-  if (!npmGlobalBinPath) {
+  if (!npmGlobalPrefix) {
     return null;
   }
 
   const candidateNames = os === 'win32' ? getWindowsExecutableNames(name, deps.env ?? process.env) : [name];
 
-  for (const candidateName of candidateNames) {
-    const candidatePath = joinPath(os, npmGlobalBinPath, candidateName);
-    if (fileExists(candidatePath)) {
-      return candidatePath;
+  for (const binPath of getNpmGlobalBinPaths(npmGlobalPrefix, os)) {
+    for (const candidateName of candidateNames) {
+      const candidatePath = joinPath(os, binPath, candidateName);
+      if (isExecutableFile(candidatePath, deps)) {
+        return candidatePath;
+      }
     }
   }
 
@@ -174,6 +202,19 @@ const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>
     const macAppBundleBin = os === 'darwin' ? [joinPath(os, '/Applications', 'Kiro CLI.app', 'Contents', 'MacOS')] : [];
 
     return [...new Set([localBin, ...macAppBundleBin])];
+  },
+  // opencode 공식 설치 스크립트(https://opencode.ai/install)는 `INSTALL_DIR=$HOME/.opencode/bin`에
+  // 바이너리를 두고, PATH 보강은 `.bashrc`/`.zshrc`/`.profile` 같은 셸 rc 파일에만 추가한다.
+  // 러너는 비대화형 프로세스라 rc를 읽지 않으므로, 이 폴백이 없으면 정상 설치된 OpenCode가
+  // 탐지·실행 양쪽에서 통째로 누락된다(2026-08-24 linux-dev 실측, opencode 1.18.21).
+  // 공식 설치 스크립트는 bash 전용이라 Windows 네이티브 설치 경로를 정의하지 않는다.
+  // `kiro-cli`와 같은 판단으로, 실측 전까지 Windows에서는 추측 경로 없이 PATH/npm 탐색에만 의존한다.
+  opencode: (env, os) => {
+    if (os === 'win32' || !env.HOME) {
+      return [];
+    }
+
+    return [joinPath(os, env.HOME, '.opencode', 'bin')];
   },
   // Grok Build의 공식 설치기는 `$GROK_HOME/bin`(기본 `~/.grok/bin`)에 실행 파일을 두고
   // macOS/Linux에서는 `~/.local/bin`에도 링크를 만든다(2026-08-14 실측, grok 1.0.3).
@@ -220,13 +261,12 @@ const getKnownInstallBinPaths = (name: string, deps: ExecutableDeps): string[] =
 
 const resolveFromKnownInstallBin = (name: string, deps: ExecutableDeps): string | null => {
   const os = (deps.platform ?? getPlatform)();
-  const fileExists = deps.existsSync ?? existsSync;
   const candidateNames = os === 'win32' ? getWindowsExecutableNames(name, deps.env ?? process.env) : [name];
 
   for (const binPath of getKnownInstallBinPaths(name, deps)) {
     for (const candidateName of candidateNames) {
       const candidatePath = joinPath(os, binPath, candidateName);
-      if (fileExists(candidatePath)) {
+      if (isExecutableFile(candidatePath, deps)) {
         return candidatePath;
       }
     }
@@ -301,14 +341,13 @@ const resolveAllFromPathLookupAsync = async (name: string, deps: AsyncExecutable
 
 const resolveAllFromKnownInstallBin = (name: string, deps: ExecutableDeps): string[] => {
   const os = (deps.platform ?? getPlatform)();
-  const fileExists = deps.existsSync ?? existsSync;
   const candidateNames = os === 'win32' ? getWindowsExecutableNames(name, deps.env ?? process.env) : [name];
   const paths: string[] = [];
 
   for (const binPath of getKnownInstallBinPaths(name, deps)) {
     for (const candidateName of candidateNames) {
       const candidatePath = joinPath(os, binPath, candidateName);
-      if (fileExists(candidatePath)) paths.push(candidatePath);
+      if (isExecutableFile(candidatePath, deps)) paths.push(candidatePath);
     }
   }
 
@@ -351,7 +390,8 @@ export const resolveExecutablePathWithPreferenceAsync = async (
   return (await resolveExecutablePathsWithPreferenceAsync(name, preferredNames, deps))[0] ?? null;
 };
 
-export const getNpmGlobalBinPathAsync = async (deps: AsyncExecutableDeps = {}): Promise<string | null> => {
+/// `getNpmGlobalPrefix`의 비동기 짝. 마찬가지로 bin 디렉터리가 아니라 prefix를 돌려준다.
+export const getNpmGlobalPrefixAsync = async (deps: AsyncExecutableDeps = {}): Promise<string | null> => {
   const run = deps.execFileAsync ?? execFileAsync;
 
   try {

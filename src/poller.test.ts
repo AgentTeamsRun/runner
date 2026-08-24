@@ -147,6 +147,46 @@ test('startPolling enumerates only installed supported engines and respects the 
   await pollingPromise;
 });
 
+// 열거가 탐지·기동과 다른 실행 파일을 보면 RUNNER_CMD를 바꾼 환경에서 열거만 조용히 실패한다.
+test('startPolling enumerates OpenCode models with the configured runner command', async () => {
+  const timeouts = createTimeoutRecorder();
+  const enumeratedCommands: Array<string | undefined> = [];
+  let keepAliveResolve: (() => void) | null = null;
+
+  const pollingPromise = startPolling({ ...config, runnerCmd: 'custom-opencode' }, () => async () => undefined, {
+    createClient: () =>
+      makeClient({
+        reportDetectedEngines: async () => undefined,
+        reportDetectedModels: async () => undefined,
+      }),
+    probeInstalledEngines: async () => ({ engines: ['OPENCODE'], reliable: true }),
+    enumerateModels: async (_runnerType, _dependencies, opencodeCommand) => {
+      enumeratedCommands.push(opencodeCommand);
+      return { status: 'SUCCESS', values: [{ value: 'provider/model-a', label: 'provider/model-a' }] };
+    },
+    runCleanup: async () => undefined,
+    runConventionSync: async () => undefined,
+    setTimeout: timeouts.setTimeoutMock,
+    clearTimeout: timeouts.clearTimeoutMock,
+    processOn: (() => undefined) as (event: NodeJS.Signals, listener: () => void) => void,
+    now: () => 0,
+    keepAlive: () =>
+      new Promise<void>((resolve) => {
+        keepAliveResolve = resolve;
+      }),
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  timeouts.scheduled.at(-1)?.callback();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(enumeratedCommands, ['custom-opencode']);
+  (keepAliveResolve as unknown as () => void)();
+  await pollingPromise;
+});
+
 test('startPolling keeps polling when the model report fails', async () => {
   const warnings: string[] = [];
   mock.method(logger, 'warn', (message: string) => warnings.push(message));
