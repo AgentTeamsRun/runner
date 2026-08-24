@@ -241,6 +241,63 @@ test('resolveExecutablePath keeps the missing Kiro executable error when no inst
   );
 });
 
+// opencode 공식 설치 스크립트(https://opencode.ai/install)는 실행 파일을 $HOME/.opencode/bin에
+// 두고 PATH 보강은 .bashrc/.zshrc/.profile 같은 셸 rc에만 추가한다. 러너는 비대화형 프로세스라
+// rc를 읽지 않으므로, 알려진 설치 경로 폴백이 없으면 정상 설치도 미설치로 오판한다.
+// (2026-08-24 linux-dev 실측, opencode 1.18.21)
+test('resolveExecutablePath falls back to the OpenCode install bin outside Windows', () => {
+  const resolved = resolveExecutablePath('opencode', {
+    env: {
+      HOME: '/home/justin',
+    },
+    platform: () => 'linux',
+    execFileSync: (() => {
+      throw new Error('not found');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      path === '/home/justin/.opencode/bin/opencode') as typeof import('node:fs').existsSync,
+  });
+
+  assert.equal(resolved, '/home/justin/.opencode/bin/opencode');
+});
+
+test('resolveExecutablePath skips a same-name directory under the npm prefix', () => {
+  const resolved = resolveExecutablePath('opencode', {
+    env: { HOME: '/home/justin' },
+    platform: () => 'linux',
+    npmGlobalPrefix: '/home/justin',
+    execFileSync: (() => {
+      throw new Error('not found');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      path === '/home/justin/opencode' ||
+      path === '/home/justin/.opencode/bin/opencode') as typeof import('node:fs').existsSync,
+    isFile: (path) => path === '/home/justin/.opencode/bin/opencode',
+  });
+
+  assert.equal(resolved, '/home/justin/.opencode/bin/opencode');
+});
+
+test('resolveExecutablePath keeps the missing OpenCode executable error on Windows', () => {
+  // 공식 설치 스크립트는 bash 전용이라 Windows 설치 경로를 정의하지 않는다. 추측 경로를 넣지
+  // 않으므로 Windows에서는 알려진 폴백 없이 PATH/npm 탐색에만 의존해야 한다.
+  assert.throws(
+    () =>
+      resolveExecutablePath('opencode', {
+        env: {
+          PATHEXT: '.COM;.EXE;.BAT;.CMD',
+          USERPROFILE: 'C:\\Users\\justin',
+        },
+        platform: () => 'win32',
+        execFileSync: (() => {
+          throw new Error('not found');
+        }) as unknown as typeof import('node:child_process').execFileSync,
+        existsSync: (() => false) as typeof import('node:fs').existsSync,
+      }),
+    /Cannot find 'opencode' executable\. Checked PATH and npm global bin/u,
+  );
+});
+
 test('resolveExecutablePathWithPreference falls back to the Kiro install bin', () => {
   const resolved = resolveExecutablePathWithPreference('kiro-cli', ['kiro-cli'], {
     env: {
@@ -271,6 +328,53 @@ test('resolveExecutablePathWithPreference falls back to the Kimi install bin', (
   });
 
   assert.match(resolved, /^[/\\]Users[/\\]justin[/\\]\.kimi-code[/\\]bin[/\\]kimi$/u);
+});
+
+// `npm prefix -g`는 bin 디렉터리가 아니라 prefix를 돌려준다. POSIX에서 전역 실행 파일은
+// `<prefix>/bin`에 놓이므로, prefix를 그대로 bin으로 취급하면 npm 전역 폴백이 통째로 죽는다
+// (2026-08-24 linux-dev 실측: `npm prefix -g` → /home/justin/.local, 실행 파일은 /home/justin/.local/bin/*).
+test('resolveExecutablePath resolves npm global installs from <prefix>/bin outside Windows', () => {
+  // `amp`은 알려진 설치 경로 리졸버가 없어, npm 전역 폴백만 단독으로 검증할 수 있다.
+  const resolved = resolveExecutablePath('amp', {
+    env: {},
+    platform: () => 'linux',
+    execFileSync: ((command: string, args?: readonly string[]) => {
+      if (command === 'which') {
+        throw new Error('not found');
+      }
+
+      if (command === 'npm' && args?.[0] === 'prefix') {
+        return '/home/justin/.local\n';
+      }
+
+      throw new Error(`unexpected command: ${command}`);
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) => path === '/home/justin/.local/bin/amp') as typeof import('node:fs').existsSync,
+  });
+
+  assert.equal(resolved, '/home/justin/.local/bin/amp');
+});
+
+// 비표준 prefix 설정(실행 파일이 prefix 바로 아래 놓이는 환경)의 회귀를 만들지 않는다.
+test('resolveExecutablePath still resolves npm global installs directly under the prefix', () => {
+  const resolved = resolveExecutablePath('amp', {
+    env: {},
+    platform: () => 'linux',
+    execFileSync: ((command: string, args?: readonly string[]) => {
+      if (command === 'which') {
+        throw new Error('not found');
+      }
+
+      if (command === 'npm' && args?.[0] === 'prefix') {
+        return '/opt/npm-global\n';
+      }
+
+      throw new Error(`unexpected command: ${command}`);
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) => path === '/opt/npm-global/amp') as typeof import('node:fs').existsSync,
+  });
+
+  assert.equal(resolved, '/opt/npm-global/amp');
 });
 
 test('resolveExecutablePath prefers PATH lookup results', () => {
@@ -427,7 +531,7 @@ test('resolveExecutablePathsWithPreferenceAsync keeps every Grok candidate in pr
   const resolved = await resolveExecutablePathsWithPreferenceAsync('grok', ['grok'], {
     env: { HOME: '/Users/justin' },
     platform: () => 'darwin',
-    npmGlobalBinPath: null,
+    npmGlobalPrefix: null,
     execFileAsync: (async () => ({
       stdout: '/usr/local/bin/grok\n/opt/homebrew/bin/grok\n',
       stderr: '',

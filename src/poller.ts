@@ -269,7 +269,8 @@ export const startPolling = async (
       }> = [];
 
       for (const runnerType of enumerableEngines) {
-        const result = await enumerateRunnerModels(runnerType);
+        // 탐지·기동과 같은 실행 파일 이름을 봐야 RUNNER_CMD 오버라이드 환경에서 열거만 실패하지 않는다.
+        const result = await enumerateRunnerModels(runnerType, {}, config.runnerCmd);
         if (result.status !== 'SUCCESS') {
           logger.warn('Skipped model detection report for runner', {
             runnerType,

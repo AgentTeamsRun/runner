@@ -4,8 +4,7 @@ import type { RunnerType } from '@agentteams/core-constants';
 import { buildPowerShellCommand, resolveExecutablePathWithPreference } from '../executable.js';
 import { sanitizeAntigravityInternalLogLine } from '../runners/antigravity.js';
 import { RUNNER_CAPABILITIES } from '../runners/capabilities.js';
-import { getGrokExecutablePreference } from '../runners/grok-build.js';
-import { getKiroExecutablePreference } from '../runners/kiro-cli.js';
+import { getEngineCommand, getEngineExecutablePreference } from '../runners/engine-commands.js';
 
 const RESERVED_MODEL_PREFIX = '__fast__:';
 const ENUMERATION_TIMEOUT_MS = 30_000;
@@ -312,9 +311,16 @@ const commandFailure = (error: unknown): ModelEnumerationResult => ({
   message: error instanceof Error ? error.message : String(error),
 });
 
+/// OPENCODE 실행 파일 이름의 기본값. `config.ts`의 `DEFAULT_RUNNER_CMD`와 같은 값이며,
+/// 인자를 주지 않는 기존 호출부의 동작을 유지하기 위한 폴백이다.
+const DEFAULT_OPENCODE_COMMAND = 'opencode';
+
 export const enumerateModels = async (
   runnerType: RunnerType,
   dependencies: Partial<ModelEnumeratorDependencies> = {},
+  /// OPENCODE 실행 파일 이름(`config.runnerCmd`). 엔진 탐지·러너 기동과 같은 이름을 봐야
+  /// RUNNER_CMD를 바꾼 환경에서 "탐지는 되는데 열거만 실패하는" 어긋남이 생기지 않는다.
+  opencodeCommand: string = DEFAULT_OPENCODE_COMMAND,
 ): Promise<ModelEnumerationResult> => {
   if (!RUNNER_CAPABILITIES[runnerType].modelEnumeration) {
     return { status: 'UNSUPPORTED' };
@@ -324,13 +330,18 @@ export const enumerateModels = async (
   const isWindows = deps.platform() === 'win32';
 
   try {
+    const resolveEngineExecutable = (type: RunnerType): string => {
+      const command = getEngineCommand(type, opencodeCommand);
+      return deps.resolveExecutable(command, getEngineExecutablePreference(type, opencodeCommand, isWindows));
+    };
+
     switch (runnerType) {
       case 'KIRO_CLI': {
-        const executable = deps.resolveExecutable('kiro-cli', getKiroExecutablePreference(isWindows));
+        const executable = resolveEngineExecutable(runnerType);
         return parseKiroModels((await deps.execute(executable, ['chat', '--list-models', '--format', 'json'])).stdout);
       }
       case 'OPENCODE': {
-        const executable = deps.resolveExecutable('opencode', isWindows ? ['opencode.cmd', 'opencode'] : ['opencode']);
+        const executable = resolveEngineExecutable(runnerType);
         try {
           const verbose = parseOpenCodeVerboseModels((await deps.execute(executable, ['models', '--verbose'])).stdout);
           if (verbose.status === 'SUCCESS') return verbose;
@@ -344,15 +355,15 @@ export const enumerateModels = async (
         }
       }
       case 'ANTIGRAVITY': {
-        const executable = deps.resolveExecutable('agy', isWindows ? ['agy.cmd', 'agy'] : ['agy']);
+        const executable = resolveEngineExecutable(runnerType);
         return parseLineModels((await deps.execute(executable, ['models'])).stdout, 'tab');
       }
       case 'CURSOR_CLI': {
-        const executable = deps.resolveExecutable('agent', isWindows ? ['agent.cmd', 'agent'] : ['agent']);
+        const executable = resolveEngineExecutable(runnerType);
         return parseCursorModels((await deps.execute(executable, ['models'])).stdout);
       }
       case 'GROK_BUILD': {
-        const executable = deps.resolveExecutable('grok', getGrokExecutablePreference(isWindows));
+        const executable = resolveEngineExecutable(runnerType);
         return parseGrokModels((await deps.execute(executable, ['models'])).stdout);
       }
       default:

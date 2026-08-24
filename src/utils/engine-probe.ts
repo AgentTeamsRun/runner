@@ -1,6 +1,6 @@
 import type { RunnerType } from '@agentteams/core-constants';
 import {
-  getNpmGlobalBinPathAsync,
+  getNpmGlobalPrefixAsync,
   isExecutableLookupAvailable,
   resolveExecutablePathWithPreferenceAsync,
   resolveExecutablePathsWithPreferenceAsync,
@@ -11,7 +11,7 @@ import { ENGINE_COMMANDS, getEngineCommand, getEngineExecutablePreference } from
 import { findGrokBuildExecutable } from '../runners/grok-build-identity.js';
 
 type EngineProbeDependencies = AsyncExecutableDeps & {
-  getNpmGlobalBinPathAsync?: typeof getNpmGlobalBinPathAsync;
+  getNpmGlobalPrefixAsync?: typeof getNpmGlobalPrefixAsync;
   resolveExecutablePathWithPreferenceAsync?: typeof resolveExecutablePathWithPreferenceAsync;
   resolveExecutablePathsWithPreferenceAsync?: typeof resolveExecutablePathsWithPreferenceAsync;
   isExecutableLookupAvailable?: typeof isExecutableLookupAvailable;
@@ -39,14 +39,14 @@ export const probeInstalledEngines = async (
   deps: EngineProbeDependencies = {},
 ): Promise<EngineProbeResult> => {
   const resolve = deps.resolveExecutablePathWithPreferenceAsync ?? resolveExecutablePathWithPreferenceAsync;
-  const resolveNpmGlobalBin = deps.getNpmGlobalBinPathAsync ?? getNpmGlobalBinPathAsync;
+  const resolveNpmGlobalPrefix = deps.getNpmGlobalPrefixAsync ?? getNpmGlobalPrefixAsync;
   const checkLookupAvailable = deps.isExecutableLookupAvailable ?? isExecutableLookupAvailable;
   const runCommand = deps.runProbeCommand ?? runProbeCommand;
   const isWindows = (deps.platform ?? (() => process.platform))() === 'win32';
   const executableDeps: AsyncExecutableDeps = {
     ...deps,
     // 미설치 엔진마다 `npm prefix -g`를 반복하지 않도록 프로브 사이클에서 한 번만 계산한다.
-    npmGlobalBinPath: await resolveNpmGlobalBin(deps),
+    npmGlobalPrefix: await resolveNpmGlobalPrefix(deps),
   };
   const engines: RunnerType[] = [];
 
