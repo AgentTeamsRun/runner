@@ -9,6 +9,7 @@ import {
 } from '../executable.js';
 import { ENGINE_COMMANDS, getEngineCommand, getEngineExecutablePreference } from '../runners/engine-commands.js';
 import { findGrokBuildExecutable } from '../runners/grok-build-identity.js';
+import { findOmpExecutable } from '../runners/omp-identity.js';
 
 type EngineProbeDependencies = AsyncExecutableDeps & {
   getNpmGlobalPrefixAsync?: typeof getNpmGlobalPrefixAsync;
@@ -51,9 +52,9 @@ export const probeInstalledEngines = async (
   const engines: RunnerType[] = [];
 
   for (const runnerType of Object.keys(ENGINE_COMMANDS) as RunnerType[]) {
-    if (runnerType === 'GROK_BUILD') {
+    if (runnerType === 'GROK_BUILD' || runnerType === 'OMP') {
       const preferredNames = getEngineExecutablePreference(runnerType, runnerCmd, isWindows);
-      const grokDependencies =
+      const identityDependencies =
         deps.resolveExecutablePathWithPreferenceAsync && !deps.resolveExecutablePathsWithPreferenceAsync
           ? {
               ...executableDeps,
@@ -64,7 +65,11 @@ export const probeInstalledEngines = async (
               },
             }
           : { ...executableDeps, runProbeCommand: runCommand };
-      if (await findGrokBuildExecutable(preferredNames, grokDependencies)) engines.push(runnerType);
+      const found =
+        runnerType === 'GROK_BUILD'
+          ? await findGrokBuildExecutable(preferredNames, identityDependencies)
+          : await findOmpExecutable(preferredNames, identityDependencies);
+      if (found) engines.push(runnerType);
       continue;
     }
 

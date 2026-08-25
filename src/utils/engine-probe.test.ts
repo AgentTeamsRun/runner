@@ -121,6 +121,19 @@ describe('probeInstalledEngines', () => {
     assert.deepEqual(result.engines, ['GROK_BUILD']);
   });
 
+  it('accepts omp only when the executable identifies itself as Oh My Pi', async () => {
+    const probe = (helpText: string | null) =>
+      probeInstalledEngines('opencode', {
+        getNpmGlobalPrefixAsync: async () => null,
+        runProbeCommand: async () => helpText,
+        resolveExecutablePathWithPreferenceAsync: async (name) => (name === 'omp' ? '/bin/omp' : null),
+      });
+
+    assert.deepEqual((await probe('omp v18.0.4\nOh My Pi as an ACP')).engines, ['OMP']);
+    assert.deepEqual((await probe('omp 1.0.0\nnew ')).engines, []);
+    assert.deepEqual((await probe(null)).engines, []);
+  });
+
   // 빈 목록은 서버에서 "제한 없음"으로 해석되므로, 조회 자체가 불가능한 환경은 보고 대상에서 빼야 한다.
   it('marks a zero-engine result unreliable when the lookup command cannot run', async () => {
     const result = await probeInstalledEngines('opencode', {

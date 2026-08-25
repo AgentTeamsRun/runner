@@ -74,6 +74,15 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // subAgentDelegation은 `spawn_subagent`로 위임하고 `get_command_or_subagent_output`
   // (task_ids + timeout_ms)으로 결과를 별도 회수하는 흐름이 헤드리스 실행에서 동작함을 실측했다.
   GROK_BUILD: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: true },
+  // omp/18.0.4 (2026-08-25 실측). `--model`은 무효 값도 exit 1로 거부한다.
+  // modelEnumeration은 `omp models --json`이 기계 파싱 가능한 카탈로그를 내보내 true다.
+  // 단 카탈로그는 **공급자 자격 증명이 하나라도 있을 때만** 나온다. 키가 전혀 없으면
+  // `{ "models": [] }`이고, `OPENROUTER_API_KEY`에 임의 문자열만 넣어도 openrouter
+  // 공개 카탈로그 470건이 나온다(키 유효성은 검증하지 않는다). 즉 목록에 있다고 실제
+  // 호출이 되는 것은 아니고, 실행 가능 여부는 트리거가 실패해야 드러난다.
+  // AgentTeams fastMode/Effort에 대응하는 플래그는 없다(`--effort`는 unknown flag).
+  // `task` 위임은 헤드리스에서 호출/회수 분리를 실증하지 못해 false.
+  OMP: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
 };
 
 const DEFAULT_CAPABILITIES: RunnerCapabilities = {

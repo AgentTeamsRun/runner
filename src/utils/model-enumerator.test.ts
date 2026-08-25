@@ -13,6 +13,7 @@ import {
   parseCursorModels,
   parseGrokModels,
   parseKiroModels,
+  parseOmpModels,
   parseLineModels,
   parseOpenCodeVerboseModels,
   sanitizeErrorOutput,
@@ -32,6 +33,52 @@ describe('model enumerator parsers', () => {
         { value: 'opencode/deepseek-v4-flash-free', label: 'DeepSeek V4 Flash Free' },
       ],
     });
+  });
+
+  // 픽스처는 `omp models --json` 실출력에서 잘라 온 것이다(2026-08-25, omp/18.0.4).
+  // provider 한정 selector, `~` 접두 id, `auto` 라우팅 sentinel, 그리고 공급자 3곳이
+  // 같은 id(`openai/gpt-oss-120b`)를 쓰는 실제 충돌 케이스를 모두 담고 있다.
+  test('parses omp models from real catalog output, keying on the provider-qualified selector', async () => {
+    assert.deepEqual(parseOmpModels(await fixture('omp-models.json')), {
+      status: 'SUCCESS',
+      values: [
+        {
+          value: 'openrouter/~anthropic/claude-fable-latest',
+          label: 'Claude Fable Latest (openrouter)',
+          maxInputTokens: 1000000,
+        },
+        { value: 'groq/openai/gpt-oss-120b', label: 'GPT OSS 120B (groq)', maxInputTokens: 131072 },
+        { value: 'openrouter/openai/gpt-oss-120b', label: 'gpt-oss-120b (openrouter)', maxInputTokens: 131072 },
+        { value: 'together/openai/gpt-oss-120b', label: 'GPT OSS 120B (together)', maxInputTokens: 131072 },
+        { value: 'openai/gpt-4o', label: 'GPT-4o (openai)', maxInputTokens: 128000 },
+      ],
+    });
+  });
+
+  test('parses omp JSON model metadata and ignores an empty available list', () => {
+    // 공급자 키가 하나도 없으면 omp는 `{"models":[]}`를 낸다. 파싱은 됐지만 값이 0건이므로
+    // EMPTY_OUTPUT이 아니라 FORMAT_MISMATCH다(빈 stdout과 구분된다).
+    assert.deepEqual(parseOmpModels('{"models":[]}'), { status: 'FORMAT_MISMATCH' });
+    // selector가 없는 항목은 id로 폴백하고, provider가 없으면 label에 접미사를 붙이지 않는다.
+    assert.deepEqual(
+      parseOmpModels(
+        JSON.stringify({
+          models: [
+            { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', contextWindow: 200000 },
+            { id: 'local-model' },
+          ],
+        }),
+      ),
+      {
+        status: 'SUCCESS',
+        values: [
+          { value: 'anthropic/claude-sonnet-4', label: 'Claude Sonnet 4', maxInputTokens: 200000 },
+          { value: 'local-model', label: 'local-model' },
+        ],
+      },
+    );
+    assert.deepEqual(parseOmpModels('not-json'), { status: 'FORMAT_MISMATCH' });
+    assert.deepEqual(parseOmpModels(''), { status: 'EMPTY_OUTPUT' });
   });
 
   test('parses Kiro model metadata', async () => {
@@ -203,6 +250,26 @@ describe('enumerateModels', () => {
     );
     assert.deepEqual(result, { status: 'UNSUPPORTED' });
     assert.equal(called, false);
+  });
+
+  test('enumerates OMP models from JSON output', async () => {
+    const calls: string[][] = [];
+    const result = await enumerateModels(
+      'OMP',
+      dependencies(async (_executable, args) => {
+        calls.push(args);
+        return {
+          stdout: JSON.stringify({
+            models: [{ id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', contextWindow: 200000 }],
+          }),
+        };
+      }),
+    );
+    assert.deepEqual(calls, [['models', '--json']]);
+    assert.deepEqual(result, {
+      status: 'SUCCESS',
+      values: [{ value: 'anthropic/claude-sonnet-4', label: 'Claude Sonnet 4', maxInputTokens: 200000 }],
+    });
   });
 
   test('enumerates ANTIGRAVITY models with tab parser', async () => {
