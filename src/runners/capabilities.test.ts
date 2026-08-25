@@ -20,6 +20,7 @@ test('only claude-code and codex support fastMode', () => {
   assert.equal(RUNNER_CAPABILITIES.KIMI_CLI.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.KIRO_CLI.fastMode, false);
   assert.equal(RUNNER_CAPABILITIES.GROK_BUILD.fastMode, false);
+  assert.equal(RUNNER_CAPABILITIES.OMP.fastMode, false);
   assert.equal(runnerSupportsFastMode('CODEX'), true);
   assert.equal(runnerSupportsFastMode('OPENCODE'), false);
 });
@@ -34,7 +35,7 @@ test('only OpenCode, Antigravity, Cursor CLI, Kiro CLI, and Grok Build support m
     .filter(([, capabilities]) => capabilities.modelEnumeration)
     .map(([runnerType]) => runnerType);
 
-  assert.deepEqual(supported, ['OPENCODE', 'ANTIGRAVITY', 'CURSOR_CLI', 'KIRO_CLI', 'GROK_BUILD']);
+  assert.deepEqual(supported, ['OPENCODE', 'ANTIGRAVITY', 'CURSOR_CLI', 'KIRO_CLI', 'GROK_BUILD', 'OMP']);
 });
 
 test('Copilot CLI supports model selection but not fast mode or sub-agent delegation', () => {
@@ -159,7 +160,16 @@ test('only claude-code and codex support effort', () => {
 });
 
 test('describeUnsupportedRunnerOptions flags effort ignored for unsupported runners', () => {
-  for (const runnerType of ['OPENCODE', 'ANTIGRAVITY', 'AMP', 'COPILOT_CLI', 'CURSOR_CLI', 'KIMI_CLI', 'KIRO_CLI']) {
+  for (const runnerType of [
+    'OPENCODE',
+    'ANTIGRAVITY',
+    'AMP',
+    'COPILOT_CLI',
+    'CURSOR_CLI',
+    'KIMI_CLI',
+    'KIRO_CLI',
+    'OMP',
+  ]) {
     const warnings = describeUnsupportedRunnerOptions(runnerType, { model: null, fastMode: false, effort: 'high' });
     assert.equal(warnings.length, 1, `${runnerType} should warn once`);
     assert.equal(warnings[0]?.option, 'effort');

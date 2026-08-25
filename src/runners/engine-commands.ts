@@ -2,6 +2,7 @@ import type { RunnerType } from '@agentteams/core-constants';
 import { getGrokExecutablePreference } from './grok-build.js';
 import { getKimiExecutablePreference } from './kimi-cli.js';
 import { getKiroExecutablePreference } from './kiro-cli.js';
+import { getOmpExecutablePreference } from './omp.js';
 
 export type EngineCommand = string | ((runnerCmd: string) => string);
 
@@ -33,6 +34,9 @@ export const ENGINE_COMMANDS: Record<RunnerType, EngineDefinition> = {
   // `grok`은 무관한 npm 패키지(@vibe-kit/grok-cli)도 쓰는 이름이라, 해석 우선순위
   // (executable.ts의 PATH_LAST_ENGINE_COMMANDS)와 engine-probe의 신원 확인이 함께 붙는다.
   GROK_BUILD: { command: 'grok', preference: (_command, isWindows) => getGrokExecutablePreference(isWindows) },
+  // `omp`는 무관한 npm 패키지(omp@1.0.0, 2019)도 쓰는 이름이라, 해석 우선순위
+  // (KNOWN_INSTALL_BIN_FIRST)와 engine-probe의 신원 확인이 함께 붙는다.
+  OMP: { command: 'omp', preference: (_command, isWindows) => getOmpExecutablePreference(isWindows) },
 };
 
 export const getEngineCommand = (runnerType: RunnerType, runnerCmd: string): string => {

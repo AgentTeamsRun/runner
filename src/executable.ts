@@ -231,6 +231,20 @@ const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>
 
     return [...new Set([...configuredHomePaths, defaultHomeBin, ...userLocalBin])];
   },
+  // omp 공식 바이너리 설치(`scripts/install.sh --binary`)는 `$PI_INSTALL_DIR`(기본
+  // `~/.local/bin`)에 둔다(2026-08-24 실측, omp/18.0.4, macOS arm64).
+  // Windows는 install.ps1 문서값 `%LOCALAPPDATA%\omp`이며 이 환경에서 실측하지 못했다.
+  omp: (env, os) => {
+    const configuredInstallDir = env.PI_INSTALL_DIR ? [env.PI_INSTALL_DIR] : [];
+    if (os === 'win32') {
+      const localAppData = env.LOCALAPPDATA;
+      return [...new Set([...configuredInstallDir, ...(localAppData ? [joinPath(os, localAppData, 'omp')] : [])])];
+    }
+
+    const userHome = env.HOME;
+    const userLocalBin = userHome ? [joinPath(os, userHome, '.local', 'bin')] : [];
+    return [...new Set([...configuredInstallDir, ...userLocalBin])];
+  },
 };
 
 /**
@@ -245,7 +259,7 @@ const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>
  * 이름이 겹칠 뿐 공식 설치본이 없는 환경에서는 알려진 경로 탐색이 그냥 실패하고
  * 기존 순서대로 PATH로 넘어가므로, 서드파티만 있는 환경의 동작도 바뀌지 않는다.
  */
-const KNOWN_INSTALL_BIN_FIRST_COMMANDS: ReadonlySet<string> = new Set(['grok']);
+const KNOWN_INSTALL_BIN_FIRST_COMMANDS: ReadonlySet<string> = new Set(['grok', 'omp']);
 
 const prefersKnownInstallBin = (name: string): boolean =>
   KNOWN_INSTALL_BIN_FIRST_COMMANDS.has(getWindowsCommandBaseName(name));

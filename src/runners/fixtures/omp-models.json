@@ -1,0 +1,106 @@
+{
+  "models": [
+    {
+      "provider": "openrouter",
+      "id": "~anthropic/claude-fable-latest",
+      "selector": "openrouter/~anthropic/claude-fable-latest",
+      "name": "Claude Fable Latest",
+      "contextWindow": 1000000,
+      "maxTokens": 128000,
+      "reasoning": true,
+      "thinking": ["low", "medium", "high", "xhigh", "max"],
+      "input": ["text", "image"],
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cacheRead": 1,
+        "cacheWrite": 12.5
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "auto",
+      "selector": "openrouter/auto",
+      "name": "Auto",
+      "contextWindow": 2000000,
+      "maxTokens": 30000,
+      "reasoning": true,
+      "thinking": ["minimal", "low", "medium", "high"],
+      "input": ["text", "image"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "provider": "groq",
+      "id": "openai/gpt-oss-120b",
+      "selector": "groq/openai/gpt-oss-120b",
+      "name": "GPT OSS 120B",
+      "contextWindow": 131072,
+      "maxTokens": 65536,
+      "reasoning": true,
+      "thinking": ["low", "medium", "high"],
+      "input": ["text"],
+      "cost": {
+        "input": 0.15,
+        "output": 0.6,
+        "cacheRead": 0.075,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "provider": "openrouter",
+      "id": "openai/gpt-oss-120b",
+      "selector": "openrouter/openai/gpt-oss-120b",
+      "name": "gpt-oss-120b",
+      "contextWindow": 131072,
+      "maxTokens": 131072,
+      "reasoning": true,
+      "thinking": ["low", "medium", "high"],
+      "input": ["text"],
+      "cost": {
+        "input": 0.037,
+        "output": 0.16999999999999998,
+        "cacheRead": 0.03,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "provider": "together",
+      "id": "openai/gpt-oss-120b",
+      "selector": "together/openai/gpt-oss-120b",
+      "name": "GPT OSS 120B",
+      "contextWindow": 131072,
+      "maxTokens": 131072,
+      "reasoning": true,
+      "thinking": ["low", "medium", "high"],
+      "input": ["text"],
+      "cost": {
+        "input": 0.15,
+        "output": 0.6,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-4o",
+      "selector": "openai/gpt-4o",
+      "name": "GPT-4o",
+      "contextWindow": 128000,
+      "maxTokens": 16384,
+      "reasoning": false,
+      "thinking": null,
+      "input": ["text", "image"],
+      "cost": {
+        "input": 2.5,
+        "output": 10,
+        "cacheRead": 1.25,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}

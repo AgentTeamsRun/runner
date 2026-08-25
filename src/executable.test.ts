@@ -478,6 +478,22 @@ test('resolveExecutablePath prefers the Grok install bin over a third-party grok
   assert.equal(resolved, '/Users/justin/.grok/bin/grok');
 });
 
+test('resolveExecutablePath prefers the omp install bin over a third-party omp on PATH', () => {
+  const resolved = resolveExecutablePath('omp', {
+    env: {
+      HOME: '/Users/justin',
+    },
+    platform: () => 'darwin',
+    execFileSync: (() =>
+      '/Users/justin/.nvm/versions/node/v24.16.0/bin/omp\n') as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      path === '/Users/justin/.local/bin/omp' ||
+      path === '/Users/justin/.nvm/versions/node/v24.16.0/bin/omp') as typeof import('node:fs').existsSync,
+  });
+
+  assert.equal(resolved, '/Users/justin/.local/bin/omp');
+});
+
 test('resolveExecutablePath honours GROK_HOME ahead of the default ~/.grok/bin', () => {
   const resolved = resolveExecutablePath('grok', {
     env: {

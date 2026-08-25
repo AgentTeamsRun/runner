@@ -12,6 +12,7 @@
 | **Kimi CLI**    | `kimi`     | 없음 (`-p`의 auto 정책)               | 일반 tool 호출 자동 승인, 별도 우회 플래그 없음 |
 | **Kiro CLI**    | `kiro-cli` | `--trust-all-tools`                   | 전체 스킵                                       |
 | **Grok Build**  | `grok`     | `--permission-mode bypassPermissions` | 전체 스킵                                       |
+| **Oh My Pi**    | `omp`      | `--auto-approve --approval-mode yolo` | 전체 스킵                                       |
 
 Cursor CLI의 `--force`는 비대화형 실행 중 파일 변경과 셸 명령을 자동 승인합니다. 신뢰할 수 있는 workspace에서만 사용하고, 가능하면 RunnerBox 또는 worktree로 실행 범위를 격리합니다. Cursor 로그인 세션과 `CURSOR_API_KEY`는 Cursor가 관리하며 AgentTeams는 인증 값이나 `.cursor` 설정을 생성·변경하지 않습니다.
 
@@ -25,6 +26,10 @@ Grok Build는 `grok --prompt-file <PATH> --cwd <PATH> --output-format streaming-
 
 **AgentTeams는 Grok 인증 정보나 설정 파일을 생성·주입하지 않습니다.** Grok 로그인 세션은 Grok이 관리하며, 러너는 사용자가 이미 로그인한 세션(`~/.grok/auth.json`)을 그대로 사용합니다. `XAI_API_KEY`나 `~/.grok/**` 설정을 러너가 만들거나 수정하지 않습니다. 예외는 `agentteams` CLI의 MCP 등록(`grok mcp add`)뿐이며, 그 명령이 쓰는 설정 파일에 한정됩니다.
 
+Oh My Pi는 `omp -p --no-session --auto-approve --approval-mode yolo --cwd <PATH> @<promptFile> [--model <MODEL>]`로 실행합니다(2026-08-24 실측, omp/18.0.4). `--auto-approve`와 `--approval-mode yolo`는 모델이 확인 절차 없이 모든 도구를 실행하도록 허용하므로 Claude Code의 `--dangerously-skip-permissions`와 같은 등급의 권한 우회입니다. 신뢰할 수 있는 workspace에서만 사용하고, 가능하면 RunnerBox 또는 worktree로 실행 범위를 격리합니다. 프롬프트를 `@file`로 넘기는 이유는, `-`로 시작하는 위치 인자를 clap이 플래그로 오인해 `Error: unknown flag`와 함께 exit 2로 종료하기 때문입니다. `--mode json`은 성공 스키마를 실측하지 못해 켜지 않으며, 로그는 ANSI만 제거합니다.
+
+**AgentTeams는 Oh My Pi 인증 정보나 설정 파일을 생성·주입하지 않습니다.** omp 로그인 세션은 omp가 관리하며, 러너는 사용자가 이미 구성한 자격 증명(`ANTHROPIC_API_KEY` 등 또는 `~/.omp/agent`)을 그대로 사용합니다. 예외는 `agentteams` CLI의 MCP 등록(`~/.omp/agent/mcp.json` jsonMerge)뿐이며, 그 파일이 쓰는 설정에 한정됩니다.
+
 **AgentTeams는 Kiro 인증 정보나 설정 파일을 생성·주입하지 않습니다.** Kiro 로그인 세션은 Kiro가 관리하며, 러너는 사용자가 이미 로그인한 세션을 그대로 사용합니다(2026-08-08 실측: `KIRO_API_KEY` 없이 `--no-interactive` 실행이 정상 동작). `KIRO_API_KEY`, `~/.kiro/**` 설정, `.kiro/agents/*.json`, `.kiro/steering/*.md`를 러너가 만들거나 수정하지 않습니다.
 
 ## 워크트리 설정 (`healWorktreeConfig`)
@@ -35,16 +40,17 @@ Grok Build는 `grok --prompt-file <PATH> --cwd <PATH> --output-format streaming-
 
 ## 에이전트별 로그 수집 방식
 
-| Runner          | stdout 포맷                                                         | 파싱                                                     | 로그 수집 방식                                                                               |
-| --------------- | ------------------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **Claude Code** | stream-json (`--output-format stream-json`)                         | `createStreamJsonLineParser` → 구조화된 로그             | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록                               |
-| **AMP**         | stream-json (`--stream-json-thinking`)                              | `createStreamJsonLineParser` → 구조화된 로그             | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록                               |
-| **Codex**       | plain text                                                          | 없음 (raw output 그대로)                                 | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록                                        |
-| **OpenCode**    | plain text                                                          | 없음 (raw output 그대로)                                 | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록                                        |
-| **Cursor CLI**  | stream-json (`--output-format stream-json --stream-partial-output`) | `createCursorStreamJsonLineParser` → bounded 구조화 로그 | assistant delta를 병합하고 안전한 tool 상태만 `onStdoutChunk`로 전달, raw를 logStream에 기록 |
-| **Kimi CLI**    | plain text (`-p`)                                                   | 없음                                                     | raw stdout/stderr를 `onStdoutChunk`로 전달, logStream에 기록                                 |
-| **Kiro CLI**    | plain text (`chat --no-interactive`)                                | 없음 (ANSI 이스케이프만 제거)                            | ANSI를 벗긴 stdout를 `onStdoutChunk`로 전달, raw를 logStream에 기록. stderr는 진행 로그 취급 |
-| **Grok Build**  | stream-json (`--output-format streaming-messages-json`)             | `createStreamJsonLineParser` → 구조화된 로그             | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록                               |
+| Runner          | stdout 포맷                                                         | 파싱                                                     | 로그 수집 방식                                                                                    |
+| --------------- | ------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| **Claude Code** | stream-json (`--output-format stream-json`)                         | `createStreamJsonLineParser` → 구조화된 로그             | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록                                    |
+| **AMP**         | stream-json (`--stream-json-thinking`)                              | `createStreamJsonLineParser` → 구조화된 로그             | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록                                    |
+| **Codex**       | plain text                                                          | 없음 (raw output 그대로)                                 | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록                                             |
+| **OpenCode**    | plain text                                                          | 없음 (raw output 그대로)                                 | raw stdout를 `onStdoutChunk`로 전달, logStream에 기록                                             |
+| **Cursor CLI**  | stream-json (`--output-format stream-json --stream-partial-output`) | `createCursorStreamJsonLineParser` → bounded 구조화 로그 | assistant delta를 병합하고 안전한 tool 상태만 `onStdoutChunk`로 전달, raw를 logStream에 기록      |
+| **Kimi CLI**    | plain text (`-p`)                                                   | 없음                                                     | raw stdout/stderr를 `onStdoutChunk`로 전달, logStream에 기록                                      |
+| **Kiro CLI**    | plain text (`chat --no-interactive`)                                | 없음 (ANSI 이스케이프만 제거)                            | ANSI를 벗긴 stdout를 `onStdoutChunk`로 전달, raw를 logStream에 기록. stderr는 진행 로그 취급      |
+| **Grok Build**  | stream-json (`--output-format streaming-messages-json`)             | `createStreamJsonLineParser` → 구조화된 로그             | 파싱된 메시지를 `onStdoutChunk`로 전달, raw를 logStream에 기록                                    |
+| **Oh My Pi**    | plain text (`-p`)                                                   | 없음 (ANSI 이스케이프만 제거)                            | ANSI를 벗긴 stdout를 `onStdoutChunk`로 전달, raw를 logStream에 기록. stderr Node 경고는 진행 로그 |
 
 ### stream-json 파서 (`stream-json-parser.ts`)
 
