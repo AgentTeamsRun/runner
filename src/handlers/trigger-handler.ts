@@ -70,6 +70,31 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const pathExists = dependencies.pathExists ?? existsSync;
   const resolveRealpath = dependencies.realpath ?? realpathSync;
   const resolveOrigin = dependencies.resolveRepositoryOrigin ?? resolveRepositoryOrigin;
+
+  /// 메인 체크아웃 경로를 canonical 형태로 해석해 그 해시를 서버에 보고한다(best-effort).
+  /// realpath 실패(경로 부재 등)는 보고 자체를 건너뛴다 — 정규화되지 않은 경로의 해시를 보내면
+  /// 같은 폴더가 두 개의 서로 다른 키를 갖게 되어 두 실행이 한 폴더에 겹칠 수 있다.
+  const reportCheckoutIdentity = async (agentConfigId: string, authPath: string): Promise<void> => {
+    let canonicalPath: string;
+    try {
+      canonicalPath = resolveRealpath(authPath);
+    } catch (error) {
+      logger.warn('Skipped checkout identity report: could not canonicalize authPath', {
+        agentConfigId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    try {
+      await client.reportCheckout?.(agentConfigId, computeLocalKey(canonicalPath));
+    } catch (error) {
+      logger.warn('Failed to report checkout identity', {
+        agentConfigId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
   const createLogReporter =
     dependencies.createLogReporter ??
     ((apiClient: DaemonApiClient, triggerId: string): ReporterLike => new TriggerLogReporter(apiClient, triggerId));
@@ -356,6 +381,17 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       if (runtime.authPath && onAuthPathDiscovered) {
         onAuthPathDiscovered(runtime.authPath);
+      }
+
+      // 이 러너에서 이 AgentConfig의 메인 체크아웃이 실제로 어느 폴더인지 서버에 알린다.
+      // 서버는 러너 파일시스템을 볼 수 없어 authPath 문자열만으로는 심링크·대소문자 별칭을 풀 수 없고,
+      // 그 판별 실패는 "같은 폴더를 다른 폴더로 오판"(두 실행이 겹치는 방향)이라 실행 직렬화를
+      // 과잉으로 유지할 수밖에 없다. canonical 경로의 해시만 보내고 절대 경로는 보내지 않는다.
+      //
+      // 워크트리 실행에서도 authPath는 메인 체크아웃 경로 그대로이므로 함께 보고한다.
+      // 실패해도 실행을 막지 않는다 — 서버는 미보고를 "모름 = 직렬화"(안전 방향)로 처리한다.
+      if (runtime.authPath) {
+        void reportCheckoutIdentity(runtime.agentConfigId, runtime.authPath);
       }
 
       logger.info('Trigger runtime fetched', {
