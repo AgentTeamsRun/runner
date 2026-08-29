@@ -154,6 +154,106 @@ test('createTriggerHandler runs the runner, reports history, and marks success',
   assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'DONE', undefined]);
 });
 
+test('createTriggerHandler reports the canonical checkout identity for the main checkout', async () => {
+  // 서버는 러너 파일시스템을 볼 수 없어 authPath 문자열만으로는 심링크 별칭을 풀 수 없다.
+  // 러너가 realpath 해시를 보고해야 서로 다른 체크아웃의 실행이 병렬로 시작될 수 있다.
+  const checkoutReports: Array<{ agentConfigId: string; checkoutKey: string }> = [];
+  const runner: Runner = { run: async () => ({ exitCode: 0 }) };
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => {},
+    updateTriggerStatus: async () => {},
+    reportCheckout: async (agentConfigId: string, checkoutKey: string) => {
+      checkoutReports.push({ agentConfigId, checkoutKey });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      // 심링크를 따라간 실제 경로. 보고되는 해시는 원본이 아니라 이 값에서 나와야 한다.
+      realpath: () => '/real/auth/path',
+      createRunnerFactory: () => () => runner,
+      createLogReporter: () => ({ start: () => {}, append: () => {}, stop: async () => {} }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler(trigger);
+
+  assert.deepEqual(checkoutReports, [{ agentConfigId: 'agent-1', checkoutKey: computeLocalKey('/real/auth/path') }]);
+});
+
+test('createTriggerHandler keeps running when the checkout identity cannot be resolved or reported', async () => {
+  // 보고 실패는 실행을 막지 않는다 — 서버는 미보고를 "모름 = 직렬화"(안전 방향)로 처리한다.
+  const statuses: string[] = [];
+  const runner: Runner = { run: async () => ({ exitCode: 0 }) };
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => {},
+    updateTriggerStatus: async (_id: string, status: string) => {
+      statuses.push(status);
+    },
+    reportCheckout: async () => {
+      throw new Error('network down');
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      realpath: () => {
+        throw new Error('ENOENT');
+      },
+      createRunnerFactory: () => () => runner,
+      createLogReporter: () => ({ start: () => {}, append: () => {}, stop: async () => {} }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler(trigger);
+
+  assert.deepEqual(statuses, ['DONE']);
+});
+
 test('createTriggerHandler reuses a discovered worktree without managed create/remove lifecycle', async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
   const runnerInputs: Array<{ authPath: string | null }> = [];

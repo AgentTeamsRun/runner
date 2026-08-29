@@ -322,6 +322,24 @@ export class DaemonApiClient {
     }
   }
 
+  /// 이 러너에서 AgentConfig 하나가 쓰는 메인 체크아웃(비-워크트리 실행의 cwd)의 정체성을 보고한다.
+  /// 서버는 러너 파일시스템을 볼 수 없어 authPath 문자열만으로 두 경로가 같은 폴더인지 판별할 수 없다.
+  /// canonical 경로(realpath)의 해시만 보내고 절대 경로는 보내지 않는다(DiscoveredWorktree.localKey와 같은 계약).
+  async reportCheckout(agentConfigId: string, checkoutKey: string): Promise<void> {
+    const response = await this.requestWithRetry('/api/daemons/report-checkout', {
+      method: 'POST',
+      headers: {
+        ...this.daemonHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ agentConfigId, checkoutKey }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to report runner checkout (${response.status})`);
+    }
+  }
+
   async reportDetectedEngines(engines: readonly string[]): Promise<void> {
     const response = await this.requestWithRetry('/api/daemons/report-engines', {
       method: 'POST',
