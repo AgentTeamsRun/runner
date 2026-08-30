@@ -6,14 +6,14 @@ import { dirname, join } from 'node:path';
 import { resolveExecutablePathsWithPreferenceAsync, runProbeCommand } from '../executable.js';
 import { logger } from '../logger.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
-import { createAnsiStripper, stripAnsiSequences } from './kiro-cli.js';
+import { createAnsiStripper } from './kiro-cli.js';
 import { findOmpExecutable, isOmpExecutable } from './omp-identity.js';
+import { createOmpStreamConsumer } from './omp-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 import { buildRunnerChildEnv } from './session-env.js';
 
 const OUTPUT_PREVIEW_MAX = 400;
-const OUTPUT_CAPTURE_MAX = 200_000;
 
 const normalizedModel = (model?: string | null): string => (typeof model === 'string' ? model.trim() : '');
 
@@ -31,20 +31,24 @@ const toPromptAttachArg = (promptFilePath: string): string => `@${promptFilePath
  *   measured surface. Default config is already `tools.approvalMode=yolo`.
  * - `--cwd` sets the workspace. `--model` is consumed; unknown ids exit 1 with
  *   `Model "…" not found` (no silent fallback). `default` is the platform sentinel.
- * - 스트림 분리(2026-08-25 재실측, 로컬 OpenAI 호환 목 공급자로 성공 경로를 재현):
- *   성공하면 **stdout**에 최종 답변만 나오고(`OMP_STDOUT_PROBE_ANSWER_42\n`, exit 0),
- *   stderr에는 `Working...\n` 한 줄만 남는다. 실패하면 stdout은 0바이트이고 오류는
- *   전부 stderr로 나온다(exit 1). 그래서 stdout만 `outputText`/`onStdoutChunk`로
- *   흘리고 stderr는 진행 로그로 취급하는 이 배선이 맞다.
- * - 구조화 `--mode json`은 쓰지 않는다. NDJSON을 stdout으로 내기는 하지만 402 같은
- *   공급자 실패에도 **exit 0**을 돌려줘 종료 코드 기반 실패 판정이 무력화된다
- *   (2026-08-25 실측). 평문 모드는 실패를 exit 1로 정직하게 보고한다.
+ * - `--mode json`은 필수다(2026-08-26 v18.0.5 실측, 2026-08-29 omp/18.0.6 재확인).
+ *   기본 text 모드는 실행 내내 stdout이 0바이트이고 최종 답변만 종료 시점에 한 번에
+ *   나온다. stderr도 `Working...` 한 줄뿐이라 idle 타이머를 리셋할 계기가 없어,
+ *   10분 넘는 정상 실행이 `Runner idle timed out after 10m of no output`으로 죽었다.
+ *   json 모드는 같은 작업에서 NDJSON을 실행 내내 연속 방출한다.
+ * - json 모드를 한 번 기각했던 근거(공급자 실패에도 **exit 0**)는 사실이지만, 종료
+ *   코드 대신 스트림으로 판정하면 해소된다. 잘못된 API 키로 재현하면 exit 0이면서도
+ *   `message_start`/`message_end`/`turn_end` 세 이벤트가 모두 `stopReason:"error"`와
+ *   `errorStatus`/`errorMessage`를 싣는다. 그래서 실패 판정 축은 종료 코드가 아니라
+ *   `stopReason`이다 — 캡처된 사유가 있으면 exit 0이어도 실패로 보고한다.
  */
 export const buildOmpArgs = (promptFilePath: string, cwd: string, model?: string | null): string[] => {
   const selectedModel = normalizedModel(model);
   const modelArgs = selectedModel.length > 0 && selectedModel !== 'default' ? ['--model', selectedModel] : [];
   return [
     '-p',
+    '--mode',
+    'json',
     '--no-session',
     '--auto-approve',
     '--approval-mode',
@@ -92,7 +96,8 @@ const toOutputPreview = (text: string): string => {
  * **차단목록**이다 — 오류 문구를 열거하면 형태를 모르는 공급자 오류를 통째로 놓친다.
  *
  * 여기 열거한 진행 문구는 omp/18.0.4 바이너리에서 실제로 stderr에 쓰는 것들이다
- * (2026-08-25 실측).
+ * (2026-08-25 실측). `--mode json`으로 전환한 뒤에는 `Working...`이 나오지 않지만
+ * (2026-08-26 실측), 나머지 기동 안내는 모드와 무관하므로 차단목록을 유지한다.
  * - `Working...`: 요청 시작 시점에 text 모드에서 한 번 쓴다. **성공 실행에서도 나온다.**
  *   이 줄을 걸러내지 않으면 첫 오류 신호로 latch돼 수 초 뒤 도착하는 진짜 사유
  *   (`402 Insufficient credits …`, `404 No endpoints found …`)를 덮어쓴다.
@@ -261,27 +266,31 @@ export class OmpRunner implements Runner {
     let lastOutput = '';
     let lastErrorOutput = '';
     let firstErrorSignal = '';
-    let outputText = '';
-    const appendOutputText = (chunk: string): void => {
-      if (outputText.length < OUTPUT_CAPTURE_MAX) {
-        outputText += chunk.slice(0, OUTPUT_CAPTURE_MAX - outputText.length);
-      }
-    };
     const stdoutStripper = createAnsiStripper();
     const stderrStripper = createAnsiStripper();
     const idleTimer = { reset: (): void => {} };
+    // 각 NDJSON 라인을 한 번만 파싱해 라이브 로그와 결과 판정 양쪽에 전달한다.
+    const streamConsumer = createOmpStreamConsumer(
+      (entries) => {
+        for (const entry of entries) {
+          lastOutput = entry.message;
+          opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
+        }
+      },
+      { cwd },
+    );
 
     child.stdout?.on('data', (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
       const text = stdoutStripper.push(rawOutput);
-      appendOutputText(text);
-      const output = toOutputPreview(text);
-      if (output.length > 0) {
-        lastOutput = output;
-        idleTimer.reset();
-        opts.onStdoutChunk?.(output, 'TEXT');
-        logger.info('Runner stdout', { triggerId: opts.triggerId, pid: child.pid, output });
+      if (text.length === 0) {
+        return;
       }
+      streamConsumer.push(text);
+      // 이벤트가 로그 엔트리로 정제되지 않는 구간(델타 연발)에도 살아 있다는 신호이므로,
+      // 리셋은 정제 결과가 아니라 데이터 도착을 기준으로 한다.
+      idleTimer.reset();
+      logger.info('Runner stdout', { triggerId: opts.triggerId, pid: child.pid, output: toOutputPreview(text) });
     });
     child.stderr?.on('data', (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
@@ -292,6 +301,7 @@ export class OmpRunner implements Runner {
           firstErrorSignal = output;
         }
         idleTimer.reset();
+        opts.onStderrChunk?.(output, 'STDERR');
         logger.info('Oh My Pi progress', { triggerId: opts.triggerId, pid: child.pid, output });
       }
     });
@@ -345,7 +355,12 @@ export class OmpRunner implements Runner {
         clearTimeout(timeoutId);
         await cleanup();
         logger.error('Runner process launch failed', { triggerId: opts.triggerId, error: error.message });
-        resolve({ exitCode: 1, lastOutput, outputText: outputText.trim() || undefined, errorMessage: error.message });
+        resolve({
+          exitCode: 1,
+          lastOutput,
+          outputText: streamConsumer.getFinalText() ?? streamConsumer.getStreamedTextFallback() ?? undefined,
+          errorMessage: error.message,
+        });
       });
 
       const closeWatchdog = this.deps.setupCloseWatchdog(child, opts.triggerId);
@@ -354,8 +369,12 @@ export class OmpRunner implements Runner {
         clearTimeout(timeoutId);
         await cleanup();
         logger.info('Runner process closed', { triggerId: opts.triggerId, pid: child.pid, exitCode: code, timedOut });
-        appendOutputText(stdoutStripper.flush());
-        const finalizedOutputText = stripAnsiSequences(outputText).trim() || undefined;
+        stdoutStripper.flush();
+        // 라인 스캐너가 개행 없이 끝난 마지막 NDJSON 라인을 회수한다.
+        streamConsumer.flush();
+        const finalizedOutputText =
+          streamConsumer.getFinalText() ?? streamConsumer.getStreamedTextFallback() ?? undefined;
+        const streamFailureMessage = streamConsumer.getFailureMessage();
 
         if (timedOut) {
           resolve({
@@ -376,6 +395,17 @@ export class OmpRunner implements Runner {
             lastOutput,
             outputText: finalizedOutputText,
             errorMessage: 'Runner cancelled by user',
+          });
+          return;
+        }
+        // json 모드는 공급자 실패에도 exit 0을 돌려준다. 스트림이 실패를 명시했다면 종료
+        // 코드가 무엇이든 실패로 보고한다.
+        if (streamFailureMessage) {
+          resolve({
+            exitCode: code && code !== 0 ? code : 1,
+            lastOutput,
+            outputText: finalizedOutputText,
+            errorMessage: streamFailureMessage,
           });
           return;
         }
