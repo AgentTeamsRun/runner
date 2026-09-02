@@ -300,6 +300,7 @@ export class AmpCodeRunner implements Runner {
               : finalizedOutputText;
           resolve({
             exitCode: 1,
+            timedOut,
             idleTimedOut,
             lastOutput,
             outputText: resolvedOutputText,

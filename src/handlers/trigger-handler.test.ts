@@ -990,6 +990,190 @@ test('createTriggerHandler reports the explicit runner error before last output'
   assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'specific runner error']);
 });
 
+test('createTriggerHandler: 파싱된 RESULT 실패 원문이 stderr 마지막 줄보다 우선한다', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      createRunnerFactory: () => () => ({
+        run: async (opts) => {
+          // 구조화 로그 파서가 만든 RESULT 청크. 마지막 원인 있는 값이 사유로 승격돼야 한다.
+          opts.onStdoutChunk?.('[Result] Failed: first failure', 'RESULT');
+          opts.onStdoutChunk?.('[Result] Completed in 3s', 'RESULT');
+          opts.onStdoutChunk?.("[Result] Failed: The 'gpt-5' model is not supported", 'RESULT');
+          return {
+            exitCode: 1,
+            lastOutput: 'general output',
+            errorMessage: 'Reading additional input from stdin...',
+          } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.deepEqual(clientCalls.at(-1)?.args, [
+    'trigger-1',
+    'FAILED',
+    "[Result] Failed: The 'gpt-5' model is not supported",
+  ]);
+});
+
+test('createTriggerHandler: 원인 없는 RESULT 마커면 stderr 마지막 줄을 유지한다', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      createRunnerFactory: () => () => ({
+        run: async (opts) => {
+          opts.onStdoutChunk?.('[Result] Failed (12s, 3 files changed)', 'RESULT');
+          return {
+            exitCode: 1,
+            lastOutput: 'general output',
+            errorMessage: 'Reading additional input from stdin...',
+          } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'Reading additional input from stdin...']);
+});
+
+test('createTriggerHandler: fail-safe 타임아웃 문구는 그 전에 나온 RESULT 원문으로 덮이지 않는다', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      createRunnerFactory: () => () => ({
+        run: async (opts) => {
+          // 원인 있는 RESULT를 한 번 낸 뒤 프로세스가 걸려 fail-safe 워치독에 죽은 경우.
+          // 러너는 `idleTimedOut`을 세우지 않고 `timedOut`만 true로 돌려준다.
+          opts.onStdoutChunk?.("[Result] Failed: The 'gpt-5' model is not supported", 'RESULT');
+          return {
+            exitCode: 1,
+            timedOut: true,
+            lastOutput: 'general output',
+            errorMessage: 'Runner fail-safe timed out after 6h',
+          } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'Runner fail-safe timed out after 6h']);
+});
+
 test('createTriggerHandler fails without running the runner when worktree creation fails', async () => {
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
   const runnerInputs: Array<{ authPath: string | null }> = [];

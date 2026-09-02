@@ -234,6 +234,7 @@ export class CopilotCliRunner implements Runner {
         if (timedOut) {
           resolve({
             exitCode: 1,
+            timedOut,
             idleTimedOut,
             lastOutput,
             outputText: finalizedOutputText,
