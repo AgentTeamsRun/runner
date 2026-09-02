@@ -47,7 +47,9 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // claude-code는 서브 에이전트(Task 도구)의 `run_in_background` 파라미터로 비동기 위임과
   // 결과 별도 회수를 지원하는 유일한 러너다(Claude Code 2.x 런타임 계약으로 확인).
   CLAUDE_CODE: { model: true, fastMode: true, effort: true, modelEnumeration: false, subAgentDelegation: true },
-  CODEX: { model: true, fastMode: true, effort: true, modelEnumeration: false, subAgentDelegation: false },
+  // codex-cli 0.152.0의 `codex debug models`가 현재 설치·인증 환경의 JSON 카탈로그를
+  // 비대화형으로 제공함을 확인했다(2026-09-03). 숨김/API 미지원 항목은 파서에서 제외한다.
+  CODEX: { model: true, fastMode: true, effort: true, modelEnumeration: true, subAgentDelegation: false },
   // opencode는 --model만 전달하며 fastMode/effort는 반영하지 않는다.
   OPENCODE: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
   // antigravity(agy --print)는 --model을 지원하지만 fastMode/effort는 반영하지 않는다.

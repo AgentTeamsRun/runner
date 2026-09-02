@@ -136,6 +136,49 @@ test('reportDetectedModels POSTs model metadata to the daemon report endpoint', 
   });
 });
 
+// 열거기가 채우는 effort·fastMode는 전송 형태에서 떨어지면 안 된다. 서버 보고 스키마가
+// additionalProperties: false라 한쪽만 넓히면 조용히 사라지는 대신 보고 전체가 400이 된다.
+test('reportDetectedModels carries effort and fastMode metadata through to the request body', async () => {
+  const calls: Array<{ url: string; options?: RequestInit }> = [];
+  globalThis.fetch = (async (url, options) => {
+    calls.push({ url: String(url), options });
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+
+  const client = new DaemonApiClient('https://api.example', 'daemon-token');
+  await client.reportDetectedModels([
+    {
+      runnerType: 'CODEX',
+      values: [
+        {
+          value: 'gpt-5.2',
+          label: 'GPT-5.2',
+          maxInputTokens: 272000,
+          supportedEffortLevels: ['low', 'medium', 'high', 'xhigh'],
+          fastModeSupported: true,
+        },
+      ],
+    },
+  ]);
+
+  assert.deepEqual(JSON.parse(String(calls[0]?.options?.body)), {
+    models: [
+      {
+        runnerType: 'CODEX',
+        values: [
+          {
+            value: 'gpt-5.2',
+            label: 'GPT-5.2',
+            maxInputTokens: 272000,
+            supportedEffortLevels: ['low', 'medium', 'high', 'xhigh'],
+            fastModeSupported: true,
+          },
+        ],
+      },
+    ],
+  });
+});
+
 test('claimTrigger returns conflict=false/ok=true on success and conflict=true on 409', async () => {
   const calls: Array<RequestInit | undefined> = [];
   const responses = [new Response(null, { status: 200 }), new Response(null, { status: 409 })];

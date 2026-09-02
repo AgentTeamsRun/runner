@@ -24,6 +24,8 @@ export type EnumeratedModel = {
   value: string;
   label: string;
   maxInputTokens?: number;
+  supportedEffortLevels?: string[];
+  fastModeSupported?: boolean;
 };
 
 export type ModelEnumerationResult =
@@ -365,6 +367,70 @@ export const parseGrokModels = (output: string): ModelEnumerationResult => {
   return parsedResult(output, models);
 };
 
+/**
+ * `codex debug models` (2026-09-03 실측, codex-cli 0.152.0)의 JSON 카탈로그를 읽는다.
+ * `visibility: "hide"`는 Codex CLI의 모델 목록에서 숨긴 항목이므로 사용자 선택 목록에서도 제외한다.
+ * `supported_in_api`는 OpenAI 플랫폼 API 가용성 축이며 ChatGPT 계정으로 실행하는 Codex CLI 가용성과
+ * 다르다. 실측상 false인 gpt-5.3-codex-spark도 CLI에서 실행되므로 이 필드로 거르지 않는다.
+ *
+ * `context_window`는 현재 기본 실행 한도이고 `max_context_window`는 확장 가능한 상한이다.
+ * 실출력에서 gpt-5.6-sol이 각각 272000/872000으로 달라 기본 한도를 우선하며, 구버전 호환을
+ * 위해 `context_window`가 없을 때만 `max_context_window`로 폴백한다.
+ * 필요한 필드만 새 객체로 옮겨 `model_messages.instructions_template` 같은 원문은 보존하지 않는다.
+ */
+export const parseCodexModels = (output: string): ModelEnumerationResult => {
+  if (output.trim().length === 0) return { status: 'EMPTY_OUTPUT' };
+
+  try {
+    const parsed = JSON.parse(output) as {
+      models?: Array<{
+        slug?: unknown;
+        display_name?: unknown;
+        visibility?: unknown;
+        supported_in_api?: unknown;
+        supported_reasoning_levels?: Array<{ effort?: unknown }>;
+        additional_speed_tiers?: unknown;
+        context_window?: unknown;
+        max_context_window?: unknown;
+      }>;
+    };
+    if (!Array.isArray(parsed.models)) return { status: 'FORMAT_MISMATCH' };
+
+    const models = parsed.models.flatMap((model): EnumeratedModel[] => {
+      if (typeof model.slug !== 'string') return [];
+      if (model.visibility === 'hide') return [];
+
+      const supportedEffortLevels = Array.isArray(model.supported_reasoning_levels)
+        ? model.supported_reasoning_levels.flatMap(({ effort }) =>
+            typeof effort === 'string' && effort.trim().length > 0 ? [effort.trim()] : [],
+          )
+        : [];
+      const maxInputTokensCandidate =
+        typeof model.context_window === 'number' ? model.context_window : model.max_context_window;
+      const maxInputTokens =
+        typeof maxInputTokensCandidate === 'number' &&
+        Number.isInteger(maxInputTokensCandidate) &&
+        maxInputTokensCandidate > 0
+          ? maxInputTokensCandidate
+          : undefined;
+
+      return [
+        {
+          value: model.slug,
+          label: typeof model.display_name === 'string' ? model.display_name : model.slug,
+          ...(maxInputTokens ? { maxInputTokens } : {}),
+          ...(supportedEffortLevels.length > 0 ? { supportedEffortLevels } : {}),
+          fastModeSupported:
+            Array.isArray(model.additional_speed_tiers) && model.additional_speed_tiers.includes('fast'),
+        },
+      ];
+    });
+    return parsedResult(output, models);
+  } catch {
+    return { status: 'FORMAT_MISMATCH' };
+  }
+};
+
 const commandFailure = (error: unknown): ModelEnumerationResult => ({
   status: 'COMMAND_FAILED',
   message: error instanceof Error ? error.message : String(error),
@@ -395,6 +461,10 @@ export const enumerateModels = async (
     };
 
     switch (runnerType) {
+      case 'CODEX': {
+        const executable = resolveEngineExecutable(runnerType);
+        return parseCodexModels((await deps.execute(executable, ['debug', 'models'])).stdout);
+      }
       case 'KIRO_CLI': {
         const executable = resolveEngineExecutable(runnerType);
         return parseKiroModels((await deps.execute(executable, ['chat', '--list-models', '--format', 'json'])).stdout);

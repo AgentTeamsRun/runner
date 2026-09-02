@@ -30,12 +30,16 @@ test('antigravity supports model selection', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.model, true);
 });
 
-test('only OpenCode, Antigravity, Cursor CLI, Kiro CLI, and Grok Build support model enumeration', () => {
+test('only runners with verified non-interactive catalogs support model enumeration', () => {
   const supported = Object.entries(RUNNER_CAPABILITIES)
     .filter(([, capabilities]) => capabilities.modelEnumeration)
     .map(([runnerType]) => runnerType);
 
-  assert.deepEqual(supported, ['OPENCODE', 'ANTIGRAVITY', 'CURSOR_CLI', 'KIRO_CLI', 'GROK_BUILD', 'OMP']);
+  assert.deepEqual(supported, ['CODEX', 'OPENCODE', 'ANTIGRAVITY', 'CURSOR_CLI', 'KIRO_CLI', 'GROK_BUILD', 'OMP']);
+});
+
+test('CODEX enumerates models from the installed CLI catalog', () => {
+  assert.equal(RUNNER_CAPABILITIES.CODEX.modelEnumeration, true);
 });
 
 test('Copilot CLI supports model selection but not fast mode or sub-agent delegation', () => {
