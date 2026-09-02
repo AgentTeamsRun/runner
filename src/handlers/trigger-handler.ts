@@ -23,6 +23,7 @@ import {
   runnerSupportsEffort,
   runnerSupportsFastMode,
 } from '../runners/capabilities.js';
+import { isCauseBearingResultMessage, selectPreferredFailureMessage } from '../runners/failure-message.js';
 
 function sanitizeErrorMessage(msg: string): string {
   return msg.replaceAll(homedir(), '~');
@@ -560,6 +561,10 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       const runner = createRunner(trigger.runnerType);
       const cancelController = new AbortController();
+      // 구조화 로그 파서가 만든 RESULT 청크 중 실제 원인이 담긴 마지막 값. 러너의 stderr 마지막
+      // 줄은 원인과 무관한 잡음("Reading additional input from stdin...")인 경우가 많아, 실패
+      // 사유로는 이쪽 원문을 우선한다.
+      let lastCauseBearingResultMessage: string | undefined;
       let cancelRequested = false;
       let cancelCheckInFlight = false;
       const checkCancelRequested = async () => {
@@ -625,6 +630,9 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         effort: runnerEffort,
         signal: cancelController.signal,
         onStdoutChunk: (chunk, category, toolName) => {
+          if (category === 'RESULT' && isCauseBearingResultMessage(chunk)) {
+            lastCauseBearingResultMessage = chunk.trim();
+          }
           activeLogReporter.append('INFO', chunk, category, toolName);
         },
         onStderrChunk: (chunk, category) => {
@@ -685,7 +693,14 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
             : 'FAILED';
       const errorMessage =
         status === 'FAILED'
-          ? runResult.errorMessage || runResult.lastOutput || `Runner exited with code ${runResult.exitCode}`
+          ? selectPreferredFailureMessage({
+              resultFailureDetail: lastCauseBearingResultMessage,
+              runnerErrorMessage: runResult.errorMessage,
+              lastOutput: runResult.lastOutput,
+              exitCode: runResult.exitCode,
+              idleTimedOut: runResult.idleTimedOut,
+              timedOut: runResult.timedOut,
+            })
           : status === 'CANCELLED'
             ? runResult.errorMessage || 'Runner cancelled by user'
             : undefined;

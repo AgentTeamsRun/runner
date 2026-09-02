@@ -35,6 +35,11 @@ export interface RunnerOptions {
 export type RunResult = {
   exitCode: number;
   cancelled?: boolean;
+  /// 워치독(무출력 idle 또는 fail-safe 전체 시간)에 의해 종료된 경우 true. `idleTimedOut`이 true면
+  /// 이 값도 true다 — idle은 워치독의 한 종류다. 핸들러는 이 신호로 러너가 만든 타임아웃 문구를
+  /// 보호한다. 이 값이 없으면 프로세스가 도중에 낸 `[Result] Failed: ...`가 타임아웃 사실을 덮어
+  /// 몇 시간 매달리다 강제 종료된 실행이 "러너가 스스로 보고한 실패"처럼 보인다.
+  timedOut?: boolean;
   /// 무출력 idle 워치독에 의해 종료된 경우 true. 일부 러너(예: Antigravity)는 답변 생성을
   /// 끝낸 뒤 종료 시퀀스에서 행이 걸려 무출력으로 kill되는데, 이때 산출물(히스토리 파일)은
   /// 이미 온전하다. 핸들러가 이 신호로 hard-FAIL 대신 NEEDS_REVIEW 강등을 판단한다.
