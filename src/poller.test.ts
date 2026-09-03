@@ -26,6 +26,7 @@ const trigger: DaemonTrigger = {
   model: 'o4-mini',
   fastMode: false,
   effort: null,
+  idleTimeoutMs: null,
   status: 'PENDING',
   agentConfigId: 'agent-1',
   startedAt: null,

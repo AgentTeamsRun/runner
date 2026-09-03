@@ -3,11 +3,19 @@ import test from 'node:test';
 import {
   RUNNER_CAPABILITIES,
   describeUnsupportedRunnerOptions,
+  getRunnerDefaultIdleTimeoutMs,
   getRunnerCapabilities,
   runnerSupportsEffort,
   runnerSupportsFastMode,
   runnerSupportsSubAgentDelegation,
 } from './capabilities.js';
+
+test('only runners with sufficient observations define an idle timeout default', () => {
+  assert.equal(getRunnerDefaultIdleTimeoutMs('CLAUDE_CODE'), 1_800_000);
+  assert.equal(getRunnerDefaultIdleTimeoutMs('CODEX'), undefined);
+  assert.equal(getRunnerDefaultIdleTimeoutMs('GROK_BUILD'), undefined);
+  assert.equal(getRunnerDefaultIdleTimeoutMs('SOMETHING_ELSE'), undefined);
+});
 
 test('only claude-code and codex support fastMode', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.fastMode, true);

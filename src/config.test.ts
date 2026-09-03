@@ -119,7 +119,8 @@ test('resolveRuntimeConfig prefers environment variables and applies numeric par
       pollingIntervalMs: 30_000,
       maxPollingIntervalMs: 120_000,
       timeoutMs: 1234,
-      idleTimeoutMs: 600_000,
+      idleTimeoutMs: 1_800_000,
+      isConfiguredIdleTimeoutExplicit: false,
       runnerCmd: 'codex',
       preventSleepWhileBusy: true,
     });
@@ -146,7 +147,45 @@ test('resolveRuntimeConfig uses the 24-hour fail-safe timeout by default', async
     const result = await resolveRuntimeConfig();
 
     assert.equal(result.timeoutMs, 86_400_000);
-    assert.equal(result.idleTimeoutMs, 600_000);
+    assert.equal(result.idleTimeoutMs, 1_800_000);
+  });
+});
+
+test('resolveRuntimeConfig defaults idle timeout to 30 minutes when env is absent', async () => {
+  await withTempHome(async () => {
+    process.env.AGENTTEAMS_DAEMON_TOKEN = 'env-token';
+
+    const result = await resolveRuntimeConfig();
+
+    assert.equal(result.idleTimeoutMs, 1_800_000);
+    assert.equal(result.isConfiguredIdleTimeoutExplicit, false);
+  });
+});
+
+test('resolveRuntimeConfig records whether IDLE_TIMEOUT_MS was explicitly configured', async () => {
+  await withTempHome(async () => {
+    process.env.AGENTTEAMS_DAEMON_TOKEN = 'env-token';
+    process.env.IDLE_TIMEOUT_MS = '1800000';
+
+    const result = await resolveRuntimeConfig();
+
+    assert.equal(result.idleTimeoutMs, 1_800_000);
+    assert.equal(result.isConfiguredIdleTimeoutExplicit, true);
+  });
+});
+
+test('resolveRuntimeConfig ignores invalid IDLE_TIMEOUT_MS values as explicit configuration', async () => {
+  await withTempHome(async () => {
+    process.env.AGENTTEAMS_DAEMON_TOKEN = 'env-token';
+
+    for (const invalidValue of ['', 'abc']) {
+      process.env.IDLE_TIMEOUT_MS = invalidValue;
+
+      const result = await resolveRuntimeConfig();
+
+      assert.equal(result.idleTimeoutMs, 1_800_000);
+      assert.equal(result.isConfiguredIdleTimeoutExplicit, false);
+    }
   });
 });
 

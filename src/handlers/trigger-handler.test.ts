@@ -6,11 +6,58 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from '../logger.js';
-import { createTriggerHandler } from './trigger-handler.js';
+import { createTriggerHandler, selectIdleTimeoutMs } from './trigger-handler.js';
 import { startPolling } from '../poller.js';
 import type { ConventionMeta, DaemonTrigger, TriggerRuntime } from '../types.js';
 import type { RunResult, Runner } from '../runners/types.js';
 import { computeLocalKey } from '../utils/worktree-discovery.js';
+
+test('selectIdleTimeoutMs prefers the trigger value over every fallback', () => {
+  assert.deepEqual(
+    selectIdleTimeoutMs({
+      triggerIdleTimeoutMs: 120_000,
+      configuredIdleTimeoutMs: 300_000,
+      isConfiguredIdleTimeoutExplicit: true,
+      runnerDefaultIdleTimeoutMs: 600_000,
+    }),
+    { idleTimeoutMs: 120_000, source: 'trigger' },
+  );
+});
+
+test('selectIdleTimeoutMs prefers an explicitly configured env value over the runner default', () => {
+  assert.deepEqual(
+    selectIdleTimeoutMs({
+      triggerIdleTimeoutMs: null,
+      configuredIdleTimeoutMs: 300_000,
+      isConfiguredIdleTimeoutExplicit: true,
+      runnerDefaultIdleTimeoutMs: 600_000,
+    }),
+    { idleTimeoutMs: 300_000, source: 'env' },
+  );
+});
+
+test('selectIdleTimeoutMs uses the runner default when env is not explicitly configured', () => {
+  assert.deepEqual(
+    selectIdleTimeoutMs({
+      triggerIdleTimeoutMs: null,
+      configuredIdleTimeoutMs: 1_800_000,
+      isConfiguredIdleTimeoutExplicit: false,
+      runnerDefaultIdleTimeoutMs: 2_700_000,
+    }),
+    { idleTimeoutMs: 2_700_000, source: 'runnerDefault' },
+  );
+});
+
+test('selectIdleTimeoutMs falls back to the global default when no higher-priority value exists', () => {
+  assert.deepEqual(
+    selectIdleTimeoutMs({
+      triggerIdleTimeoutMs: null,
+      configuredIdleTimeoutMs: 1_800_000,
+      isConfiguredIdleTimeoutExplicit: false,
+    }),
+    { idleTimeoutMs: 1_800_000, source: 'globalDefault' },
+  );
+});
 
 const trigger: DaemonTrigger = {
   id: 'trigger-1',
@@ -19,6 +66,7 @@ const trigger: DaemonTrigger = {
   model: 'o4-mini',
   fastMode: false,
   effort: null,
+  idleTimeoutMs: null,
   status: 'PENDING',
   agentConfigId: 'agent-1',
   startedAt: null,
@@ -56,6 +104,76 @@ const runtime: TriggerRuntime = {
 
 test.afterEach(() => {
   mock.restoreAll();
+});
+
+// 트리거 값이 없고 엔진별 기본값도 없는 기존 시나리오는 config 값을 그대로 쓰던 동작을 유지해야 한다.
+test('createTriggerHandler passes the resolved idle timeout to the runner and logs its source', async () => {
+  const runnerIdleTimeouts: number[] = [];
+  const idleTimeoutLogs: Array<Record<string, unknown>> = [];
+
+  mock.method(logger, 'info', (message: string, meta?: Record<string, unknown>) => {
+    if (message === 'Resolved runner idle timeout' && meta) {
+      idleTimeoutLogs.push(meta);
+    }
+  });
+
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => {},
+    updateTriggerStatus: async () => {},
+  };
+
+  const runner: Runner = {
+    run: async (input) => {
+      runnerIdleTimeouts.push(input.idleTimeoutMs);
+      return { exitCode: 0 };
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 1_800_000,
+        isConfiguredIdleTimeoutExplicit: false,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      createRunnerFactory: () => () => runner,
+      createLogReporter: () => ({ start: () => {}, append: () => {}, stop: async () => {} }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  // CODEX는 엔진별 기본값이 없으므로 전역 기본값으로 떨어진다.
+  await handler({ ...trigger, idleTimeoutMs: null });
+  // CLAUDE_CODE는 엔진별 기본값을 가지므로 그 축에서 값이 온다.
+  await handler({ ...trigger, runnerType: 'CLAUDE_CODE', idleTimeoutMs: null });
+  // 태스크 라벨이 실린 실행은 다른 어떤 축보다 앞선다.
+  await handler({ ...trigger, runnerType: 'CLAUDE_CODE', idleTimeoutMs: 5_400_000 });
+
+  assert.deepEqual(runnerIdleTimeouts, [1_800_000, 1_800_000, 5_400_000]);
+  assert.deepEqual(
+    idleTimeoutLogs.map((meta) => ({ source: meta.source, idleTimeoutMs: meta.idleTimeoutMs })),
+    [
+      { source: 'globalDefault', idleTimeoutMs: 1_800_000 },
+      { source: 'runnerDefault', idleTimeoutMs: 1_800_000 },
+      { source: 'trigger', idleTimeoutMs: 5_400_000 },
+    ],
+  );
 });
 
 test('createTriggerHandler runs the runner, reports history, and marks success', async () => {

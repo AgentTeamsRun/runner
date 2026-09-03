@@ -20,6 +20,7 @@ import { normalizeRemoteUrl } from '../utils/resolve-member-repo.js';
 import { checkRunnerWorkingDirectory } from '../utils/working-directory.js';
 import {
   describeUnsupportedRunnerOptions,
+  getRunnerDefaultIdleTimeoutMs,
   runnerSupportsEffort,
   runnerSupportsFastMode,
 } from '../runners/capabilities.js';
@@ -28,6 +29,49 @@ import { isCauseBearingResultMessage, selectPreferredFailureMessage } from '../r
 function sanitizeErrorMessage(msg: string): string {
   return msg.replaceAll(homedir(), '~');
 }
+
+/** idle timeout 값을 고른 축. 사후 추적용으로 로그에 그대로 실린다. */
+export type IdleTimeoutSource = 'trigger' | 'env' | 'runnerDefault' | 'globalDefault';
+
+export type IdleTimeoutSelection = {
+  idleTimeoutMs: number;
+  source: IdleTimeoutSource;
+};
+
+type IdleTimeoutResolutionInput = {
+  /** 이 실행에만 지정된 값. 라벨이 없거나 서버가 구버전이면 null이다. */
+  triggerIdleTimeoutMs: number | null;
+  /** config.idleTimeoutMs. 환경변수가 없으면 이미 전역 기본값이 들어 있다. */
+  configuredIdleTimeoutMs: number;
+  /** IDLE_TIMEOUT_MS가 실제로 설정됐는가. 위 값만으로는 "명시 30분"과 "기본 30분"을 구분할 수 없다. */
+  isConfiguredIdleTimeoutExplicit: boolean;
+  runnerDefaultIdleTimeoutMs?: number;
+};
+
+// 러너 옵션 해석은 이 한 곳에서만 한다(러너 파일은 이미 정해진 opts.idleTimeoutMs를 그대로 쓴다).
+// 우선순위는 트리거 값 > 명시적 IDLE_TIMEOUT_MS > 엔진별 기본값 > 전역 기본값이다. 트리거 값이
+// 없는 것은 오류가 아니라 "지정 없음"이므로 다음 축으로 넘긴다 — 구버전 서버와 기존 요청은 항상 null이다.
+export const selectIdleTimeoutMs = (input: IdleTimeoutResolutionInput): IdleTimeoutSelection => {
+  // 0 이하는 setTimeout이 즉시 발화해 모든 실행을 죽이므로 지정으로 취급하지 않는다.
+  // 서버가 범위를 이미 검증하지만, 러너는 자기가 못 믿는 값으로 워치독을 무장하지 않는다.
+  if (
+    typeof input.triggerIdleTimeoutMs === 'number' &&
+    Number.isFinite(input.triggerIdleTimeoutMs) &&
+    input.triggerIdleTimeoutMs > 0
+  ) {
+    return { idleTimeoutMs: input.triggerIdleTimeoutMs, source: 'trigger' };
+  }
+
+  if (input.isConfiguredIdleTimeoutExplicit) {
+    return { idleTimeoutMs: input.configuredIdleTimeoutMs, source: 'env' };
+  }
+
+  if (typeof input.runnerDefaultIdleTimeoutMs === 'number') {
+    return { idleTimeoutMs: input.runnerDefaultIdleTimeoutMs, source: 'runnerDefault' };
+  }
+
+  return { idleTimeoutMs: input.configuredIdleTimeoutMs, source: 'globalDefault' };
+};
 
 type TriggerHandlerOptions = {
   config: RuntimeConfig;
@@ -595,6 +639,20 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       }, cancelPollIntervalMs);
       const runnerFastMode = runnerSupportsFastMode(trigger.runnerType) ? trigger.fastMode : false;
       const runnerEffort = runnerSupportsEffort(trigger.runnerType) ? trigger.effort : null;
+      const idleTimeout = selectIdleTimeoutMs({
+        triggerIdleTimeoutMs: trigger.idleTimeoutMs,
+        configuredIdleTimeoutMs: config.idleTimeoutMs,
+        isConfiguredIdleTimeoutExplicit: config.isConfiguredIdleTimeoutExplicit === true,
+        runnerDefaultIdleTimeoutMs: getRunnerDefaultIdleTimeoutMs(trigger.runnerType),
+      });
+      // 미지원 옵션 경고와 같은 결로, 실제 적용된 idle timeout과 그 값이 온 축을 남긴다. 타임아웃
+      // 종료를 사후에 볼 때 "왜 이 길이였나"를 로그만으로 되짚을 수 있어야 한다.
+      logger.info('Resolved runner idle timeout', {
+        triggerId: trigger.id,
+        runnerType: trigger.runnerType,
+        idleTimeoutMs: idleTimeout.idleTimeoutMs,
+        source: idleTimeout.source,
+      });
       // 서버가 확정한 실행 옵션(model/fastMode/effort) 중 대상 러너가 소비하지 못하는 것을 무음으로
       // 폐기하지 않고 사용자 가시 경고(로그 리포터 WARN)로 승격한다. 러너별 지원 매트릭스는
       // runners/capabilities.ts의 단일 정의를 참조한다.
@@ -620,7 +678,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         teamId: runtime.teamId,
         projectId: runtime.projectId,
         timeoutMs: config.timeoutMs,
-        idleTimeoutMs: config.idleTimeoutMs,
+        idleTimeoutMs: idleTimeout.idleTimeoutMs,
         agentConfigId: runtime.agentConfigId,
         // 러너 인스턴스는 자기 타입을 모르므로 호출자가 실어 보낸다. 이 지점은 createRunner()가
         // 이미 성공한 뒤이고 팩토리가 SSOT에 없는 값을 throw로 거르므로, 좁히기는 안전하다.

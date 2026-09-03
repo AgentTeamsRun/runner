@@ -7,6 +7,8 @@ export type RuntimeConfig = {
   maxPollingIntervalMs: number;
   timeoutMs: number;
   idleTimeoutMs: number;
+  /** IDLE_TIMEOUT_MS의 존재 여부. 엔진 기본값보다 환경변수를 우선할 때 사용한다. */
+  isConfiguredIdleTimeoutExplicit?: boolean;
   runnerCmd: string;
   preventSleepWhileBusy: boolean;
 };
@@ -36,6 +38,9 @@ export type DaemonTrigger = {
   fastMode: boolean;
   /// 서버가 확정한 추론 강도(Effort) 레벨. null이면 모델/클라이언트 기본값을 사용한다.
   effort: string | null;
+  /// 이 실행에만 적용할 무출력 idle timeout(밀리초). null이면 지정이 없다는 뜻이며 데몬이 자기
+  /// 우선순위(환경변수 > 엔진별 기본값 > 전역 기본값)로 해석한다. 구버전 서버는 항상 null이다.
+  idleTimeoutMs: number | null;
   status: string;
   agentConfigId: string;
   startedAt: string | null;
