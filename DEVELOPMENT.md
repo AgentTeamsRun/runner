@@ -109,19 +109,19 @@ npm run dev
 
 ### 환경변수
 
-| 변수                         | 기본값              | 설명                                                                                                               |
-| ---------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `POLLING_INTERVAL_MS`        | `30000` (30초)      | 트리거 폴링 주기                                                                                                   |
-| `IDLE_TIMEOUT_MS`            | `600000` (10분)     | 기본 운영 타이머. stdout/stderr 출력이 일정 시간 없으면 러너를 종료                                                |
-| `TIMEOUT_MS`                 | `86400000` (24시간) | fail-safe 타이머. idle timeout으로 정리되지 않는 비정상 장기 실행만 최종 차단                                      |
-| `RUNNER_CMD`                 | `opencode`          | 에이전트 실행 명령어                                                                                               |
-| `CODEX_SANDBOX_LEVEL`        | `off`               | Codex 러너 샌드박스 레벨. `workspace-write` 또는 `off` 허용. 자동시작·수동 시작 모두 기본값 `off`                  |
-| `LOG_LEVEL`                  | `info`              | 로그 레벨: `debug`, `info`, `warn`, `error`                                                                        |
-| `DAEMON_VERBOSE_RUNNER_LOGS` | `true`              | `false`면 시작/종료/에러 로그만 출력                                                                               |
-| `DAEMON_PROMPT_LOG_MODE`     | `preview`           | 프롬프트 로그: `off`, `length`, `preview`, `full`                                                                  |
-| `DAEMON_PREVENT_SLEEP`       | `true`              | macOS에서 daemon이 polling/대기/러너 실행 중 시스템 절전 방지. `false`/`0`/`off`로 비활성화. 비 macOS는 자동 no-op |
+| 변수                         | 기본값              | 설명                                                                                                                                   |
+| ---------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `POLLING_INTERVAL_MS`        | `30000` (30초)      | 트리거 폴링 주기                                                                                                                       |
+| `IDLE_TIMEOUT_MS`            | `1800000` (30분)    | 기본 운영 타이머. 우선순위: 트리거의 태스크 `Idle Timeout` 라벨 > 유효하게 설정된 `IDLE_TIMEOUT_MS` > 엔진별 기본값 > 전역 30분 기본값 |
+| `TIMEOUT_MS`                 | `86400000` (24시간) | fail-safe 타이머. idle timeout으로 정리되지 않는 비정상 장기 실행만 최종 차단                                                          |
+| `RUNNER_CMD`                 | `opencode`          | 에이전트 실행 명령어                                                                                                                   |
+| `CODEX_SANDBOX_LEVEL`        | `off`               | Codex 러너 샌드박스 레벨. `workspace-write` 또는 `off` 허용. 자동시작·수동 시작 모두 기본값 `off`                                      |
+| `LOG_LEVEL`                  | `info`              | 로그 레벨: `debug`, `info`, `warn`, `error`                                                                                            |
+| `DAEMON_VERBOSE_RUNNER_LOGS` | `true`              | `false`면 시작/종료/에러 로그만 출력                                                                                                   |
+| `DAEMON_PROMPT_LOG_MODE`     | `preview`           | 프롬프트 로그: `off`, `length`, `preview`, `full`                                                                                      |
+| `DAEMON_PREVENT_SLEEP`       | `true`              | macOS에서 daemon이 polling/대기/러너 실행 중 시스템 절전 방지. `false`/`0`/`off`로 비활성화. 비 macOS는 자동 no-op                     |
 
-기본 정책은 `idle timeout 중심 + 24시간 fail-safe`입니다. 즉, 정상 운영에서는 `IDLE_TIMEOUT_MS`가 멈춘 작업을 정리하고, `TIMEOUT_MS`는 작업 유실을 줄이기 위해 거의 걸리지 않는 최후 안전장치로만 유지합니다.
+기본 정책은 `idle timeout 중심 + 24시간 fail-safe`입니다. 즉, 정상 운영에서는 위 우선순위로 결정된 idle timeout이 멈춘 작업을 정리하고, `TIMEOUT_MS`는 작업 유실을 줄이기 위해 거의 걸리지 않는 최후 안전장치로만 유지합니다.
 
 > **절전 방지(`DAEMON_PREVENT_SLEEP`)**: macOS에서 daemon이 살아 있는 동안(API polling/트리거 대기/러너 실행 전 구간) `/usr/bin/caffeinate`를 띄워 시스템 절전을 막습니다. 절전 방지 lifecycle은 daemon polling(`poller.ts`)이 소유하며, daemon 시작 시 한 번 acquire하고 SIGINT/SIGTERM 종료 시 해제합니다. 따라서 pending 트리거가 없는 대기 상태에서도 절전이 유지됩니다. **AC 전원에서만 동작**하며, 배터리 사용 중에는 시작하지 않고 실행 도중 배터리로 전환되면 자동으로 해제합니다(약 30초 주기로 전원 상태 재확인). launchd 환경에서는 PATH가 비어 있을 수 있어 `caffeinate`/`pmset`을 절대 경로로 호출합니다. 관리자 권한은 필요 없으며, 비 macOS에서는 자동으로 no-op입니다.
 >

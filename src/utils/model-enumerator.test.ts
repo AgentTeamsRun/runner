@@ -23,6 +23,17 @@ import {
 const fixture = (name: string): Promise<string> =>
   readFile(fileURLToPath(new URL(`../runners/fixtures/${name}`, import.meta.url)), 'utf8');
 
+type EnumeratedModelMeta = {
+  value: string;
+  label: string;
+  maxInputTokens?: number;
+  supportedEffortLevels?: string[];
+  fastModeSupported?: boolean;
+};
+
+const asEnumeratedMeta = (model: { value: string; label: string; maxInputTokens?: number }): EnumeratedModelMeta =>
+  model as EnumeratedModelMeta;
+
 describe('model enumerator parsers', () => {
   test('parses OpenCode labels and context limits while allowing a missing context', async () => {
     const result = parseOpenCodeVerboseModels(await fixture('opencode-models-verbose.txt'));
@@ -242,7 +253,7 @@ describe('enumerateModels', () => {
   test('does not enumerate unsupported runners', async () => {
     let called = false;
     const result = await enumerateModels(
-      'CODEX',
+      'CLAUDE_CODE',
       dependencies(async () => {
         called = true;
         return { stdout: '' };
@@ -250,6 +261,73 @@ describe('enumerateModels', () => {
     );
     assert.deepEqual(result, { status: 'UNSUPPORTED' });
     assert.equal(called, false);
+  });
+
+  test('enumerates Codex models from debug catalog JSON with effort and fastMode metadata', async () => {
+    const calls: Array<{ executable: string; args: string[] }> = [];
+    const result = await enumerateModels(
+      'CODEX',
+      dependencies(async (executable, args) => {
+        calls.push({ executable, args });
+        return { stdout: await fixture('codex-debug-models.json') };
+      }),
+    );
+
+    assert.deepEqual(calls, [{ executable: '/bin/codex', args: ['debug', 'models'] }]);
+    assert.equal(result.status, 'SUCCESS');
+    if (result.status !== 'SUCCESS') return;
+
+    const sol = result.values.find((model) => model.value === 'gpt-5.6-sol');
+    const luna = result.values.find((model) => model.value === 'gpt-5.6-luna');
+    assert.ok(sol, 'visible catalog models must be present');
+    assert.ok(luna, 'visible catalog models must be present');
+    assert.equal(sol.label, 'GPT-5.6-Sol');
+    assert.equal(sol.maxInputTokens, 272000);
+    assert.deepEqual(asEnumeratedMeta(sol).supportedEffortLevels, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+    assert.equal(asEnumeratedMeta(sol).fastModeSupported, true);
+    assert.equal(luna.label, 'GPT-5.6-Luna');
+    assert.deepEqual(asEnumeratedMeta(luna).supportedEffortLevels, ['low', 'medium', 'high', 'xhigh', 'max']);
+    assert.equal(asEnumeratedMeta(luna).fastModeSupported, true);
+  });
+
+  test('excludes hidden Codex entries while retaining CLI-runnable entries unsupported by the platform API', async () => {
+    const result = await enumerateModels(
+      'CODEX',
+      dependencies(async () => ({ stdout: await fixture('codex-debug-models.json') })),
+    );
+
+    assert.equal(result.status, 'SUCCESS');
+    if (result.status !== 'SUCCESS') return;
+
+    const values = result.values.map((model) => model.value);
+    assert.ok(values.includes('gpt-5.6-sol'));
+    assert.ok(values.includes('gpt-5.6-luna'));
+    assert.ok(!values.includes('gpt-reserve'), 'visibility: hide entries must not be reported');
+    assert.ok(values.includes('gpt-5.3-codex-spark'), 'supported_in_api: false still allows Codex CLI execution');
+  });
+
+  test('classifies non-JSON or models-key-missing Codex output as FORMAT_MISMATCH without throwing', async () => {
+    const notJson = await enumerateModels(
+      'CODEX',
+      dependencies(async () => ({ stdout: 'Available models:\n- gpt-5.2\n' })),
+    );
+    assert.equal(notJson.status, 'FORMAT_MISMATCH');
+
+    const missingModelsKey = await enumerateModels(
+      'CODEX',
+      dependencies(async () => ({ stdout: JSON.stringify({ catalog: [] }) })),
+    );
+    assert.equal(missingModelsKey.status, 'FORMAT_MISMATCH');
+  });
+
+  test('classifies Codex enumeration command failures instead of throwing', async () => {
+    const result = await enumerateModels(
+      'CODEX',
+      dependencies(async () => {
+        throw new Error('codex debug models failed');
+      }),
+    );
+    assert.equal(result.status, 'COMMAND_FAILED');
   });
 
   test('enumerates OMP models from JSON output', async () => {

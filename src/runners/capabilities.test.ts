@@ -3,11 +3,19 @@ import test from 'node:test';
 import {
   RUNNER_CAPABILITIES,
   describeUnsupportedRunnerOptions,
+  getRunnerDefaultIdleTimeoutMs,
   getRunnerCapabilities,
   runnerSupportsEffort,
   runnerSupportsFastMode,
   runnerSupportsSubAgentDelegation,
 } from './capabilities.js';
+
+test('only runners with sufficient observations define an idle timeout default', () => {
+  assert.equal(getRunnerDefaultIdleTimeoutMs('CLAUDE_CODE'), 1_800_000);
+  assert.equal(getRunnerDefaultIdleTimeoutMs('CODEX'), undefined);
+  assert.equal(getRunnerDefaultIdleTimeoutMs('GROK_BUILD'), undefined);
+  assert.equal(getRunnerDefaultIdleTimeoutMs('SOMETHING_ELSE'), undefined);
+});
 
 test('only claude-code and codex support fastMode', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.fastMode, true);
@@ -30,12 +38,16 @@ test('antigravity supports model selection', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.model, true);
 });
 
-test('only OpenCode, Antigravity, Cursor CLI, Kiro CLI, and Grok Build support model enumeration', () => {
+test('only runners with verified non-interactive catalogs support model enumeration', () => {
   const supported = Object.entries(RUNNER_CAPABILITIES)
     .filter(([, capabilities]) => capabilities.modelEnumeration)
     .map(([runnerType]) => runnerType);
 
-  assert.deepEqual(supported, ['OPENCODE', 'ANTIGRAVITY', 'CURSOR_CLI', 'KIRO_CLI', 'GROK_BUILD', 'OMP']);
+  assert.deepEqual(supported, ['CODEX', 'OPENCODE', 'ANTIGRAVITY', 'CURSOR_CLI', 'KIRO_CLI', 'GROK_BUILD', 'OMP']);
+});
+
+test('CODEX enumerates models from the installed CLI catalog', () => {
+  assert.equal(RUNNER_CAPABILITIES.CODEX.modelEnumeration, true);
 });
 
 test('Copilot CLI supports model selection but not fast mode or sub-agent delegation', () => {

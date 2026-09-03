@@ -26,6 +26,7 @@ const trigger: DaemonTrigger = {
   model: 'o4-mini',
   fastMode: false,
   effort: null,
+  idleTimeoutMs: null,
   status: 'PENDING',
   agentConfigId: 'agent-1',
   startedAt: null,
@@ -133,11 +134,15 @@ test('startPolling enumerates only installed supported engines and respects the 
   timeouts.scheduled.at(-1)?.callback();
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(enumerationCalls, ['KIRO_CLI', 'CURSOR_CLI']);
+  assert.deepEqual(enumerationCalls, ['KIRO_CLI', 'CURSOR_CLI', 'CODEX']);
   assert.deepEqual(reports, [
     [
       {
         runnerType: 'KIRO_CLI',
+        values: [{ value: 'model-a', label: 'Model A', maxInputTokens: 200000 }],
+      },
+      {
+        runnerType: 'CODEX',
         values: [{ value: 'model-a', label: 'Model A', maxInputTokens: 200000 }],
       },
     ],

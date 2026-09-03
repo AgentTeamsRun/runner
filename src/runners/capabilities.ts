@@ -11,6 +11,8 @@
 import type { RunnerType as KnownRunnerType } from '@agentteams/core-constants';
 
 export interface RunnerCapabilities {
+  /** 환경변수나 태스크가 지정하지 않았을 때 적용할 러너별 idle timeout. */
+  defaultIdleTimeoutMs?: number;
   /** 요청된 model 식별자를 하위 CLI에 전달/적용하는가. */
   model: boolean;
   /** fast-inference 모드(fastMode)를 실제로 반영하는가. */
@@ -46,8 +48,19 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // 두 옵션을 실제로 소비한다.
   // claude-code는 서브 에이전트(Task 도구)의 `run_in_background` 파라미터로 비동기 위임과
   // 결과 별도 회수를 지원하는 유일한 러너다(Claude Code 2.x 런타임 계약으로 확인).
-  CLAUDE_CODE: { model: true, fastMode: true, effort: true, modelEnumeration: false, subAgentDelegation: true },
-  CODEX: { model: true, fastMode: true, effort: true, modelEnumeration: false, subAgentDelegation: false },
+  // 최근 30일 체인 노드 표본 23건(최대 27.1분)으로 유일하게 상대적으로 표본이 충분하다.
+  // 30분은 관측 최대를 수용하며, 표본이 10건 이하인 다른 러너는 전역 기본값에 맡긴다.
+  CLAUDE_CODE: {
+    defaultIdleTimeoutMs: 1_800_000,
+    model: true,
+    fastMode: true,
+    effort: true,
+    modelEnumeration: false,
+    subAgentDelegation: true,
+  },
+  // codex-cli 0.152.0의 `codex debug models`가 현재 설치·인증 환경의 JSON 카탈로그를
+  // 비대화형으로 제공함을 확인했다(2026-09-03). 숨김/API 미지원 항목은 파서에서 제외한다.
+  CODEX: { model: true, fastMode: true, effort: true, modelEnumeration: true, subAgentDelegation: false },
   // opencode는 --model만 전달하며 fastMode/effort는 반영하지 않는다.
   OPENCODE: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
   // antigravity(agy --print)는 --model을 지원하지만 fastMode/effort는 반영하지 않는다.
@@ -99,6 +112,9 @@ export const getRunnerCapabilities = (runnerType: string): RunnerCapabilities =>
 export const runnerSupportsFastMode = (runnerType: string): boolean => getRunnerCapabilities(runnerType).fastMode;
 
 export const runnerSupportsEffort = (runnerType: string): boolean => getRunnerCapabilities(runnerType).effort;
+
+export const getRunnerDefaultIdleTimeoutMs = (runnerType: string): number | undefined =>
+  getRunnerCapabilities(runnerType).defaultIdleTimeoutMs;
 
 export const runnerSupportsSubAgentDelegation = (runnerType: string): boolean =>
   getRunnerCapabilities(runnerType).subAgentDelegation;

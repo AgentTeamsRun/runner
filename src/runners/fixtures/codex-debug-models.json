@@ -1,0 +1,66 @@
+{
+  "models": [
+    {
+      "slug": "gpt-5.6-sol",
+      "display_name": "GPT-5.6-Sol",
+      "supported_reasoning_levels": [
+        { "effort": "low" },
+        { "effort": "medium" },
+        { "effort": "high" },
+        { "effort": "xhigh" },
+        { "effort": "max" },
+        { "effort": "ultra" }
+      ],
+      "additional_speed_tiers": ["fast"],
+      "context_window": 272000,
+      "max_context_window": 872000,
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0
+    },
+    {
+      "slug": "gpt-5.6-luna",
+      "display_name": "GPT-5.6-Luna",
+      "supported_reasoning_levels": [
+        { "effort": "low" },
+        { "effort": "medium" },
+        { "effort": "high" },
+        { "effort": "xhigh" },
+        { "effort": "max" }
+      ],
+      "additional_speed_tiers": ["fast"],
+      "context_window": 272000,
+      "max_context_window": 872000,
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 2
+    },
+    {
+      "slug": "gpt-reserve",
+      "display_name": "GPT-Reserve",
+      "supported_reasoning_levels": [{ "effort": "low" }, { "effort": "max" }],
+      "additional_speed_tiers": ["fast"],
+      "context_window": 128000,
+      "max_context_window": 872000,
+      "visibility": "hide",
+      "supported_in_api": true,
+      "priority": 6
+    },
+    {
+      "slug": "gpt-5.3-codex-spark",
+      "display_name": "GPT-5.3-Codex-Spark",
+      "supported_reasoning_levels": [
+        { "effort": "low" },
+        { "effort": "medium" },
+        { "effort": "high" },
+        { "effort": "xhigh" }
+      ],
+      "additional_speed_tiers": [],
+      "context_window": 128000,
+      "max_context_window": 128000,
+      "visibility": "list",
+      "supported_in_api": false,
+      "priority": 7
+    }
+  ]
+}

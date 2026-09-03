@@ -151,18 +151,18 @@ Settings are resolved in the following priority order at runtime.
 
 ### Environment Variables
 
-| Variable                     | Default           | Description                                                                                      |
-| ---------------------------- | ----------------- | ------------------------------------------------------------------------------------------------ |
-| `POLLING_INTERVAL_MS`        | `30000` (30s)     | Polling interval for pending triggers                                                            |
-| `IDLE_TIMEOUT_MS`            | `600000` (10min)  | Primary timeout. Stops a runner when it produces no stdout/stderr for the configured idle window |
-| `TIMEOUT_MS`                 | `86400000` (24h)  | Fail-safe timeout. Stops a runner only if it stays alive for the full wall-clock limit           |
-| `RUNNER_CMD`                 | `opencode`        | Command used to execute agent tasks                                                              |
-| `CODEX_SANDBOX_LEVEL`        | `workspace-write` | Codex runner sandbox level. Allowed values: `workspace-write`, `off`                             |
-| `LOG_LEVEL`                  | `info`            | Log level: `debug`, `info`, `warn`, `error`                                                      |
-| `DAEMON_VERBOSE_RUNNER_LOGS` | `true`            | When `false`, reduces runner stdout/stderr to start/stop/error only                              |
-| `DAEMON_PROMPT_LOG_MODE`     | `preview`         | Prompt logging: `off`, `length`, `preview`, `full`                                               |
+| Variable                     | Default           | Description                                                                                                                                                   |
+| ---------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POLLING_INTERVAL_MS`        | `30000` (30s)     | Polling interval for pending triggers                                                                                                                         |
+| `IDLE_TIMEOUT_MS`            | `1800000` (30min) | Primary timeout. Priority: task `Idle Timeout` label on the trigger > valid configured `IDLE_TIMEOUT_MS` > runner-specific default > global 30-minute default |
+| `TIMEOUT_MS`                 | `86400000` (24h)  | Fail-safe timeout. Stops a runner only if it stays alive for the full wall-clock limit                                                                        |
+| `RUNNER_CMD`                 | `opencode`        | Command used to execute agent tasks                                                                                                                           |
+| `CODEX_SANDBOX_LEVEL`        | `workspace-write` | Codex runner sandbox level. Allowed values: `workspace-write`, `off`                                                                                          |
+| `LOG_LEVEL`                  | `info`            | Log level: `debug`, `info`, `warn`, `error`                                                                                                                   |
+| `DAEMON_VERBOSE_RUNNER_LOGS` | `true`            | When `false`, reduces runner stdout/stderr to start/stop/error only                                                                                           |
+| `DAEMON_PROMPT_LOG_MODE`     | `preview`         | Prompt logging: `off`, `length`, `preview`, `full`                                                                                                            |
 
-AgentRunner defaults to an idle-timeout-first policy. In normal operation, `IDLE_TIMEOUT_MS` is the control that ends stalled runs, while `TIMEOUT_MS` remains a 24-hour fail-safe for runaway processes.
+AgentRunner defaults to an idle-timeout-first policy. In normal operation, the resolved idle timeout ends stalled runs, while `TIMEOUT_MS` remains a 24-hour fail-safe for runaway processes.
 
 If you set `CODEX_SANDBOX_LEVEL=off`, AgentRunner launches Codex with `--dangerously-bypass-approvals-and-sandbox`. Use this only when you explicitly want full git write access and accept the reduced safety boundary.
 
