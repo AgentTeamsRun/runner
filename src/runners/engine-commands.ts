@@ -2,6 +2,7 @@ import type { RunnerType } from '@agentteams/core-constants';
 import { getGrokExecutablePreference } from './grok-build.js';
 import { getKimiExecutablePreference } from './kimi-cli.js';
 import { getKiroExecutablePreference } from './kiro-cli.js';
+import { getMuseCodeExecutablePreference } from './muse-code.js';
 import { getOmpExecutablePreference } from './omp.js';
 
 export type EngineCommand = string | ((runnerCmd: string) => string);
@@ -36,6 +37,8 @@ export const ENGINE_COMMANDS: Record<RunnerType, EngineDefinition> = {
   GROK_BUILD: { command: 'grok', preference: (_command, isWindows) => getGrokExecutablePreference(isWindows) },
   // `omp`는 무관한 npm 패키지(omp@1.0.0, 2019)도 쓰는 이름이라, 해석 우선순위
   // (KNOWN_INSTALL_BIN_FIRST)와 engine-probe의 신원 확인이 함께 붙는다.
+  // 공식 설치는 POSIX 전용이다. Windows 경로는 공식 지원을 의미하지 않는다.
+  MUSE_CODE: { command: 'muse', preference: (_command, isWindows) => getMuseCodeExecutablePreference(isWindows) },
   OMP: { command: 'omp', preference: (_command, isWindows) => getOmpExecutablePreference(isWindows) },
 };
 

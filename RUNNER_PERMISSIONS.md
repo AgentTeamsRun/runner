@@ -150,3 +150,11 @@ stream-json 포맷의 raw JSON이 fallback history에 그대로 저장되던 버
 ### 2026-03-18: 워크트리 삭제 거짓 보고
 
 `knownAuthPaths`가 비어있어 삭제 실패해도 서버에 "REMOVED"로 보고하던 버그. 실제 삭제 성공 시에만 보고하도록 수정. 근본 원인(authPath 미 persist)은 별도 플랜으로 분리.
+
+## Muse Code
+
+`muse exec --json --approval-mode never --prompt-file <PATH> [--model <ID>] [--reasoning-effort <LEVEL>]`
+
+Muse Code는 승인과 샌드박스가 기본 활성화됩니다. 러너는 비대화형 실행을 위해 `--approval-mode never`로 승인만 해제하고 샌드박스를 유지합니다. `--yolo`는 승인과 샌드박스 보호를 해제하고 워크스페이스를 신뢰하므로 사용하지 않습니다. MCP 도구는 샌드박스 밖에서 실행되므로 신뢰하는 서버만 등록하고 격리된 RunnerBox/worktree를 사용하세요. 공식 설치 경로는 macOS/Linux이며 Windows 네이티브 설치는 지원되지 않습니다.
+
+stdout은 MSP v1 JSONL입니다. 텍스트 델타, 성공 종단, 실패 사유를 정제하고 미실측 도구 이벤트는 원문을 보존합니다. 모델 목록은 `muse serve`의 initialize → initialized → model/list 순서로 조회합니다. 2026-09-05 실제 모델의 셸 도구 실행과 성공 종단을 확인했습니다. 도구 이벤트는 원문으로 유지합니다.

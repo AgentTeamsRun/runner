@@ -1,0 +1,79 @@
+{
+  "providerId": "meta",
+  "profileId": "tbh",
+  "source": "providerCatalog",
+  "models": [
+    {
+      "modelId": "muse-spark-1.3",
+      "displayLabel": "muse-spark-1.3",
+      "providerId": "meta",
+      "profileId": "tbh",
+      "releaseDate": "2026-09-02",
+      "description": null,
+      "contextLimit": 1007997,
+      "outputLimit": 128000,
+      "cost": {
+        "input": "1.25",
+        "output": "4.25",
+        "cached": "0.15",
+        "currency": "USD"
+      },
+      "isActive": false,
+      "isDefault": false
+    },
+    {
+      "modelId": "muse-spark-1.3-contributor",
+      "displayLabel": "muse-spark-1.3-contributor",
+      "providerId": "meta",
+      "profileId": "tbh",
+      "releaseDate": "2026-09-02",
+      "description": "Discounted tokens: your content, including inter-session messages, may be used for product improvement.",
+      "contextLimit": 1007997,
+      "outputLimit": 128000,
+      "cost": {
+        "input": "0.10",
+        "output": "0.20",
+        "cached": "0.002",
+        "currency": "USD"
+      },
+      "isActive": false,
+      "isDefault": true
+    },
+    {
+      "modelId": "muse-spark-1.2",
+      "displayLabel": "muse-spark-1.2",
+      "providerId": "meta",
+      "profileId": "tbh",
+      "releaseDate": "2026-08-05",
+      "description": null,
+      "contextLimit": 1007997,
+      "outputLimit": 128000,
+      "cost": {
+        "input": "1.25",
+        "output": "4.25",
+        "cached": "0.15",
+        "currency": "USD"
+      },
+      "isActive": false,
+      "isDefault": false
+    },
+    {
+      "modelId": "muse-spark-1.2-contributor",
+      "displayLabel": "muse-spark-1.2-contributor",
+      "providerId": "meta",
+      "profileId": "tbh",
+      "releaseDate": "2026-08-05",
+      "description": "Discounted tokens: your content, including inter-session messages, may be used for product improvement.",
+      "contextLimit": 1007997,
+      "outputLimit": 128000,
+      "cost": {
+        "input": "0.10",
+        "output": "0.20",
+        "cached": "0.002",
+        "currency": "USD"
+      },
+      "isActive": false,
+      "isDefault": false
+    }
+  ]
+}

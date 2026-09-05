@@ -12,6 +12,7 @@ import { CursorCliRunner } from './cursor-cli.js';
 import { KimiCliRunner } from './kimi-cli.js';
 import { KiroCliRunner } from './kiro-cli.js';
 import { GrokBuildRunner } from './grok-build.js';
+import { MuseCodeRunner } from './muse-code.js';
 import { OmpRunner } from './omp.js';
 
 test('createRunnerFactory returns the expected runner implementations', () => {
@@ -27,6 +28,7 @@ test('createRunnerFactory returns the expected runner implementations', () => {
   assert.equal(createRunner('KIMI_CLI') instanceof KimiCliRunner, true);
   assert.equal(createRunner('KIRO_CLI') instanceof KiroCliRunner, true);
   assert.equal(createRunner('GROK_BUILD') instanceof GrokBuildRunner, true);
+  assert.equal(createRunner('MUSE_CODE') instanceof MuseCodeRunner, true);
   assert.equal(createRunner('OMP') instanceof OmpRunner, true);
 });
 

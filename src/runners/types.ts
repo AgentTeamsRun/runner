@@ -25,7 +25,7 @@ export interface RunnerOptions {
   model?: string | null;
   fastMode?: boolean;
   /// 서버가 확정한 추론 강도(Effort) 레벨. null/미지정이면 모델/클라이언트 기본값을 사용한다.
-  /// CODEX/CLAUDE_CODE에서만 러너별 CLI 인자로 전달되며, 그 외 엔진에서는 무시(WARN)된다.
+  /// CODEX/CLAUDE_CODE/MUSE_CODE에서 러너별 CLI 인자로 전달되며, 그 외 엔진에서는 무시(WARN)된다.
   effort?: string | null;
   signal?: AbortSignal;
   onStdoutChunk?: (chunk: string, category: TriggerLogCategory, toolName?: string) => void;

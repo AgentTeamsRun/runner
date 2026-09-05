@@ -9,6 +9,7 @@ import {
 } from '../executable.js';
 import { ENGINE_COMMANDS, getEngineCommand, getEngineExecutablePreference } from '../runners/engine-commands.js';
 import { findGrokBuildExecutable } from '../runners/grok-build-identity.js';
+import { findMuseCodeExecutable } from '../runners/muse-code-identity.js';
 import { findOmpExecutable } from '../runners/omp-identity.js';
 
 type EngineProbeDependencies = AsyncExecutableDeps & {
@@ -52,7 +53,7 @@ export const probeInstalledEngines = async (
   const engines: RunnerType[] = [];
 
   for (const runnerType of Object.keys(ENGINE_COMMANDS) as RunnerType[]) {
-    if (runnerType === 'GROK_BUILD' || runnerType === 'OMP') {
+    if (runnerType === 'GROK_BUILD' || runnerType === 'OMP' || runnerType === 'MUSE_CODE') {
       const preferredNames = getEngineExecutablePreference(runnerType, runnerCmd, isWindows);
       const identityDependencies =
         deps.resolveExecutablePathWithPreferenceAsync && !deps.resolveExecutablePathsWithPreferenceAsync
@@ -68,7 +69,9 @@ export const probeInstalledEngines = async (
       const found =
         runnerType === 'GROK_BUILD'
           ? await findGrokBuildExecutable(preferredNames, identityDependencies)
-          : await findOmpExecutable(preferredNames, identityDependencies);
+          : runnerType === 'MUSE_CODE'
+            ? await findMuseCodeExecutable(preferredNames, identityDependencies)
+            : await findOmpExecutable(preferredNames, identityDependencies);
       if (found) engines.push(runnerType);
       continue;
     }

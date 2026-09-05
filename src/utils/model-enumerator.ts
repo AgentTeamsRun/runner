@@ -1,3 +1,5 @@
+import { executeMuseCodeModelList } from './muse-code-models.js';
+import { findMuseCodeExecutable } from '../runners/muse-code-identity.js';
 import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
 import type { RunnerType } from '@agentteams/core-constants';
@@ -33,6 +35,8 @@ export type ModelEnumerationResult =
   | { status: 'UNSUPPORTED' | 'EMPTY_OUTPUT' | 'FORMAT_MISMATCH' | 'COMMAND_FAILED'; message?: string };
 
 export type ModelEnumeratorDependencies = {
+  executeMuseCode?: typeof executeMuseCodeModelList;
+  findMuseCode?: typeof findMuseCodeExecutable;
   execute: (executablePath: string, args: string[]) => Promise<{ stdout: string }>;
   platform: () => NodeJS.Platform;
   resolveExecutable: (name: string, preferredNames: string[]) => string;
@@ -431,6 +435,31 @@ export const parseCodexModels = (output: string): ModelEnumerationResult => {
   }
 };
 
+// muse schema generate-ts (1.0.2): ModelListResult.models의 필드를 검증한다.
+export const parseMuseCodeModels = (output: string): ModelEnumerationResult => {
+  if (!output.trim()) return { status: 'EMPTY_OUTPUT' };
+  try {
+    const result = JSON.parse(output) as { models?: unknown };
+    if (!Array.isArray(result.models)) return { status: 'FORMAT_MISMATCH' };
+    if (result.models.length === 0) return { status: 'EMPTY_OUTPUT' };
+    const models: EnumeratedModel[] = [];
+    for (const row of result.models) {
+      if (!row || typeof row !== 'object' || typeof row.modelId !== 'string' || typeof row.displayLabel !== 'string')
+        return { status: 'FORMAT_MISMATCH' };
+      models.push({
+        value: row.modelId,
+        label: row.isDefault === true ? `${row.displayLabel} (default)` : row.displayLabel,
+        ...(typeof row.contextLimit === 'number' && Number.isInteger(row.contextLimit) && row.contextLimit > 0
+          ? { maxInputTokens: row.contextLimit }
+          : {}),
+      });
+    }
+    return parsedResult(output, models);
+  } catch {
+    return { status: 'FORMAT_MISMATCH' };
+  }
+};
+
 const commandFailure = (error: unknown): ModelEnumerationResult => ({
   status: 'COMMAND_FAILED',
   message: error instanceof Error ? error.message : String(error),
@@ -461,6 +490,16 @@ export const enumerateModels = async (
     };
 
     switch (runnerType) {
+      case 'MUSE_CODE': {
+        const executable = await (deps.findMuseCode ?? findMuseCodeExecutable)(
+          getEngineExecutablePreference(runnerType, opencodeCommand, isWindows),
+          { platform: deps.platform },
+        );
+        if (!executable) return { status: 'COMMAND_FAILED', message: 'Cannot find an official Muse Code executable' };
+        return parseMuseCodeModels(
+          (await (deps.executeMuseCode ?? executeMuseCodeModelList)(executable, { platform: deps.platform })).stdout,
+        );
+      }
       case 'CODEX': {
         const executable = resolveEngineExecutable(runnerType);
         return parseCodexModels((await deps.execute(executable, ['debug', 'models'])).stdout);
