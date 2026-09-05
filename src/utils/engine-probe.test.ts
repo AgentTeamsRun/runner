@@ -134,6 +134,19 @@ describe('probeInstalledEngines', () => {
     assert.deepEqual((await probe(null)).engines, []);
   });
 
+  it('accepts muse only when the executable identifies itself as muse — interactive terminal coding agent', async () => {
+    const probe = (helpText: string | null) =>
+      probeInstalledEngines('opencode', {
+        getNpmGlobalPrefixAsync: async () => null,
+        runProbeCommand: async () => helpText,
+        resolveExecutablePathWithPreferenceAsync: async (name) => (name === 'muse' ? '/bin/muse' : null),
+      });
+
+    assert.deepEqual((await probe('muse — interactive terminal coding agent')).engines, ['MUSE_CODE']);
+    assert.deepEqual((await probe('A CMS Scaffolding Tool')).engines, []);
+    assert.deepEqual((await probe(null)).engines, []);
+  });
+
   // 빈 목록은 서버에서 "제한 없음"으로 해석되므로, 조회 자체가 불가능한 환경은 보고 대상에서 빼야 한다.
   it('marks a zero-engine result unreliable when the lookup command cannot run', async () => {
     const result = await probeInstalledEngines('opencode', {

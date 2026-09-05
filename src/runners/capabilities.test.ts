@@ -43,7 +43,16 @@ test('only runners with verified non-interactive catalogs support model enumerat
     .filter(([, capabilities]) => capabilities.modelEnumeration)
     .map(([runnerType]) => runnerType);
 
-  assert.deepEqual(supported, ['CODEX', 'OPENCODE', 'ANTIGRAVITY', 'CURSOR_CLI', 'KIRO_CLI', 'GROK_BUILD', 'OMP']);
+  assert.deepEqual(supported, [
+    'CODEX',
+    'OPENCODE',
+    'ANTIGRAVITY',
+    'CURSOR_CLI',
+    'KIRO_CLI',
+    'GROK_BUILD',
+    'OMP',
+    'MUSE_CODE',
+  ]);
 });
 
 test('CODEX enumerates models from the installed CLI catalog', () => {
@@ -156,7 +165,7 @@ test('describeUnsupportedRunnerOptions ignores blank model values', () => {
   assert.deepEqual(describeUnsupportedRunnerOptions('ANTIGRAVITY', { model: null, fastMode: false }), []);
 });
 
-test('only claude-code and codex support effort', () => {
+test('verified runners support effort', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.effort, true);
   assert.equal(RUNNER_CAPABILITIES.CODEX.effort, true);
   assert.equal(RUNNER_CAPABILITIES.OPENCODE.effort, false);
@@ -166,6 +175,7 @@ test('only claude-code and codex support effort', () => {
   assert.equal(RUNNER_CAPABILITIES.CURSOR_CLI.effort, false);
   assert.equal(RUNNER_CAPABILITIES.KIRO_CLI.effort, false);
   assert.equal(runnerSupportsEffort('CODEX'), true);
+  assert.equal(runnerSupportsEffort('MUSE_CODE'), true);
   assert.equal(runnerSupportsEffort('CLAUDE_CODE'), true);
   assert.equal(runnerSupportsEffort('OPENCODE'), false);
   assert.equal(runnerSupportsEffort('SOMETHING_ELSE'), false);

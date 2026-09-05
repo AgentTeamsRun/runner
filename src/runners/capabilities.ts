@@ -19,7 +19,7 @@ export interface RunnerCapabilities {
   fastMode: boolean;
   /**
    * 서버가 확정한 추론 강도(Effort) 레벨을 하위 CLI 인자로 전달/적용하는가.
-   * CODEX(`-c model_reasoning_effort`)와 CLAUDE_CODE(`--effort`)만 지원한다.
+   * CODEX(`-c model_reasoning_effort`), CLAUDE_CODE(`--effort`), MUSE_CODE(`--reasoning-effort`)가 지원한다.
    * 실제 허용 레벨은 API가 모델 메타데이터로 검증하므로 daemon은 값 검증을 중복하지 않는다.
    */
   effort: boolean;
@@ -96,6 +96,9 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // AgentTeams fastMode/Effort에 대응하는 플래그는 없다(`--effort`는 unknown flag).
   // `task` 위임은 헤드리스에서 호출/회수 분리를 실증하지 못해 false.
   OMP: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
+  // muse 1.0.2, 2026-09-04 실측: exec의 --model/--reasoning-effort 지원,
+  // serve의 MSP model/list 지원. fast 전용 플래그와 exec 위임/회수는 없다.
+  MUSE_CODE: { model: true, fastMode: false, effort: true, modelEnumeration: true, subAgentDelegation: false },
 };
 
 const DEFAULT_CAPABILITIES: RunnerCapabilities = {

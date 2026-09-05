@@ -8,6 +8,7 @@ import { CursorCliRunner } from './cursor-cli.js';
 import { KimiCliRunner } from './kimi-cli.js';
 import { KiroCliRunner } from './kiro-cli.js';
 import { GrokBuildRunner } from './grok-build.js';
+import { MuseCodeRunner } from './muse-code.js';
 import { OmpRunner } from './omp.js';
 import type { Runner } from './types.js';
 // 러너 타입 집합의 단일 진실 소스(SSOT). `import type`이므로 컴파일 시 완전히 제거되어
@@ -41,6 +42,8 @@ export const createRunnerFactory = (runnerCmd: string) => {
         return new KiroCliRunner();
       case 'GROK_BUILD':
         return new GrokBuildRunner();
+      case 'MUSE_CODE':
+        return new MuseCodeRunner();
       case 'OMP':
         return new OmpRunner();
       // TODO: AIDER

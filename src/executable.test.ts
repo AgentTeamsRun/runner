@@ -494,6 +494,19 @@ test('resolveExecutablePath prefers the omp install bin over a third-party omp o
   assert.equal(resolved, '/Users/justin/.local/bin/omp');
 });
 
+test('Muse respects its installer override before PATH and the default local bin', () => {
+  for (const override of [undefined, '/opt/muse']) {
+    const resolved = resolveExecutablePath('muse', {
+      env: { HOME: '/home/user', MUSE_INSTALL_DIR: override },
+      platform: () => 'linux',
+      execFileSync: (() => '/third-party/muse\n') as never,
+      existsSync: ((path: string) =>
+        ['/opt/muse/muse', '/home/user/.local/bin/muse', '/third-party/muse'].includes(path)) as never,
+    });
+    assert.equal(resolved, override ? '/opt/muse/muse' : '/home/user/.local/bin/muse');
+  }
+});
+
 test('resolveExecutablePath honours GROK_HOME ahead of the default ~/.grok/bin', () => {
   const resolved = resolveExecutablePath('grok', {
     env: {

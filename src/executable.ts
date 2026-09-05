@@ -174,6 +174,9 @@ const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>
   // 설치가 정상이어도 이 사용자 로컬 경로를 놓칠 수 있다.
   claude: resolveUserLocalBin,
   codex: resolveUserLocalBin,
+  // 공식 install.sh 실측: MUSE_INSTALL_DIR 또는 ~/.local/bin (POSIX 전용).
+  muse: (env, os) =>
+    os === 'win32' ? [] : [...(env.MUSE_INSTALL_DIR ? [env.MUSE_INSTALL_DIR] : []), ...resolveUserLocalBin(env, os)],
   kimi: (env, os) => {
     const configuredHomePaths = env.KIMI_CODE_HOME ? [joinPath(os, env.KIMI_CODE_HOME, 'bin')] : [];
     const userHome = os === 'win32' ? env.USERPROFILE : env.HOME;
@@ -259,7 +262,7 @@ const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>
  * 이름이 겹칠 뿐 공식 설치본이 없는 환경에서는 알려진 경로 탐색이 그냥 실패하고
  * 기존 순서대로 PATH로 넘어가므로, 서드파티만 있는 환경의 동작도 바뀌지 않는다.
  */
-const KNOWN_INSTALL_BIN_FIRST_COMMANDS: ReadonlySet<string> = new Set(['grok', 'omp']);
+const KNOWN_INSTALL_BIN_FIRST_COMMANDS: ReadonlySet<string> = new Set(['grok', 'omp', 'muse']);
 
 const prefersKnownInstallBin = (name: string): boolean =>
   KNOWN_INSTALL_BIN_FIRST_COMMANDS.has(getWindowsCommandBaseName(name));
