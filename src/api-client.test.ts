@@ -1,3 +1,4 @@
+import { emptyTokenUsage } from './runners/token-usage.js';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import test, { mock } from 'node:test';
@@ -356,4 +357,15 @@ test('daemon requests carry the machine identity header', async () => {
   const machineId = getMachineId();
   assert.ok(machineId);
   assert.equal((calls[0]?.headers as Record<string, string>)['x-machine-id'], machineId);
+});
+
+test('상태 전송은 사용량 snapshot과 실패 상태를 함께 보존한다', async () => {
+  const calls: Array<RequestInit | undefined> = [];
+  globalThis.fetch = (async (_url, options) => {
+    calls.push(options);
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+  const usage = { ...emptyTokenUsage('CLAUDE_CODE'), status: 'PARTIAL' as const, inputTokens: 0 };
+  await new DaemonApiClient('https://api.example', 'daemon-token').updateTriggerStatus('t1', 'FAILED', 'boom', usage);
+  assert.deepEqual(JSON.parse(String(calls[0]?.body)), { status: 'FAILED', errorMessage: 'boom', tokenUsage: usage });
 });

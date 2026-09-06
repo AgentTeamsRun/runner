@@ -1,0 +1,4 @@
+{"type":"step_finish","sessionID":"session-a","part":{"type":"step-finish","id":"part-a","messageID":"part-a-message","sessionID":"session-a","reason":"tool-calls","tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":20,"write":10}}}}
+{"type":"step_finish","sessionID":"session-a","part":{"type":"step-finish","id":"part-a","messageID":"part-a-message","sessionID":"session-a","reason":"tool-calls","tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":20,"write":10}}}}
+{"type":"step_finish","sessionID":"session-a","part":{"type":"step-finish","id":"part-b","messageID":"part-b-message","sessionID":"session-a","reason":"stop","tokens":{"input":50,"output":20,"reasoning":5,"cache":{"read":30,"write":0}}}}
+{"type":"step_finish","sessionID":"session-a","part":{"type":"step-finish","id":"part-b","messageID":"part-b-message","sessionID":"session-a","reason":"stop","tokens":{"input":50,"output":20,"reasoning":5,"cache":{"read":30,"write":0}}}}

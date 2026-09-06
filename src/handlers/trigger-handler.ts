@@ -1,3 +1,4 @@
+import { emptyTokenUsage, type TokenUsage } from '../runners/token-usage.js';
 import type { DaemonTrigger, RuntimeConfig, TriggerRuntimeAttachment } from '../types.js';
 // 러너 타입 집합의 SSOT. `import type`이므로 dist에 런타임 의존이 남지 않는다(zero-dependency 유지).
 import type { RunnerType } from '@agentteams/core-constants';
@@ -407,6 +408,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     let currentHistoryPath: string | null = null;
     let cancelInterval: NodeJS.Timeout | null = null;
     let attachmentDir: string | null = null;
+    let collectedUsage: TokenUsage | undefined;
 
     try {
       if (trigger.parentTriggerId && /[\/\\]|\.\./.test(trigger.parentTriggerId)) {
@@ -697,6 +699,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           activeLogReporter.append('WARN', chunk, category);
         },
       });
+      collectedUsage = runResult.tokenUsage;
       clearIntervalFn(cancelInterval);
       cancelInterval = null;
       logger.info('Trigger runner finished', {
@@ -766,6 +769,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         trigger.id,
         status,
         errorMessage ? sanitizeErrorMessage(errorMessage) : undefined,
+        runResult.tokenUsage ?? emptyTokenUsage(trigger.runnerType),
       );
       logger.info('Trigger completed', {
         triggerId: trigger.id,
@@ -788,7 +792,12 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           await logReporter.stop();
         }
         const rawErrorMsg = error instanceof Error ? error.message : String(error);
-        await client.updateTriggerStatus(trigger.id, 'FAILED', sanitizeErrorMessage(rawErrorMsg));
+        await client.updateTriggerStatus(
+          trigger.id,
+          'FAILED',
+          sanitizeErrorMessage(rawErrorMsg),
+          collectedUsage ?? emptyTokenUsage(trigger.runnerType),
+        );
       } catch (statusError) {
         logger.error('Failed to report trigger as FAILED', {
           triggerId: trigger.id,

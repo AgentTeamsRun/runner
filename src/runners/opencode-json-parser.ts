@@ -1,3 +1,5 @@
+import { createJsonLineBuffer } from './json-line-buffer.js';
+
 /**
  * Parses OpenCode `run --format json` events into human-readable log entries and extracts the
  * final assistant text. OpenCode emits one JSON object per line shaped as
@@ -109,6 +111,9 @@ export const parseOpenCodeJsonLine = (line: string, options?: ParseOptions): Par
     return [];
   }
 
+  if (!parsed || typeof parsed !== 'object') return [];
+  options?.onEvent?.(parsed);
+
   const part = parsed.part;
   if (!part || !part.type) {
     return [];
@@ -191,31 +196,10 @@ export const createOpenCodeJsonLineParser = (
   onEntries: (entries: ParsedLogEntry[]) => void,
   options?: ParseOptions,
 ): { push: (chunk: string) => void; flush: () => void } => {
-  let buffer = '';
-
-  return {
-    push(chunk: string) {
-      buffer += chunk;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        const entries = parseOpenCodeJsonLine(line, options);
-        if (entries.length > 0) {
-          onEntries(entries);
-        }
-      }
-    },
-    flush() {
-      if (buffer.trim().length > 0) {
-        const entries = parseOpenCodeJsonLine(buffer, options);
-        if (entries.length > 0) {
-          onEntries(entries);
-        }
-      }
-      buffer = '';
-    },
-  };
+  return createJsonLineBuffer((line) => {
+    const entries = parseOpenCodeJsonLine(line, options);
+    if (entries.length > 0) onEntries(entries);
+  }, options?.onDropped);
 };
 
 const collectTextPartsByMessage = (line: string, texts: Map<string, string[]>): string | null => {
@@ -231,6 +215,12 @@ const collectTextPartsByMessage = (line: string, texts: Map<string, string[]>): 
     return null;
   }
 
+  return collectParsedTextParts(parsed, texts);
+};
+
+const collectParsedTextParts = (value: unknown, texts: Map<string, string[]>): string | null => {
+  if (!value || typeof value !== 'object') return null;
+  const parsed = value as OpenCodeEvent;
   const part = parsed.part;
   if (part?.type !== 'text' || typeof part.text !== 'string' || part.text.length === 0) {
     return null;
@@ -286,6 +276,7 @@ export const createOpenCodeFinalTextCapturer = (): {
   push: (chunk: string) => void;
   flush: () => void;
   get: () => string | null;
+  acceptEvent: (event: unknown) => void;
 } => {
   let buffer = '';
   const texts = new Map<string, string[]>();
@@ -313,6 +304,10 @@ export const createOpenCodeFinalTextCapturer = (): {
         scan(buffer);
       }
       buffer = '';
+    },
+    acceptEvent(event: unknown) {
+      const messageId = collectParsedTextParts(event, texts);
+      if (messageId !== null) lastMessageId = messageId;
     },
     get: () => joinMessageText(texts, lastMessageId),
   };

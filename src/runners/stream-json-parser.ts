@@ -1,3 +1,5 @@
+import { createJsonLineBuffer } from './json-line-buffer.js';
+
 /**
  * Parses Claude Code / AMP compatible stream-json lines into structured log entries.
  * Shared by claude-code and amp runners to convert raw JSON output into human-readable logs.
@@ -15,6 +17,8 @@ export type ParsedLogEntry = {
 export type ParseOptions = {
   cwd?: string;
   verbose?: boolean;
+  onEvent?: (event: unknown) => void;
+  onDropped?: () => void;
 };
 
 type CursorStreamJsonLine = {
@@ -230,6 +234,9 @@ export const parseStreamJsonLine = (line: string, options?: ParseOptions): Parse
     return [];
   }
 
+  if (!parsed || typeof parsed !== 'object') return [];
+  options?.onEvent?.(parsed);
+
   if (!parsed.type) {
     return [];
   }
@@ -375,31 +382,10 @@ export const createStreamJsonLineParser = (
   onEntries: (entries: ParsedLogEntry[]) => void,
   options?: ParseOptions,
 ): { push: (chunk: string) => void; flush: () => void } => {
-  let buffer = '';
-
-  return {
-    push(chunk: string) {
-      buffer += chunk;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        const entries = parseStreamJsonLine(line, options);
-        if (entries.length > 0) {
-          onEntries(entries);
-        }
-      }
-    },
-    flush() {
-      if (buffer.trim().length > 0) {
-        const entries = parseStreamJsonLine(buffer, options);
-        if (entries.length > 0) {
-          onEntries(entries);
-        }
-      }
-      buffer = '';
-    },
-  };
+  return createJsonLineBuffer((line) => {
+    const entries = parseStreamJsonLine(line, options);
+    if (entries.length > 0) onEntries(entries);
+  }, options?.onDropped);
 };
 
 const cursorToolDisplayName = (key: string): string => {
