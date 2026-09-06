@@ -1,3 +1,4 @@
+import { createTokenUsageCollector } from './token-usage.js';
 import { createWriteStream } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
@@ -224,6 +225,7 @@ export class OpenCodeRunner implements Runner {
     // summary (fallback history). finalTextCapturer survives the head-capped raw buffer on long runs.
     const finalTextCapturer = createOpenCodeFinalTextCapturer();
 
+    const usageCollector = createTokenUsageCollector('OPENCODE');
     const idleTimer = { reset: (): void => {} };
     const jsonLineParser = createOpenCodeJsonLineParser(
       (entries) => {
@@ -232,7 +234,14 @@ export class OpenCodeRunner implements Runner {
           opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
         }
       },
-      { cwd },
+      {
+        cwd,
+        onEvent: (event) => {
+          usageCollector.acceptEvent(event);
+          finalTextCapturer.acceptEvent(event);
+        },
+        onDropped: usageCollector.markDropped,
+      },
     );
 
     const finalizeOutputText = (): string | undefined => {
@@ -246,7 +255,6 @@ export class OpenCodeRunner implements Runner {
         return;
       }
       outputCapture.appendStdout(rawOutput);
-      finalTextCapturer.push(rawOutput);
       jsonLineParser.push(rawOutput);
       idleTimer.reset();
       logger.info('Runner stdout', {
@@ -347,7 +355,9 @@ export class OpenCodeRunner implements Runner {
           triggerId: opts.triggerId,
           error: error.message,
         });
+        jsonLineParser.flush();
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: 1,
           lastOutput,
           outputText: finalizeOutputText(),
@@ -371,6 +381,7 @@ export class OpenCodeRunner implements Runner {
 
         if (timedOut) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             timedOut,
             idleTimedOut,
@@ -385,6 +396,7 @@ export class OpenCodeRunner implements Runner {
 
         if (cancelled) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             cancelled: true,
             lastOutput,
@@ -395,6 +407,7 @@ export class OpenCodeRunner implements Runner {
         }
 
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: code ?? 1,
           lastOutput,
           outputText: finalizeOutputText(),

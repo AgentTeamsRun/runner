@@ -1,3 +1,4 @@
+import { createTokenUsageCollector } from './token-usage.js';
 import { createWriteStream } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
@@ -226,6 +227,7 @@ export class ClaudeCodeRunner implements Runner {
       return trimmed || undefined;
     };
 
+    const usageCollector = createTokenUsageCollector('CLAUDE_CODE');
     const idleTimer = { reset: (): void => {} };
     const streamParser = createStreamJsonLineParser(
       (entries) => {
@@ -233,7 +235,7 @@ export class ClaudeCodeRunner implements Runner {
           opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
         }
       },
-      { cwd },
+      { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
     child.stdout?.on('data', (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
@@ -341,7 +343,9 @@ export class ClaudeCodeRunner implements Runner {
           triggerId: opts.triggerId,
           error: error.message,
         });
+        streamParser.flush();
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: 1,
           lastOutput,
           outputText: finalizeOutputText(),
@@ -371,6 +375,7 @@ export class ClaudeCodeRunner implements Runner {
               ? extractResultTextFromStreamJson(finalizedOutputText)
               : finalizedOutputText;
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             timedOut,
             idleTimedOut,
@@ -385,6 +390,7 @@ export class ClaudeCodeRunner implements Runner {
 
         if (cancelled) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             cancelled: true,
             lastOutput,
@@ -395,6 +401,7 @@ export class ClaudeCodeRunner implements Runner {
         }
 
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: code ?? 1,
           lastOutput,
           outputText: finalizeOutputText(),

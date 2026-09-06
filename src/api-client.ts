@@ -1,3 +1,4 @@
+import type { TokenUsage } from './runners/token-usage.js';
 import { createRequire } from 'node:module';
 import type {
   ClaimResult,
@@ -167,7 +168,12 @@ export class DaemonApiClient {
     return { ok: true, conflict: false };
   }
 
-  async updateTriggerStatus(triggerId: string, status: TriggerFinalStatus, errorMessage?: string): Promise<void> {
+  async updateTriggerStatus(
+    triggerId: string,
+    status: TriggerFinalStatus,
+    errorMessage?: string,
+    tokenUsage?: TokenUsage,
+  ): Promise<void> {
     const response = await this.requestWithRetry(`/api/daemon-triggers/${triggerId}/status`, {
       method: 'PATCH',
       headers: {
@@ -177,6 +183,7 @@ export class DaemonApiClient {
       body: JSON.stringify({
         status,
         ...(errorMessage ? { errorMessage } : {}),
+        ...(tokenUsage ? { tokenUsage } : {}),
       }),
     });
 

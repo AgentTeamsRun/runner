@@ -1,3 +1,4 @@
+import { emptyTokenUsage } from '../runners/token-usage.js';
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 import { execFileSync } from 'node:child_process';
@@ -177,6 +178,7 @@ test('createTriggerHandler passes the resolved idle timeout to the runner and lo
 });
 
 test('createTriggerHandler runs the runner, reports history, and marks success', async () => {
+  const tokenUsage = { ...emptyTokenUsage('CLAUDE_CODE'), status: 'PARTIAL' as const, inputTokens: 123 };
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
   const logEntries: Array<{ level: string; message: string; category?: string; toolName?: string }> = [];
   const discoveredAuthPaths: string[] = [];
@@ -204,7 +206,7 @@ test('createTriggerHandler runs the runner, reports history, and marks success',
       runnerInputs.push({ prompt: input.prompt, authPath: input.authPath });
       input.onStdoutChunk?.('stdout', 'TEXT');
       input.onStderrChunk?.('stderr', 'STDERR');
-      return { exitCode: 0 };
+      return { exitCode: 0, tokenUsage };
     },
   };
 
@@ -249,6 +251,7 @@ test('createTriggerHandler runs the runner, reports history, and marks success',
 
   await handler(trigger);
 
+  assert.deepEqual(clientCalls.at(-1)?.args[3], tokenUsage);
   assert.deepEqual(discoveredAuthPaths, ['/auth/path']);
   assert.equal(runnerInputs.length, 1);
   assert.equal(
@@ -269,7 +272,7 @@ test('createTriggerHandler runs the runner, reports history, and marks success',
     clientCalls.map((entry) => entry.method),
     ['fetchTriggerRuntime', 'isTriggerCancelRequested', 'updateTriggerHistory', 'updateTriggerStatus'],
   );
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'DONE', undefined]);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'DONE', undefined]);
 });
 
 test('createTriggerHandler reports the canonical checkout identity for the main checkout', async () => {
@@ -450,7 +453,7 @@ test('createTriggerHandler reuses a discovered worktree without managed create/r
     clientCalls.some((c) => c.method === 'reportWorktreeStatus'),
     false,
   );
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'DONE', undefined]);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'DONE', undefined]);
 });
 
 test('createTriggerHandler rejects a reused path whose repository origin no longer matches runtime identity', async () => {
@@ -634,7 +637,7 @@ test('createTriggerHandler preserves the local history file and still marks succ
   assert.deepEqual(writeHistoryCalls, []);
   // 업로드 실패가 러너 성공을 뒤집지 않고 DONE으로 보고된다(FAILED 아님).
   const statusCall = clientCalls.find((entry) => entry.method === 'updateTriggerStatus');
-  assert.deepEqual(statusCall?.args, ['trigger-1', 'DONE', undefined]);
+  assert.deepEqual(statusCall?.args.slice(0, 3), ['trigger-1', 'DONE', undefined]);
 });
 
 test('createTriggerHandler flags NEEDS_REVIEW when the runner exits 0 without writing a history file', async () => {
@@ -699,7 +702,7 @@ test('createTriggerHandler flags NEEDS_REVIEW when the runner exits 0 without wr
   assert.match(String(uploadCall?.args?.[1] ?? ''), /exited without writing the required history file/);
   // 핵심: exitCode 0이어도 산출물이 없으면 DONE이 아니라 NEEDS_REVIEW로 강등된다.
   const statusCall = clientCalls.find((entry) => entry.method === 'updateTriggerStatus');
-  assert.deepEqual(statusCall?.args, ['trigger-1', 'NEEDS_REVIEW', undefined]);
+  assert.deepEqual(statusCall?.args.slice(0, 3), ['trigger-1', 'NEEDS_REVIEW', undefined]);
 });
 
 test('createTriggerHandler strips a UTF-8 BOM before reporting history to the database', async () => {
@@ -1049,7 +1052,7 @@ test('createTriggerHandler reports runner failures and falls back to last output
 
   await handler({ ...trigger, parentTriggerId: null });
 
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'last output']);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'FAILED', 'last output']);
 });
 
 test('createTriggerHandler reports the explicit runner error before last output', async () => {
@@ -1105,7 +1108,7 @@ test('createTriggerHandler reports the explicit runner error before last output'
 
   await handler({ ...trigger, parentTriggerId: null });
 
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'specific runner error']);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'FAILED', 'specific runner error']);
 });
 
 test('createTriggerHandler: 파싱된 RESULT 실패 원문이 stderr 마지막 줄보다 우선한다', async () => {
@@ -1166,7 +1169,7 @@ test('createTriggerHandler: 파싱된 RESULT 실패 원문이 stderr 마지막 �
 
   await handler({ ...trigger, parentTriggerId: null });
 
-  assert.deepEqual(clientCalls.at(-1)?.args, [
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), [
     'trigger-1',
     'FAILED',
     "[Result] Failed: The 'gpt-5' model is not supported",
@@ -1228,7 +1231,11 @@ test('createTriggerHandler: 원인 없는 RESULT 마커면 stderr 마지막 줄�
 
   await handler({ ...trigger, parentTriggerId: null });
 
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'Reading additional input from stdin...']);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), [
+    'trigger-1',
+    'FAILED',
+    'Reading additional input from stdin...',
+  ]);
 });
 
 test('createTriggerHandler: fail-safe 타임아웃 문구는 그 전에 나온 RESULT 원문으로 덮이지 않는다', async () => {
@@ -1289,7 +1296,11 @@ test('createTriggerHandler: fail-safe 타임아웃 문구는 그 전에 나온 R
 
   await handler({ ...trigger, parentTriggerId: null });
 
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'Runner fail-safe timed out after 6h']);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), [
+    'trigger-1',
+    'FAILED',
+    'Runner fail-safe timed out after 6h',
+  ]);
 });
 
 test('createTriggerHandler fails without running the runner when worktree creation fails', async () => {
@@ -1362,7 +1373,7 @@ test('createTriggerHandler fails without running the runner when worktree creati
 
   assert.deepEqual(runnerInputs, []);
   assert.deepEqual(clientCalls.at(0)?.args, ['trigger-1', 'FAILED', 'git worktree add failed']);
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'git worktree add failed']);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'FAILED', 'git worktree add failed']);
   assert.equal(
     clientCalls.some((entry) => entry.method === 'isTriggerCancelRequested'),
     false,
@@ -1436,7 +1447,7 @@ test('createTriggerHandler fails without running the runner when worktree authPa
 
   assert.deepEqual(runnerInputs, []);
   assert.deepEqual(clientCalls.at(0)?.args, ['trigger-1', 'FAILED', 'Not a git repository: /auth/path']);
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'Not a git repository: /auth/path']);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'FAILED', 'Not a git repository: /auth/path']);
   assert.equal(
     clientCalls.some((entry) => entry.method === 'isTriggerCancelRequested'),
     false,
@@ -1528,7 +1539,7 @@ test('createTriggerHandler resolves a member repo via remoteUrl when worktree au
   assert.deepEqual(createWorktreeCalls, ['/auth/path/kma-ui']);
   assert.deepEqual(runnerInputs, [{ authPath: '/auth/path/.kma-ui-worktrees/wt-worktree-1' }]);
   assert.deepEqual(clientCalls.find((entry) => entry.method === 'reportWorktreeStatus')?.args, ['trigger-1', 'ACTIVE']);
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'DONE', undefined]);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'DONE', undefined]);
 });
 
 test('createTriggerHandler fails without running the runner when member repo resolution fails', async () => {
@@ -1604,7 +1615,7 @@ test('createTriggerHandler fails without running the runner when member repo res
 
   assert.deepEqual(runnerInputs, []);
   assert.deepEqual(clientCalls.at(0)?.args, ['trigger-1', 'FAILED', resolutionError]);
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', resolutionError]);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'FAILED', resolutionError]);
   assert.equal(
     clientCalls.some((entry) => entry.method === 'isTriggerCancelRequested'),
     false,
@@ -1837,7 +1848,7 @@ test('createTriggerHandler downgrades an idle-timeout to NEEDS_REVIEW when a his
 
   // 히스토리 파일이 업로드됐으므로 hard-FAIL이 아니라 NEEDS_REVIEW로 강등되고, 빨간 Error 배너가
   // 뜨지 않도록 errorMessage는 비운다.
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'NEEDS_REVIEW', undefined]);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'NEEDS_REVIEW', undefined]);
 });
 
 test('createTriggerHandler keeps an idle-timeout as FAILED when no history file was produced', async () => {
@@ -1895,7 +1906,11 @@ test('createTriggerHandler keeps an idle-timeout as FAILED when no history file 
 
   await handler({ ...trigger, parentTriggerId: null });
 
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'Runner idle timed out after 10m of no output']);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), [
+    'trigger-1',
+    'FAILED',
+    'Runner idle timed out after 10m of no output',
+  ]);
 });
 
 test('createTriggerHandler stores stdout as fallback history when the runner omits the history file', async () => {
@@ -1965,7 +1980,7 @@ test('createTriggerHandler stores stdout as fallback history when the runner omi
   assert.match(String(clientCalls[0]?.args[1]), /Agent output \(history file not written\)/);
   assert.match(String(clientCalls[0]?.args[1]), /agentrunner version 0\.0\.11/);
   // exitCode 0이라도 히스토리 파일이 없으면 DONE으로 단정하지 않고 NEEDS_REVIEW로 강등한다.
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'NEEDS_REVIEW', undefined]);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'NEEDS_REVIEW', undefined]);
 });
 
 test('createTriggerHandler truncates long agent output in fallback history', async () => {
@@ -2167,7 +2182,7 @@ test('createTriggerHandler cancels the runner when the server reports a cancel r
 
   await handler({ ...trigger, parentTriggerId: null });
 
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'CANCELLED', 'Runner cancelled by user']);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'CANCELLED', 'Runner cancelled by user']);
 });
 
 test('createTriggerHandler marks the trigger as failed when runtime loading throws', async () => {
@@ -2215,7 +2230,7 @@ test('createTriggerHandler marks the trigger as failed when runtime loading thro
 
   await handler({ ...trigger, parentTriggerId: null });
 
-  assert.deepEqual(clientCalls.at(-1)?.args, ['trigger-1', 'FAILED', 'runtime boom']);
+  assert.deepEqual(clientCalls.at(-1)?.args.slice(0, 3), ['trigger-1', 'FAILED', 'runtime boom']);
   assert.equal(
     errors.some((entry) => entry.message === 'Trigger handling failed'),
     true,
@@ -3070,4 +3085,83 @@ test('createTriggerHandler skips the pre-flight for worktree runs that already v
     assert.deepEqual(runnerInputs, [{ authPath: worktreePath }]);
     assert.equal(clientCalls.at(-1)?.args[1], 'DONE');
   });
+});
+
+test('createTriggerHandler 완료 보고 예외 후에도 수집한 사용량을 FAILED 보고에 보존한다', async () => {
+  const tokenUsage = { ...emptyTokenUsage('CLAUDE_CODE'), status: 'PARTIAL' as const, inputTokens: 123 };
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const logEntries: Array<{ level: string; message: string; category?: string; toolName?: string }> = [];
+  const discoveredAuthPaths: string[] = [];
+  const runnerInputs: Array<{ prompt: string; authPath: string | null }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'fetchTriggerRuntime', args });
+      return runtime;
+    },
+    isTriggerCancelRequested: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'isTriggerCancelRequested', args });
+      return false;
+    },
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+      if (args[1] === 'DONE') throw new Error('report failed');
+    },
+  };
+
+  const runner: Runner = {
+    run: async (input) => {
+      runnerInputs.push({ prompt: input.prompt, authPath: input.authPath });
+      input.onStdoutChunk?.('stdout', 'TEXT');
+      input.onStderrChunk?.('stderr', 'STDERR');
+      return { exitCode: 0, tokenUsage };
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+      onAuthPathDiscovered: (authPath) => {
+        discoveredAuthPaths.push(authPath);
+      },
+    },
+    {
+      pathExists: () => true,
+      createRunnerFactory: () => () => runner,
+      createLogReporter: () => ({
+        start: () => {
+          logEntries.push({ level: 'START', message: 'started' });
+        },
+        append: (level, message, category, toolName) => {
+          logEntries.push({ level, message, category, toolName });
+        },
+        stop: async () => {
+          logEntries.push({ level: 'STOP', message: 'stopped' });
+        },
+      }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: '/auth/path/.agentteams/runner/history/parent-1.md',
+      }),
+    },
+  );
+
+  await handler(trigger);
+
+  assert.deepEqual(clientCalls.at(-1)?.args[3], tokenUsage);
+  assert.equal(clientCalls.at(-1)?.args[1], 'FAILED');
 });

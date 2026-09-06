@@ -1,3 +1,4 @@
+import type { TokenUsage } from './token-usage.js';
 import type { TriggerLogCategory } from '../types.js';
 // 러너 타입 집합의 단일 진실 소스(SSOT). `import type`이므로 컴파일 시 완전히 제거되어
 // daemon 런타임/배포 산출물(dist)에는 이 패키지 의존이 남지 않는다(zero-dependency 유지).
@@ -33,6 +34,7 @@ export interface RunnerOptions {
 }
 
 export type RunResult = {
+  tokenUsage?: TokenUsage;
   exitCode: number;
   cancelled?: boolean;
   /// 워치독(무출력 idle 또는 fail-safe 전체 시간)에 의해 종료된 경우 true. `idleTimedOut`이 true면
