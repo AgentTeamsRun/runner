@@ -57,3 +57,33 @@ test('createOpenCodeOutputCapture excludes CLIXML stderr from fallback output', 
 
   assert.equal(capture.toResultOutputText(), 'actual agent output');
 });
+
+import { buildOpenCodeRunArgs, toOpenCodePowerShellEncodedCommand } from './opencode.js';
+
+test('buildOpenCodeRunArgs forwards the confirmed effort level exactly once via --variant', () => {
+  const builder = buildOpenCodeRunArgs;
+  assert.equal(typeof builder, 'function', 'opencode.ts must export buildOpenCodeRunArgs(model, effort)');
+  const args = builder('opencode/muse-spark-1.3-contributor-free', 'high');
+  assert.deepEqual(args.slice(0, 3), ['run', '--format', 'json']);
+  assert.equal(args.filter((arg) => arg === '--variant').length, 1, 'variant flag must be present exactly once');
+  assert.equal(args[args.indexOf('--variant') + 1], 'high');
+  assert.equal(args.includes('--thinking'), false, '--thinking is a display toggle, not an effort control');
+});
+
+test('buildOpenCodeRunArgs omits --variant when effort is missing or blank', () => {
+  const builder = buildOpenCodeRunArgs;
+  assert.equal(typeof builder, 'function', 'opencode.ts must export buildOpenCodeRunArgs(model, effort)');
+  for (const effort of [undefined, null, '', '   ']) {
+    assert.equal(builder('opencode/big-pickle', effort).includes('--variant'), false);
+  }
+});
+
+test('toOpenCodePowerShellEncodedCommand forwards the confirmed effort level on Windows', () => {
+  const builder = toOpenCodePowerShellEncodedCommand;
+  assert.equal(typeof builder, 'function', 'opencode.ts must export toOpenCodePowerShellEncodedCommand');
+  const decoded = Buffer.from(
+    builder('C:/opencode.exe', 'hello', 'opencode/muse-spark-1.3-contributor-free', 'high'),
+    'base64',
+  ).toString('utf16le');
+  assert.ok(decoded.includes("'--variant' 'high'"), decoded);
+});

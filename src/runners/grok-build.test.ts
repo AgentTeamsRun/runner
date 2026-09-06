@@ -281,3 +281,19 @@ test('extractGrokResultText keeps the raw output when no result line survived', 
   const captured = [CAPTURED_SYSTEM_LINE, CAPTURED_TOOL_USE_LINE].join('\n');
   assert.equal(extractGrokResultText(captured), captured);
 });
+
+test('Grok effort는 재실행마다 정확히 한 번 전달하고 기본값은 생략한다', () => {
+  for (const effort of ['low', 'medium', 'high', 'xhigh']) {
+    const args = buildGrokBuildArgs(PROMPT_FILE, CWD, 'grok-4.6', effort);
+    assert.equal(args.filter((arg) => arg === '--reasoning-effort').length, 1);
+    assert.equal(args[args.indexOf('--reasoning-effort') + 1], effort);
+    const script = Buffer.from(
+      toGrokBuildPowerShellEncodedCommand('C:/grok.exe', PROMPT_FILE, CWD, 'grok-4.6', effort),
+      'base64',
+    ).toString('utf16le');
+    assert.ok(script.includes(`'--reasoning-effort' '${effort}'`));
+  }
+  for (const effort of [undefined, null, '', '   ']) {
+    assert.equal(buildGrokBuildArgs(PROMPT_FILE, CWD, 'grok-4.6', effort).includes('--reasoning-effort'), false);
+  }
+});

@@ -367,3 +367,33 @@ test('OmpRunner emits log entries while the process is still running', async () 
   assert.equal(entriesBeforeClose > 0, true, 'entries must reach the trigger log before the process closes');
   assert.equal(entriesBeforeClose, entries.length, 'no entry may be held back until close');
 });
+
+test('buildOmpArgs forwards the confirmed effort level exactly once via --thinking', () => {
+  const args = buildOmpArgs(PROMPT_FILE, CWD, 'anthropic/claude-sonnet-4', 'high');
+  assert.equal(args.filter((arg) => arg === '--thinking').length, 1, 'thinking flag must be present exactly once');
+  assert.equal(args[args.indexOf('--thinking') + 1], 'high');
+});
+
+test('buildOmpArgs omits --thinking when effort is missing or blank', () => {
+  for (const effort of [undefined, null, '', '   ']) {
+    assert.equal(buildOmpArgs(PROMPT_FILE, CWD, 'anthropic/claude-sonnet-4', effort).includes('--thinking'), false);
+  }
+});
+
+test('toOmpPowerShellEncodedCommand forwards the confirmed effort level on Windows', () => {
+  const decoded = Buffer.from(
+    toOmpPowerShellEncodedCommand('C:/omp.exe', PROMPT_FILE, CWD, 'anthropic/claude-sonnet-4', 'high'),
+    'base64',
+  ).toString('utf16le');
+  assert.ok(decoded.includes("'--thinking' 'high'"), decoded);
+});
+
+test('OmpRunner는 구버전 thinking 옵션 오류를 성공으로 덮지 않는다', async () => {
+  const runner = createStreamingRunner((child) => {
+    child.stderr.emit('data', Buffer.from('Error: unknown flag --thinking; update Oh My Pi to use this option\n'));
+    child.emit('close', 2);
+  });
+  const result = await runner.run({ ...streamingOptions, model: 'openai/gpt-5.6-sol', effort: 'high' });
+  assert.equal(result.exitCode, 2);
+  assert.match(result.errorMessage ?? '', /unknown flag --thinking/);
+});

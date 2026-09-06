@@ -149,6 +149,29 @@ const defaultDependencies: ModelEnumeratorDependencies = {
 // 255자를 넘는 value는 모델 식별자로 볼 수 없으니 자르지 않고 버린다.
 const MAX_FIELD_LENGTH = 255;
 
+/**
+ * 러너 카탈로그가 알려 준 모델별 추론 강도 이름을 소문자로 정규화하고 순서를 보존한 채 중복을 제거한다.
+ *
+ * 어휘 검증은 하지 않는다. 엔진별 허용 집합의 SSOT는 `@agentteams/core-constants`의
+ * `RUNNER_EFFORT_LEVELS`인데 daemon은 zero-dependency 원칙상 그 패키지를 런타임에 참조하지 못하므로,
+ * 사본을 여기 두는 대신 **보고는 카탈로그 원문 그대로** 하고 API가 항목별로 거른다
+ * (`syncDetectedMemberRunnerModels`의 `isAllowedEffortLevel` 필터). 그래야 OpenCode
+ * `minimax/MiniMax-M3`의 `thinking` variant처럼 effort 어휘 밖 이름이 한 곳에서만 걸러지고,
+ * 상류 CLI가 새 레벨을 추가해도 daemon 배포를 기다리지 않아도 된다.
+ */
+const normalizeCatalogEffortLevels = (levels: readonly unknown[]): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of levels) {
+    if (typeof raw !== 'string') continue;
+    const level = raw.trim().toLowerCase();
+    if (level.length === 0 || seen.has(level)) continue;
+    seen.add(level);
+    result.push(level);
+  }
+  return result;
+};
+
 const normalizeModels = (models: EnumeratedModel[]): EnumeratedModel[] => {
   const seen = new Set<string>();
 
@@ -198,6 +221,14 @@ const parsedResult = (output: string, models: EnumeratedModel[]): ModelEnumerati
  * `id: "auto"`(openrouter 자동 라우팅 sentinel)는 `parseCursorModels`의 `auto`와 같은
  * 이유로 제외한다 — 실제 모델이 아니라 어떤 모델이 쓰였는지 추적할 수 없다.
  *
+ * **모델별 추론 강도는 `thinking` 배열이 소유한다**(2026-09-06 재실측, omp/18.1.2). 항목별로 값이
+ * 다르다: 596건 중 `["minimal","low","medium","high"]` 219건, `["low","medium","high"]` 47건,
+ * `["low","medium","high","xhigh","max"]` 45건 등이며 전체 합집합은 minimal|low|medium|high|xhigh|max다
+ * (`--thinking`이 추가로 받는 `off`/`auto`는 레벨이 아니라 끄기·위임 스위치라 카탈로그에 없다).
+ * `reasoning` 불리언은 추론 자체를 하는지만 알려 주므로 레벨 출처로 쓰지 않는다 — 실제로
+ * `reasoning: true`인데 `thinking: null`인 항목이 3건 있다(예: `xai-oauth/grok-4.20-0309-reasoning`).
+ * 그런 항목과 `reasoning: false`(153건, `thinking: null`)는 레벨을 비워 "미확인"으로 남긴다.
+ *
  * stdout만 파싱한다(Node NO_COLOR 경고는 stderr).
  */
 export const parseOmpModels = (output: string): ModelEnumerationResult => {
@@ -205,7 +236,14 @@ export const parseOmpModels = (output: string): ModelEnumerationResult => {
 
   try {
     const parsed = JSON.parse(output) as {
-      models?: Array<{ provider?: unknown; id?: unknown; selector?: unknown; name?: unknown; contextWindow?: unknown }>;
+      models?: Array<{
+        provider?: unknown;
+        id?: unknown;
+        selector?: unknown;
+        name?: unknown;
+        contextWindow?: unknown;
+        thinking?: unknown;
+      }>;
     };
     const models = Array.isArray(parsed.models)
       ? parsed.models.flatMap((model): EnumeratedModel[] => {
@@ -220,11 +258,15 @@ export const parseOmpModels = (output: string): ModelEnumerationResult => {
               : undefined;
           const value = selector.length > 0 ? selector : model.id;
           const baseLabel = name.length > 0 ? name : model.id;
+          const supportedEffortLevels = Array.isArray(model.thinking)
+            ? normalizeCatalogEffortLevels(model.thinking)
+            : [];
           return [
             {
               value,
               label: provider.length > 0 ? `${baseLabel} (${provider})` : baseLabel,
               ...(maxInputTokens ? { maxInputTokens } : {}),
+              ...(supportedEffortLevels.length > 0 ? { supportedEffortLevels } : {}),
             },
           ];
         })
@@ -266,6 +308,22 @@ export const parseKiroModels = (output: string): ModelEnumerationResult => {
   }
 };
 
+/**
+ * `opencode models --verbose` (2026-09-06 실측, opencode 1.18.18): `provider/model` 줄 다음에
+ * pretty-print JSON 블록이 이어진다.
+ *
+ * **모델별 추론 강도는 `variants` 객체의 키가 소유한다.** `opencode run --variant`의 도움말이
+ * "model variant (provider-specific reasoning effort)"라고 못박은 그 축이다. 실측 382건 중 178건에
+ * 비어 있지 않은 `variants`가 있고 키 조합은 모델마다 다르다(`{low,medium,high}` 61건,
+ * `{low,high,max}` 13건, `{minimal,low,medium,high,xhigh}` 등). 공급자별로 이름이 다르므로 한 모델의
+ * 조합을 다른 모델에 옮기지 않는다 — 항목별로 그 모델의 키만 싣는다.
+ *
+ * `variants: {}`(예: `opencode/big-pickle`)와 키 자체가 없는 항목은 레벨을 비워 "미확인"으로 남긴다.
+ * effort 어휘 밖 이름(`minimax/MiniMax-M3`의 `thinking`)도 여기서 지우지 않고 원문대로 싣는다 —
+ * 허용 어휘 판정은 API 한 곳에서 한다(`normalizeCatalogEffortLevels` 주석 참조).
+ *
+ * `--thinking`은 표시 토글(`show thinking blocks`)이라 추론 강도 축이 아니다. 혼동하지 않는다.
+ */
 export const parseOpenCodeVerboseModels = (output: string): ModelEnumerationResult => {
   const lines = output.split(/\r?\n/u);
   const models: EnumeratedModel[] = [];
@@ -280,14 +338,24 @@ export const parseOpenCodeVerboseModels = (output: string): ModelEnumerationResu
       if (jsonLines.length === 0 && line.trim() !== '{') break;
       jsonLines.push(line);
       try {
-        const metadata = JSON.parse(jsonLines.join('\n')) as { name?: unknown; limit?: { context?: unknown } };
+        const metadata = JSON.parse(jsonLines.join('\n')) as {
+          name?: unknown;
+          limit?: { context?: unknown };
+          variants?: unknown;
+        };
         const context = metadata.limit?.context;
+        const variants = metadata.variants;
+        const supportedEffortLevels =
+          typeof variants === 'object' && variants !== null && !Array.isArray(variants)
+            ? normalizeCatalogEffortLevels(Object.keys(variants))
+            : [];
         models.push({
           value,
           label: typeof metadata.name === 'string' ? metadata.name : value,
           ...(typeof context === 'number' && Number.isInteger(context) && context > 0
             ? { maxInputTokens: context }
             : {}),
+          ...(supportedEffortLevels.length > 0 ? { supportedEffortLevels } : {}),
         });
         index = jsonIndex;
         break;
@@ -435,22 +503,45 @@ export const parseCodexModels = (output: string): ModelEnumerationResult => {
   }
 };
 
+/**
+ * Muse Code에는 모델별 추론 강도 카탈로그가 없다. `muse schema generate-ts`(schema version 1)에도,
+ * MSP `model/list` 실출력에도 effort 필드가 없다(2026-09-06 실측, muse 1.0.3).
+ *
+ * 대신 `muse exec --reasoning-effort`는 **공급자 축**으로 검증된다. 기본 공급자(`--provider meta`)에서
+ * 실행을 실측해 모델별 지원 범위를 확정했다 — 카탈로그 4모델(muse-spark-1.2/1.3 및 각 -contributor) ×
+ * 8레벨 32회 실행에서 아래 7레벨은 4모델 전부 `completed`였고, 도움말에만 있는 `none`은 4모델 전부
+ * exit 2로 거부됐다("--reasoning-effort none is not supported with --provider meta").
+ * 즉 이 목록은 도움말 복사가 아니라 모델별 실행 결과다.
+ *
+ * 그래서 보완 규칙을 공급자에 건다: `providerId`가 `meta`인 모델에만 이 목록을 싣고, 다른 공급자의
+ * 모델은 레벨을 비워 "미확인"으로 남긴다(사용자가 모델 관리에서 직접 설정하는 경로). 카탈로그가
+ * 다시 넓어지면 여기가 아니라 실측을 갱신한 뒤 이 목록을 고친다.
+ */
+const MUSE_CODE_META_PROVIDER_ID = 'meta';
+const MUSE_CODE_META_EFFORT_LEVELS: readonly string[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+
 // muse schema generate-ts (1.0.2): ModelListResult.models의 필드를 검증한다.
 export const parseMuseCodeModels = (output: string): ModelEnumerationResult => {
   if (!output.trim()) return { status: 'EMPTY_OUTPUT' };
   try {
-    const result = JSON.parse(output) as { models?: unknown };
+    const result = JSON.parse(output) as { models?: unknown; providerId?: unknown };
     if (!Array.isArray(result.models)) return { status: 'FORMAT_MISMATCH' };
     if (result.models.length === 0) return { status: 'EMPTY_OUTPUT' };
+    // 구버전 응답은 항목별 providerId를 싣지 않는다. 그럴 때만 결과 전체의 providerId로 폴백한다.
+    const fallbackProviderId = typeof result.providerId === 'string' ? result.providerId : undefined;
     const models: EnumeratedModel[] = [];
     for (const row of result.models) {
       if (!row || typeof row !== 'object' || typeof row.modelId !== 'string' || typeof row.displayLabel !== 'string')
         return { status: 'FORMAT_MISMATCH' };
+      const providerId = typeof row.providerId === 'string' ? row.providerId : fallbackProviderId;
       models.push({
         value: row.modelId,
         label: row.isDefault === true ? `${row.displayLabel} (default)` : row.displayLabel,
         ...(typeof row.contextLimit === 'number' && Number.isInteger(row.contextLimit) && row.contextLimit > 0
           ? { maxInputTokens: row.contextLimit }
+          : {}),
+        ...(providerId === MUSE_CODE_META_PROVIDER_ID
+          ? { supportedEffortLevels: [...MUSE_CODE_META_EFFORT_LEVELS] }
           : {}),
       });
     }

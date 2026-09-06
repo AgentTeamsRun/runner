@@ -177,6 +177,75 @@ test('createTriggerHandler passes the resolved idle timeout to the runner and lo
   );
 });
 
+test('trigger handler는 새 엔진 effort를 보존하고 fastMode와 미지원 effort만 경고한다', async () => {
+  const runnerInputs: Array<{ effort?: string | null; fastMode?: boolean | null; model?: string | null }> = [];
+  const warnings: string[] = [];
+  const client = {
+    fetchTriggerRuntime: async () => runtime,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => {},
+    updateTriggerStatus: async () => {},
+  };
+  const runner: Runner = {
+    run: async (input) => {
+      runnerInputs.push(input);
+      return { exitCode: 0 };
+    },
+  };
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 1_800_000,
+        isConfiguredIdleTimeoutExplicit: false,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      createRunnerFactory: () => () => runner,
+      createLogReporter: () => ({
+        start: () => {},
+        append: (_level: string, message: string) => {
+          warnings.push(message);
+        },
+        stop: async () => {},
+      }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  for (const runnerType of ['OPENCODE', 'COPILOT_CLI', 'OMP', 'ANTIGRAVITY', 'GROK_BUILD'] as const) {
+    for (const effort of ['high', 'low', null]) {
+      await handler({ ...trigger, runnerType, model: 'selected-model', effort, fastMode: true });
+      const input = runnerInputs.at(-1);
+      assert.equal(input?.effort, effort);
+      assert.equal(input?.model, 'selected-model');
+      assert.equal(input?.fastMode, false);
+    }
+  }
+  assert.equal(
+    warnings.some((message) => message.includes('requested effort')),
+    false,
+  );
+  assert.ok(warnings.some((message) => message.includes('Fast mode')));
+  for (const runnerType of ['KIRO_CLI', 'KIMI_CLI', 'CURSOR_CLI', 'AMP'] as const) {
+    await handler({ ...trigger, runnerType, effort: 'high' });
+    assert.equal(runnerInputs.at(-1)?.effort, null);
+    assert.ok(warnings.some((message) => message.includes(`Effort level is not supported by runner ${runnerType}`)));
+  }
+});
+
 test('createTriggerHandler runs the runner, reports history, and marks success', async () => {
   const tokenUsage = { ...emptyTokenUsage('CLAUDE_CODE'), status: 'PARTIAL' as const, inputTokens: 123 };
   const clientCalls: Array<{ method: string; args: unknown[] }> = [];
