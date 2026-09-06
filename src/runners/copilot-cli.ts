@@ -15,9 +15,18 @@ const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
-export const buildCopilotCliArgs = (prompt: string, model?: string | null): string[] => {
+export const buildCopilotCliArgs = (prompt: string, model?: string | null, effort?: string | null): string[] => {
   const modelArgs = model && model !== 'default' ? ['--model', model] : [];
-  return ['-p', prompt, '--allow-all', '--no-ask-user', '--output-format', 'json', ...modelArgs];
+  return [
+    '-p',
+    prompt,
+    '--allow-all',
+    '--no-ask-user',
+    '--output-format',
+    'json',
+    ...modelArgs,
+    ...(effort?.trim() ? ['--effort', effort] : []),
+  ];
 };
 
 const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
@@ -26,8 +35,10 @@ export const toPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
   promptFilePath: string,
   model?: string | null,
+  effort?: string | null,
 ): string => {
   const modelSegment = model && model !== 'default' ? ` '--model' ${toPowerShellLiteral(model)}` : '';
+  const effortSegment = effort?.trim() ? ` '--effort' ${toPowerShellLiteral(effort)}` : '';
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
     '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
@@ -36,7 +47,8 @@ export const toPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '-p' $promptText '--allow-all' '--no-ask-user' '--output-format' 'json'${modelSegment}`,
+    `& ${toPowerShellLiteral(resolvedExecutablePath)} '-p' $promptText '--allow-all' '--no-ask-user' '--output-format' 'json'${modelSegment}${effortSegment}`,
+    'exit $LASTEXITCODE',
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -74,12 +86,12 @@ export class CopilotCliRunner implements Runner {
       await writeFile(windowsPromptFilePath, opts.prompt, { encoding: 'utf8' });
     }
     const windowsEncodedCommand = windowsPromptFilePath
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, windowsPromptFilePath, opts.model)
+      ? toPowerShellEncodedCommand(resolvedExecutablePath, windowsPromptFilePath, opts.model, opts.effort)
       : null;
     const executableInfo = describeExecutableResolution('copilot', {
       platform: () => (isWindows ? 'win32' : platform()),
     });
-    const args = buildCopilotCliArgs(opts.prompt, opts.model);
+    const args = buildCopilotCliArgs(opts.prompt, opts.model, opts.effort);
 
     logger.info('Runner prompt', {
       triggerId: opts.triggerId,

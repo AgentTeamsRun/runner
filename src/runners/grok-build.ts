@@ -36,10 +36,15 @@ const normalizedModel = (model?: string | null): string => (typeof model === 'st
  *   would need a dedicated parser for no gain.
  * - Permission bypass is `--permission-mode bypassPermissions`. The documented `--yolo`
  *   alias does not exist in this build.
- * - `--effort` is accepted and validates its levels (xhigh|high|medium|low), but the effect
- *   was not reproducible, so the runner does not pass it (see capabilities.ts).
+ * - grok 1.0.13의 `--reasoning-effort`는 세션 ACP 요청과 응답 모델 메타데이터에
+ *   전달된다. low/medium/high/xhigh를 모델별 검증 후 전달한다(2026-09-07 실측).
  */
-export const buildGrokBuildArgs = (promptFilePath: string, cwd: string, model?: string | null): string[] => {
+export const buildGrokBuildArgs = (
+  promptFilePath: string,
+  cwd: string,
+  model?: string | null,
+  effort?: string | null,
+): string[] => {
   const selectedModel = normalizedModel(model);
   // `default` is the platform sentinel for "no model pinned"; Grok would reject it as an
   // unknown model id and exit 1.
@@ -54,6 +59,7 @@ export const buildGrokBuildArgs = (promptFilePath: string, cwd: string, model?: 
     '--permission-mode',
     'bypassPermissions',
     ...modelArgs,
+    ...(effort?.trim() ? ['--reasoning-effort', effort] : []),
   ];
 };
 
@@ -73,10 +79,11 @@ export const toGrokBuildPowerShellEncodedCommand = (
   promptFilePath: string,
   cwd: string,
   model?: string | null,
+  effort?: string | null,
 ): string => {
   // The Windows path must carry the same structured-output flags as the POSIX argv, or the
   // runner would silently fall back to plain text there.
-  const argSegment = buildGrokBuildArgs(promptFilePath, cwd, model)
+  const argSegment = buildGrokBuildArgs(promptFilePath, cwd, model, effort)
     .map((arg) => ` ${toPowerShellLiteral(arg)}`)
     .join('');
   const scriptContent = [
@@ -87,6 +94,7 @@ export const toGrokBuildPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     `& ${toPowerShellLiteral(resolvedExecutablePath)}${argSegment}`,
+    'exit $LASTEXITCODE',
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -200,7 +208,7 @@ export class GrokBuildRunner implements Runner {
       }
     };
 
-    const args = buildGrokBuildArgs(promptFilePath, cwd, opts.model);
+    const args = buildGrokBuildArgs(promptFilePath, cwd, opts.model, opts.effort);
     logger.info('Runner prompt prepared', {
       triggerId: opts.triggerId,
       promptLength: opts.prompt.length,
@@ -244,7 +252,7 @@ export class GrokBuildRunner implements Runner {
               '-ExecutionPolicy',
               'Bypass',
               '-EncodedCommand',
-              toGrokBuildPowerShellEncodedCommand(resolvedExecutablePath, promptFilePath, cwd, opts.model),
+              toGrokBuildPowerShellEncodedCommand(resolvedExecutablePath, promptFilePath, cwd, opts.model, opts.effort),
             ],
             { cwd, detached: false, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env },
           )

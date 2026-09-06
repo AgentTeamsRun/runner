@@ -279,3 +279,26 @@ test('createAntigravityInternalLogForwarder emits model only once and routes war
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test('buildAntigravityExecArgs forwards the confirmed effort level exactly once via --effort before --print', () => {
+  const args = buildAntigravityExecArgs('hello', '/ws/.agentteams', '/ws/agy.log', 20_000, 'gemini-3', 'high');
+  assert.equal(args.filter((arg) => arg === '--effort').length, 1, 'effort flag must be present exactly once');
+  const effortIndex = args.indexOf('--effort');
+  assert.equal(args[effortIndex + 1], 'high');
+  assert.ok(effortIndex < args.indexOf('--print'), 'effort must precede the --print prompt');
+});
+
+test('buildAntigravityExecArgs omits --effort when effort is missing or blank', () => {
+  for (const effort of [undefined, null, '', '   ']) {
+    const args = buildAntigravityExecArgs('hello', '/ws/.agentteams', '/ws/agy.log', 20_000, 'gemini-3', effort);
+    assert.equal(args.includes('--effort'), false, String(effort));
+  }
+});
+
+test('toPowerShellEncodedCommand forwards the confirmed effort level on Windows', () => {
+  const decoded = Buffer.from(
+    toPowerShellEncodedCommand('C:/agy.exe', 'hello', 'C:/ws/.agentteams', 'C:/ws/agy.log', 20_000, 'gemini-3', 'high'),
+    'base64',
+  ).toString('utf16le');
+  assert.ok(decoded.includes("'--effort' 'high'"), decoded);
+});

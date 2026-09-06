@@ -63,7 +63,7 @@ test('Copilot CLI supports model selection but not fast mode or sub-agent delega
   assert.deepEqual(getRunnerCapabilities('COPILOT_CLI'), {
     model: true,
     fastMode: false,
-    effort: false,
+    effort: true,
     modelEnumeration: false,
     subAgentDelegation: false,
   });
@@ -93,7 +93,7 @@ test('Kimi CLI supports model selection but not fast mode, effort, or sub-agent 
 });
 
 test('Kiro CLI supports model selection but not fast mode, effort, or sub-agent delegation', () => {
-  // `--model`은 실측으로 확인됐고, `--effort`는 효과를 실증하지 못해 false로 고정했다.
+  // --effort의 사용자 전역 설정 영속화 때문에 실행 단위 전달을 활성화하지 않는다.
   assert.deepEqual(getRunnerCapabilities('KIRO_CLI'), {
     model: true,
     fastMode: false,
@@ -168,30 +168,21 @@ test('describeUnsupportedRunnerOptions ignores blank model values', () => {
 test('verified runners support effort', () => {
   assert.equal(RUNNER_CAPABILITIES.CLAUDE_CODE.effort, true);
   assert.equal(RUNNER_CAPABILITIES.CODEX.effort, true);
-  assert.equal(RUNNER_CAPABILITIES.OPENCODE.effort, false);
-  assert.equal(RUNNER_CAPABILITIES.ANTIGRAVITY.effort, false);
+  assert.equal(RUNNER_CAPABILITIES.OPENCODE.effort, true);
+  assert.equal(RUNNER_CAPABILITIES.ANTIGRAVITY.effort, true);
   assert.equal(RUNNER_CAPABILITIES.AMP.effort, false);
-  assert.equal(RUNNER_CAPABILITIES.COPILOT_CLI.effort, false);
+  assert.equal(RUNNER_CAPABILITIES.COPILOT_CLI.effort, true);
   assert.equal(RUNNER_CAPABILITIES.CURSOR_CLI.effort, false);
   assert.equal(RUNNER_CAPABILITIES.KIRO_CLI.effort, false);
   assert.equal(runnerSupportsEffort('CODEX'), true);
   assert.equal(runnerSupportsEffort('MUSE_CODE'), true);
   assert.equal(runnerSupportsEffort('CLAUDE_CODE'), true);
-  assert.equal(runnerSupportsEffort('OPENCODE'), false);
+  assert.equal(runnerSupportsEffort('OPENCODE'), true);
   assert.equal(runnerSupportsEffort('SOMETHING_ELSE'), false);
 });
 
 test('describeUnsupportedRunnerOptions flags effort ignored for unsupported runners', () => {
-  for (const runnerType of [
-    'OPENCODE',
-    'ANTIGRAVITY',
-    'AMP',
-    'COPILOT_CLI',
-    'CURSOR_CLI',
-    'KIMI_CLI',
-    'KIRO_CLI',
-    'OMP',
-  ]) {
+  for (const runnerType of ['AMP', 'CURSOR_CLI', 'KIMI_CLI', 'KIRO_CLI']) {
     const warnings = describeUnsupportedRunnerOptions(runnerType, { model: null, fastMode: false, effort: 'high' });
     assert.equal(warnings.length, 1, `${runnerType} should warn once`);
     assert.equal(warnings[0]?.option, 'effort');

@@ -64,3 +64,25 @@ test('toPowerShellEncodedCommand does not embed a prompt that contains a here-st
   assert.doesNotMatch(script, new RegExp(maliciousPrompt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(script, /\$promptText = @'/);
 });
+
+test('buildCopilotCliArgs forwards the confirmed effort level exactly once via --effort', () => {
+  const args = buildCopilotCliArgs('hello', 'gpt-5', 'high');
+  const effortFlags = args.filter((arg) => arg === '--effort' || arg === '--reasoning-effort');
+  assert.equal(effortFlags.length, 1, 'effort flag must be present exactly once');
+  assert.equal(args[args.indexOf(effortFlags[0] ?? '') + 1], 'high');
+});
+
+test('buildCopilotCliArgs omits the effort flag when effort is missing or blank', () => {
+  for (const effort of [undefined, null, '', '   ']) {
+    const args = buildCopilotCliArgs('hello', 'gpt-5', effort);
+    assert.equal(args.includes('--effort') || args.includes('--reasoning-effort'), false, String(effort));
+  }
+});
+
+test('toPowerShellEncodedCommand forwards the confirmed effort level on Windows', () => {
+  const decoded = Buffer.from(
+    toPowerShellEncodedCommand('C:/copilot.cmd', 'C:/prompt.txt', 'gpt-5', 'high'),
+    'base64',
+  ).toString('utf16le');
+  assert.ok(decoded.includes("'--effort' 'high'"), decoded);
+});

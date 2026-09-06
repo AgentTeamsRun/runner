@@ -19,7 +19,7 @@ export interface RunnerCapabilities {
   fastMode: boolean;
   /**
    * 서버가 확정한 추론 강도(Effort) 레벨을 하위 CLI 인자로 전달/적용하는가.
-   * CODEX(`-c model_reasoning_effort`), CLAUDE_CODE(`--effort`), MUSE_CODE(`--reasoning-effort`)가 지원한다.
+   * 엔진별 플래그는 각 어댑터가 소유하며 공통 허용 집합과 계약 테스트로 대조한다.
    * 실제 허용 레벨은 API가 모델 메타데이터로 검증하므로 daemon은 값 검증을 중복하지 않는다.
    */
   effort: boolean;
@@ -61,19 +61,22 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // codex-cli 0.152.0의 `codex debug models`가 현재 설치·인증 환경의 JSON 카탈로그를
   // 비대화형으로 제공함을 확인했다(2026-09-03). 숨김/API 미지원 항목은 파서에서 제외한다.
   CODEX: { model: true, fastMode: true, effort: true, modelEnumeration: true, subAgentDelegation: false },
-  // opencode는 --model만 전달하며 fastMode/effort는 반영하지 않는다.
-  OPENCODE: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
-  // antigravity(agy --print)는 --model을 지원하지만 fastMode/effort는 반영하지 않는다.
-  ANTIGRAVITY: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
+  // OpenCode 1.18.18: 모델 카탈로그의 variant를 `run --variant`로 전달한다.
+  OPENCODE: { model: true, fastMode: false, effort: true, modelEnumeration: true, subAgentDelegation: false },
+  // agy 1.1.27: 세션 --effort. 모델 접미사와 충돌하면 CLI가 명시적으로 거부한다.
+  ANTIGRAVITY: { model: true, fastMode: false, effort: true, modelEnumeration: true, subAgentDelegation: false },
   // AMP는 `--model`이 아니라 `--mode`로 실행 프로필을 선택하므로 model:true로 둔다.
   // 실제 인자 조립은 runners/amp.ts에서 AmpCode 전용 계약으로 문서화한다.
   AMP: { model: true, fastMode: false, effort: false, modelEnumeration: false, subAgentDelegation: false },
-  COPILOT_CLI: { model: true, fastMode: false, effort: false, modelEnumeration: false, subAgentDelegation: false },
+  COPILOT_CLI: { model: true, fastMode: false, effort: true, modelEnumeration: false, subAgentDelegation: false },
+  // Cursor는 effort 접미사가 있는 모델 id를 선택한다. 별도 축의 모델별 계약은 미확인이다.
   CURSOR_CLI: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
+  // Kimi는 설정 파일의 thinking.effort만 확인됐고 실행 단위 전달 경로는 미확인이다.
   KIMI_CLI: { model: true, fastMode: false, effort: false, modelEnumeration: false, subAgentDelegation: false },
   // kiro-cli는 `chat --model <MODEL>`을 실제로 소비한다(2026-08-08 실측).
-  // effort는 `--effort` 플래그가 존재하지만 잘못된 레벨도 조용히 수용되고 low/max가 동일
-  // 크레딧을 소모해 효과를 실증하지 못했으므로 false로 둔다.
+  // `--effort`는 공식 지원되지만 ~/.kiro/settings/cli.json에 자동 저장된다.
+  // 전역 설정을 변경하지 않는 실행 단위 경로가 확인될 때까지 미지원이다.
+  // 근거: https://kiro.dev/docs/models/effort/ (2026-09-07). 토큰 차이는 판정 기준이 아니다.
   // subAgentDelegation은 Kiro 서브에이전트가 메인 에이전트의 완료 대기(blocking) 모델이라 false.
   KIRO_CLI: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
   // grok(Grok Build)은 `-m <MODEL>`을 실제로 소비한다(2026-08-14 실측, grok 1.0.3).
@@ -81,21 +84,21 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // 그대로 보고된다. 알 수 없는 값은 exit 1 + `unknown model id`라 조용한 폴백이 없다.
   // modelEnumeration은 `grok models`가 `Available models:` 아래 `  * <id> (default)` 형태의
   // 기계 파싱 가능한 목록을 내보내 true다(JSON 출력 플래그는 없다).
-  // effort는 `--reasoning-effort`(alias `--effort`)가 존재하고 무효 레벨을 거부하지만
-  // (`use one of: xhigh, high, medium, low`), 동일 프롬프트에서 low↔xhigh의 reasoning
-  // 토큰 차이가 935↔996으로 노이즈 수준이라 효과를 실증하지 못해 false로 둔다(Kiro와 같은 기준).
+  // grok 1.0.13: --reasoning-effort가 ACP session/set_model의 _meta.reasoningEffort로
+  // 전달되고 응답 모델 메타데이터에도 적용됨을 확인했다(2026-09-07, grok-4.6 low).
+  // 공식 계약: https://x.ai/build/changelog — 토큰 차이로 지원 여부를 판정하지 않는다.
   // subAgentDelegation은 `spawn_subagent`로 위임하고 `get_command_or_subagent_output`
   // (task_ids + timeout_ms)으로 결과를 별도 회수하는 흐름이 헤드리스 실행에서 동작함을 실측했다.
-  GROK_BUILD: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: true },
+  GROK_BUILD: { model: true, fastMode: false, effort: true, modelEnumeration: true, subAgentDelegation: true },
   // omp/18.0.4 (2026-08-25 실측). `--model`은 무효 값도 exit 1로 거부한다.
   // modelEnumeration은 `omp models --json`이 기계 파싱 가능한 카탈로그를 내보내 true다.
   // 단 카탈로그는 **공급자 자격 증명이 하나라도 있을 때만** 나온다. 키가 전혀 없으면
   // `{ "models": [] }`이고, `OPENROUTER_API_KEY`에 임의 문자열만 넣어도 openrouter
   // 공개 카탈로그 470건이 나온다(키 유효성은 검증하지 않는다). 즉 목록에 있다고 실제
   // 호출이 되는 것은 아니고, 실행 가능 여부는 트리거가 실패해야 드러난다.
-  // AgentTeams fastMode/Effort에 대응하는 플래그는 없다(`--effort`는 unknown flag).
+  // omp 18.1.2: 카탈로그 thinking 레벨을 --thinking으로 전달한다. fastMode는 미지원.
   // `task` 위임은 헤드리스에서 호출/회수 분리를 실증하지 못해 false.
-  OMP: { model: true, fastMode: false, effort: false, modelEnumeration: true, subAgentDelegation: false },
+  OMP: { model: true, fastMode: false, effort: true, modelEnumeration: true, subAgentDelegation: false },
   // muse 1.0.2, 2026-09-04 실측: exec의 --model/--reasoning-effort 지원,
   // serve의 MSP model/list 지원. fast 전용 플래그와 exec 위임/회수는 없다.
   MUSE_CODE: { model: true, fastMode: false, effort: true, modelEnumeration: true, subAgentDelegation: false },

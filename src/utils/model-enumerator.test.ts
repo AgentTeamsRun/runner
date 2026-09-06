@@ -35,13 +35,62 @@ const asEnumeratedMeta = (model: { value: string; label: string; maxInputTokens?
   model as EnumeratedModelMeta;
 
 describe('model enumerator parsers', () => {
-  test('parses OpenCode labels and context limits while allowing a missing context', async () => {
+  // 픽스처는 `opencode models --verbose` 실출력에서 잘라 온 것이다(2026-09-06, opencode 1.18.18).
+  // `variants: {}`(big-pickle), variants 키 자체가 없는 항목, 공급자별로 다른 조합
+  // (muse-spark minimal-xhigh / deepseek low·high·max), effort 어휘 밖 이름(MiniMax-M3의 thinking)을
+  // 모두 담고 있다.
+  test('parses OpenCode labels, context limits, and per-model reasoning variants', async () => {
     const result = parseOpenCodeVerboseModels(await fixture('opencode-models-verbose.txt'));
     assert.deepEqual(result, {
       status: 'SUCCESS',
       values: [
+        // variants가 빈 객체면 "이 모델은 강도 조절이 없다"가 아니라 "카탈로그에 없다"이므로 필드를 싣지 않는다.
         { value: 'opencode/big-pickle', label: 'Big Pickle', maxInputTokens: 200000 },
+        // variants 키 자체가 없는 구버전/축약 항목도 그대로 통과해야 한다.
         { value: 'opencode/deepseek-v4-flash-free', label: 'DeepSeek V4 Flash Free' },
+        {
+          value: 'opencode/muse-spark-1.3-contributor-free',
+          label: 'Muse Spark 1.3 Free',
+          maxInputTokens: 1048576,
+          supportedEffortLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+        },
+        // 같은 카탈로그의 다른 공급자는 조합이 다르다. 한 모델의 조합을 다른 모델에 옮기면 이 단언이 깨진다.
+        {
+          value: 'openrouter/~deepseek/deepseek-v4-flash-latest',
+          label: 'DeepSeek V4 Flash Latest',
+          maxInputTokens: 1310720,
+          supportedEffortLevels: ['low', 'high', 'max'],
+        },
+        // effort 어휘 밖 이름(`thinking`)도 daemon에서 지우지 않는다. 허용 어휘 판정은 API 한 곳에서 한다.
+        {
+          value: 'minimax/MiniMax-M3',
+          label: 'MiniMax-M3',
+          maxInputTokens: 1048576,
+          supportedEffortLevels: ['none', 'thinking'],
+        },
+      ],
+    });
+  });
+
+  test('ignores an OpenCode variants field that is not a keyed object', () => {
+    const withArrayVariants = [
+      'provider/model-a',
+      '{',
+      '  "name": "Model A",',
+      '  "variants": ["low", "high"]',
+      '}',
+      'provider/model-b',
+      '{',
+      '  "name": "Model B",',
+      '  "variants": null',
+      '}',
+    ].join('\n');
+
+    assert.deepEqual(parseOpenCodeVerboseModels(withArrayVariants), {
+      status: 'SUCCESS',
+      values: [
+        { value: 'provider/model-a', label: 'Model A' },
+        { value: 'provider/model-b', label: 'Model B' },
       ],
     });
   });
@@ -57,13 +106,57 @@ describe('model enumerator parsers', () => {
           value: 'openrouter/~anthropic/claude-fable-latest',
           label: 'Claude Fable Latest (openrouter)',
           maxInputTokens: 1000000,
+          supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
         },
-        { value: 'groq/openai/gpt-oss-120b', label: 'GPT OSS 120B (groq)', maxInputTokens: 131072 },
-        { value: 'openrouter/openai/gpt-oss-120b', label: 'gpt-oss-120b (openrouter)', maxInputTokens: 131072 },
-        { value: 'together/openai/gpt-oss-120b', label: 'GPT OSS 120B (together)', maxInputTokens: 131072 },
+        {
+          value: 'groq/openai/gpt-oss-120b',
+          label: 'GPT OSS 120B (groq)',
+          maxInputTokens: 131072,
+          supportedEffortLevels: ['low', 'medium', 'high'],
+        },
+        {
+          value: 'openrouter/openai/gpt-oss-120b',
+          label: 'gpt-oss-120b (openrouter)',
+          maxInputTokens: 131072,
+          supportedEffortLevels: ['low', 'medium', 'high'],
+        },
+        {
+          value: 'together/openai/gpt-oss-120b',
+          label: 'GPT OSS 120B (together)',
+          maxInputTokens: 131072,
+          supportedEffortLevels: ['low', 'medium', 'high'],
+        },
+        // reasoning: false + thinking: null → 레벨 없음. 엔진 전체 레벨을 대신 채우지 않는다.
         { value: 'openai/gpt-4o', label: 'GPT-4o (openai)', maxInputTokens: 128000 },
       ],
     });
+  });
+
+  // `reasoning` 불리언은 레벨 출처가 아니다. omp/18.1.2 실측 596건 중 `reasoning: true`인데
+  // `thinking: null`인 항목이 3건 있다(예: xai-oauth/grok-4.20-0309-reasoning). 그런 항목에
+  // 엔진 전체 레벨을 채우면 검증되지 않은 값을 지원으로 보고하게 된다.
+  test('does not infer omp thinking levels from the reasoning boolean', () => {
+    assert.deepEqual(
+      parseOmpModels(
+        JSON.stringify({
+          models: [
+            { provider: 'xai-oauth', id: 'grok-4.20-0309-reasoning', reasoning: true, thinking: null },
+            { provider: 'local', id: 'llama-guess', reasoning: true },
+            { provider: 'local', id: 'llama-bad-shape', reasoning: true, thinking: 'high' },
+            { provider: 'local', id: 'llama-mixed', reasoning: true, thinking: ['  HIGH ', 'high', 42, ''] },
+          ],
+        }),
+      ),
+      {
+        status: 'SUCCESS',
+        values: [
+          { value: 'grok-4.20-0309-reasoning', label: 'grok-4.20-0309-reasoning (xai-oauth)' },
+          { value: 'llama-guess', label: 'llama-guess (local)' },
+          { value: 'llama-bad-shape', label: 'llama-bad-shape (local)' },
+          { value: 'llama-mixed', label: 'llama-mixed (local)', supportedEffortLevels: ['high'] },
+        ],
+      },
+    );
   });
 
   test('parses omp JSON model metadata and ignores an empty available list', () => {
@@ -288,6 +381,12 @@ describe('enumerateModels', () => {
     assert.equal(luna.label, 'GPT-5.6-Luna');
     assert.deepEqual(asEnumeratedMeta(luna).supportedEffortLevels, ['low', 'medium', 'high', 'xhigh', 'max']);
     assert.equal(asEnumeratedMeta(luna).fastModeSupported, true);
+
+    // 같은 카탈로그 안에서 ultra까지 / max까지 / xhigh까지가 모두 갈린다. 셋을 함께 단언해야
+    // "카탈로그를 읽는 대신 엔진 전체 레벨을 채우는" 회귀가 잡힌다(codex-cli 0.153.2 실측과 동일).
+    const spark = result.values.find((model) => model.value === 'gpt-5.3-codex-spark');
+    assert.ok(spark, 'visible catalog models must be present');
+    assert.deepEqual(asEnumeratedMeta(spark).supportedEffortLevels, ['low', 'medium', 'high', 'xhigh']);
   });
 
   test('excludes hidden Codex entries while retaining CLI-runnable entries unsupported by the platform API', async () => {

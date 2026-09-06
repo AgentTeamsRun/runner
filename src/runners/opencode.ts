@@ -16,8 +16,23 @@ const PROMPT_PREVIEW_MAX = 500;
 const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
-const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: string, model?: string | null): string => {
-  const modelSegment = model ? ` '--model' '${model.replaceAll("'", "''")}'` : '';
+export const buildOpenCodeRunArgs = (model?: string | null, effort?: string | null): string[] => [
+  'run',
+  '--format',
+  'json',
+  ...(model ? ['--model', model] : []),
+  ...(effort?.trim() ? ['--variant', effort] : []),
+];
+
+export const toOpenCodePowerShellEncodedCommand = (
+  resolvedExecutablePath: string,
+  prompt: string,
+  model?: string | null,
+  effort?: string | null,
+): string => {
+  const argSegment = buildOpenCodeRunArgs(model, effort)
+    .map((arg) => ` '${arg.replaceAll("'", "''")}'`)
+    .join('');
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
     '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
@@ -28,7 +43,8 @@ const toPowerShellEncodedCommand = (resolvedExecutablePath: string, prompt: stri
     `$promptText = @'`,
     `${prompt.replaceAll("'@", "'@")}`,
     `'@`,
-    `$promptText | & '${resolvedExecutablePath.replaceAll("'", "''")}' 'run' '--format' 'json'${modelSegment}`,
+    `$promptText | & '${resolvedExecutablePath.replaceAll("'", "''")}' ${argSegment}`,
+    'exit $LASTEXITCODE',
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -170,7 +186,7 @@ export class OpenCodeRunner implements Runner {
       ? resolveExecutablePathWithPreference(this.runnerCmd, [`${this.runnerCmd}.cmd`, this.runnerCmd])
       : resolveExecutablePathWithPreference(this.runnerCmd, [this.runnerCmd]);
     const windowsEncodedCommand = isWindows
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model)
+      ? toOpenCodePowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, opts.effort)
       : null;
     const executableInfo = describeExecutableResolution(this.runnerCmd, {
       platform: () => (isWindows ? 'win32' : platform()),
@@ -188,10 +204,9 @@ export class OpenCodeRunner implements Runner {
       windowsWrapper: isWindows ? 'powershell.exe -EncodedCommand' : null,
     });
 
-    const modelArgs = opts.model ? ['--model', opts.model] : [];
     // `--format json` emits structured events (one JSON object per line) instead of the default
     // TUI text, so the runner can refine them into readable logs and a clean fallback summary.
-    const runArgs = ['run', '--format', 'json', ...modelArgs];
+    const runArgs = buildOpenCodeRunArgs(opts.model, opts.effort);
     const child = isWindows
       ? spawn(
           'powershell.exe',

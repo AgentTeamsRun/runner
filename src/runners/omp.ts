@@ -42,7 +42,12 @@ const toPromptAttachArg = (promptFilePath: string): string => `@${promptFilePath
  *   `errorStatus`/`errorMessage`를 싣는다. 그래서 실패 판정 축은 종료 코드가 아니라
  *   `stopReason`이다 — 캡처된 사유가 있으면 exit 0이어도 실패로 보고한다.
  */
-export const buildOmpArgs = (promptFilePath: string, cwd: string, model?: string | null): string[] => {
+export const buildOmpArgs = (
+  promptFilePath: string,
+  cwd: string,
+  model?: string | null,
+  effort?: string | null,
+): string[] => {
   const selectedModel = normalizedModel(model);
   const modelArgs = selectedModel.length > 0 && selectedModel !== 'default' ? ['--model', selectedModel] : [];
   return [
@@ -57,6 +62,7 @@ export const buildOmpArgs = (promptFilePath: string, cwd: string, model?: string
     cwd,
     toPromptAttachArg(promptFilePath),
     ...modelArgs,
+    ...(effort?.trim() ? ['--thinking', effort] : []),
   ];
 };
 
@@ -69,8 +75,9 @@ export const toOmpPowerShellEncodedCommand = (
   promptFilePath: string,
   cwd: string,
   model?: string | null,
+  effort?: string | null,
 ): string => {
-  const argSegment = buildOmpArgs(promptFilePath, cwd, model)
+  const argSegment = buildOmpArgs(promptFilePath, cwd, model, effort)
     .map((arg) => ` ${toPowerShellLiteral(arg)}`)
     .join('');
   const scriptContent = [
@@ -81,6 +88,7 @@ export const toOmpPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     `& ${toPowerShellLiteral(resolvedExecutablePath)}${argSegment}`,
+    'exit $LASTEXITCODE',
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -199,7 +207,7 @@ export class OmpRunner implements Runner {
       }
     };
 
-    const args = buildOmpArgs(promptFilePath, cwd, opts.model);
+    const args = buildOmpArgs(promptFilePath, cwd, opts.model, opts.effort);
     logger.info('Runner prompt prepared', {
       triggerId: opts.triggerId,
       promptLength: opts.prompt.length,
@@ -237,7 +245,7 @@ export class OmpRunner implements Runner {
               '-ExecutionPolicy',
               'Bypass',
               '-EncodedCommand',
-              toOmpPowerShellEncodedCommand(resolvedExecutablePath, promptFilePath, cwd, opts.model),
+              toOmpPowerShellEncodedCommand(resolvedExecutablePath, promptFilePath, cwd, opts.model, opts.effort),
             ],
             { cwd, detached: false, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env },
           )

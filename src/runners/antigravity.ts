@@ -30,6 +30,7 @@ export const buildAntigravityExecArgs = (
   internalLogPath: string,
   timeoutMs?: number,
   model?: string | null,
+  effort?: string | null,
 ): string[] => {
   const modelArgs = model ? ['--model', model] : [];
   return [
@@ -41,6 +42,7 @@ export const buildAntigravityExecArgs = (
     '--print-timeout',
     toPrintTimeout(timeoutMs),
     ...modelArgs,
+    ...(effort?.trim() ? ['--effort', effort] : []),
     '--print',
     prompt,
   ];
@@ -55,8 +57,10 @@ export const toPowerShellEncodedCommand = (
   internalLogPath: string,
   timeoutMs?: number,
   model?: string | null,
+  effort?: string | null,
 ): string => {
   const modelSegment = model ? ` '--model' ${toPowerShellLiteral(model)}` : '';
+  const effortSegment = effort?.trim() ? ` '--effort' ${toPowerShellLiteral(effort)}` : '';
   const scriptContent = [
     "$ErrorActionPreference = 'Stop'",
     '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
@@ -67,7 +71,8 @@ export const toPowerShellEncodedCommand = (
     `$promptText = @'`,
     `${prompt.replaceAll("'@", "'@")}`,
     `'@`,
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '--dangerously-skip-permissions' '--add-dir' ${toPowerShellLiteral(agentteamsDir)} '--log-file' ${toPowerShellLiteral(internalLogPath)} '--print-timeout' ${toPowerShellLiteral(toPrintTimeout(timeoutMs))}${modelSegment} '--print' $promptText`,
+    `& ${toPowerShellLiteral(resolvedExecutablePath)} '--dangerously-skip-permissions' '--add-dir' ${toPowerShellLiteral(agentteamsDir)} '--log-file' ${toPowerShellLiteral(internalLogPath)} '--print-timeout' ${toPowerShellLiteral(toPrintTimeout(timeoutMs))}${modelSegment}${effortSegment} '--print' $promptText`,
+    'exit $LASTEXITCODE',
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -382,6 +387,7 @@ export class AntigravityRunner implements Runner {
           internalLogPath,
           opts.timeoutMs,
           opts.model,
+          opts.effort,
         )
       : null;
     const executableInfo = describeExecutableResolution('agy', {
@@ -393,6 +399,7 @@ export class AntigravityRunner implements Runner {
       internalLogPath,
       opts.timeoutMs,
       opts.model,
+      opts.effort,
     );
 
     // Antigravity CLI(agy --print)는 `--model`을 지원하므로 AgentTeams의 model 스냅샷을
