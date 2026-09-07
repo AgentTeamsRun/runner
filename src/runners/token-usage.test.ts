@@ -329,6 +329,61 @@ test('OMP: user·toolResult message_end는 집계에 포함되지 않는다', ()
   });
 });
 
+const grokFixture = () => readFileSync(new URL('./fixtures/grok-usage.jsonl', import.meta.url), 'utf8');
+
+test('GROK_BUILD: result 누적값이 나오고 COMPLETE다', () => {
+  const collector = createTokenUsageCollector('GROK_BUILD');
+  for (const character of grokFixture()) collector.push(character);
+  collector.flush();
+  // 실측 수치(2026-09-08, grok 1.0.13): result.usage가 assistant 2건 합과 일치한다.
+  // 입력 8343+3075=11418, 출력 84+59=143, 캐시 읽기 6272+11648=17920.
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'COMPLETE',
+    inputTokens: 11418,
+    outputTokens: 143,
+    cacheReadInputTokens: 17920,
+    cacheCreationInputTokens: 0,
+  });
+});
+
+test('GROK_BUILD: 중복 행은 한 번만 집계하고 result 전에는 출력이 없다', () => {
+  const collector = createTokenUsageCollector('GROK_BUILD');
+  collector.push(grokFixture().split('\n').slice(0, 2).join('\n'));
+  collector.flush();
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'PARTIAL',
+    inputTokens: 8343,
+    outputTokens: null,
+    cacheReadInputTokens: 6272,
+    cacheCreationInputTokens: 0,
+  });
+});
+
+test('GROK_BUILD: modelUsage 분해는 무시하고 usage 네 필드만 읽는다', () => {
+  const collector = createTokenUsageCollector('GROK_BUILD');
+  collector.acceptEvent({
+    type: 'result',
+    session_id: 'session-grok-a',
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_input_tokens: 3,
+      cache_creation_input_tokens: 1,
+    },
+    modelUsage: { 'grok-4.6-build': { inputTokens: 999, outputTokens: 999 } },
+  });
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'COMPLETE',
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheReadInputTokens: 3,
+    cacheCreationInputTokens: 1,
+  });
+});
+
 const copilotFixture = () => readFileSync(new URL('./fixtures/copilot-events.jsonl', import.meta.url), 'utf8');
 
 test('COPILOT_CLI: 출력 토큰만 합산하고 PARTIAL이 상한이다', () => {

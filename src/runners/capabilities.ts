@@ -97,7 +97,10 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   },
   // AMP는 `--model`이 아니라 `--mode`로 실행 프로필을 선택하므로 model:true로 둔다.
   // 실제 인자 조립은 runners/amp.ts에서 AmpCode 전용 계약으로 문서화한다.
-  // 후속 단계에서 판정: 토큰 사용량 구조화 이벤트 지원 여부 미확인.
+  // 토큰 사용량: 프로브 불가(2026-09-08). 이 머신에 Amp 인증이 없어
+  // `amp --execute ... --stream-json-thinking`이 "No API key found. Starting login
+  // flow..." 후 exit 1로 끝나 스트림을 관측하지 못했다. 미실측을 미지원으로
+  // 단정하지 않으므로 false를 유지하되 판정 자체는 미확정이다.
   AMP: {
     model: true,
     fastMode: false,
@@ -118,7 +121,9 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
     tokenUsage: true,
   },
   // Cursor는 effort 접미사가 있는 모델 id를 선택한다. 별도 축의 모델별 계약은 미확인이다.
-  // 후속 단계에서 판정: 토큰 사용량 구조화 이벤트 지원 여부 미확인.
+  // 토큰 사용량: 미지원(정적 확인, 2026-09-08). 전용 파서의 라인 타입
+  // `CursorStreamJsonLine`(stream-json-parser.ts) 선언에 usage 필드가 없고 파서도
+  // 텍스트 로그 정제만 하므로 실행 프로브 없이 판정한다.
   CURSOR_CLI: {
     model: true,
     fastMode: false,
@@ -161,14 +166,17 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   // 공식 계약: https://x.ai/build/changelog — 토큰 차이로 지원 여부를 판정하지 않는다.
   // subAgentDelegation은 `spawn_subagent`로 위임하고 `get_command_or_subagent_output`
   // (task_ids + timeout_ms)으로 결과를 별도 회수하는 흐름이 헤드리스 실행에서 동작함을 실측했다.
-  // 후속 단계에서 판정: 토큰 사용량 구조화 이벤트 지원 여부 미확인.
+  // 토큰 사용량은 `--output-format streaming-messages-json`의 `result.usage`로
+  // 보고됨을 확인했다(2026-09-08, grok 1.0.13, fixtures/grok-usage.jsonl).
+  // assistant `message.usage` 합이 result 누적값과 일치하고 세션 키는 모든 이벤트의
+  // `session_id`다. `result.modelUsage`는 같은 수치의 모델별 분해라 매핑하지 않는다.
   GROK_BUILD: {
     model: true,
     fastMode: false,
     effort: true,
     modelEnumeration: true,
     subAgentDelegation: true,
-    tokenUsage: false,
+    tokenUsage: true,
   },
   // omp/18.0.4 (2026-08-25 실측). `--model`은 무효 값도 exit 1로 거부한다.
   // modelEnumeration은 `omp models --json`이 기계 파싱 가능한 카탈로그를 내보내 true다.

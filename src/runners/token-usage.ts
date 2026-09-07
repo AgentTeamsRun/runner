@@ -25,7 +25,7 @@ const count = (value: unknown): number | null =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 const add = (a: number | null, b: number | null): number | null => (a === null || b === null ? null : count(a + b));
 
-type UsageSupportedRunner = 'CLAUDE_CODE' | 'OPENCODE' | 'CODEX' | 'OMP' | 'COPILOT_CLI';
+type UsageSupportedRunner = 'CLAUDE_CODE' | 'OPENCODE' | 'CODEX' | 'OMP' | 'COPILOT_CLI' | 'GROK_BUILD';
 
 // 지원 판정의 SSOT는 `RUNNER_CAPABILITIES.tokenUsage`다. 이 목록은 거기서 파생되며,
 // 러너 이름을 직접 나열하지 않는다.
@@ -67,7 +67,10 @@ export type TokenUsageEngineDescriptor = {
   parse: (event: Record<string, unknown>) => EngineParseResult;
 };
 
-const parseClaudeCode = (event: Record<string, unknown>): EngineParseResult => {
+// Anthropic Messages wire format(assistant/result + message.usage + session_id) 파서.
+// Claude Code와 Grok Build가 같은 형식을 내보냄을 실측으로 확인했다(후자는
+// fixtures/grok-usage.jsonl). 두 엔진이 같은 서술을 공유한다.
+const parseAnthropicMessagesEvent = (event: Record<string, unknown>): EngineParseResult => {
   if (event.type !== 'assistant' && event.type !== 'result') return { kind: 'ignore' };
   if (event.parent_tool_use_id !== null && event.parent_tool_use_id !== undefined) return { kind: 'ignore' };
   if (event.type === 'result') {
@@ -196,7 +199,17 @@ const ENGINE_DESCRIPTORS: Record<UsageSupportedRunner, TokenUsageEngineDescripto
     reportableKeys: keys,
     allowUsageWithoutSession: false,
     useSyntheticId: false,
-    parse: parseClaudeCode,
+    parse: parseAnthropicMessagesEvent,
+  },
+  GROK_BUILD: {
+    // grok 1.0.13 실측(2026-09-08, fixtures/grok-usage.jsonl): result.usage에 네 필드
+    // 전부, assistant message.usage에 메시지별 수치, 모든 이벤트에 session_id.
+    // result 누적값이 메시지 합과 일치하므로 별도 조정 없이 Claude와 같은 서술을 쓴다.
+    // result.modelUsage는 모델별 분해일 뿐 같은 수치라 매핑하지 않는다.
+    reportableKeys: keys,
+    allowUsageWithoutSession: false,
+    useSyntheticId: false,
+    parse: parseAnthropicMessagesEvent,
   },
   OPENCODE: {
     reportableKeys: keys,
