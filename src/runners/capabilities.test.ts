@@ -59,6 +59,14 @@ test('CODEX enumerates models from the installed CLI catalog', () => {
   assert.equal(RUNNER_CAPABILITIES.CODEX.modelEnumeration, true);
 });
 
+test('only claude-code, opencode, codex, omp, copilot, and grok-build collect structured token usage', () => {
+  const supported = Object.entries(RUNNER_CAPABILITIES)
+    .filter(([, capabilities]) => capabilities.tokenUsage)
+    .map(([runnerType]) => runnerType);
+
+  assert.deepEqual(supported, ['CLAUDE_CODE', 'CODEX', 'OPENCODE', 'COPILOT_CLI', 'GROK_BUILD', 'OMP']);
+});
+
 test('Copilot CLI supports model selection but not fast mode or sub-agent delegation', () => {
   assert.deepEqual(getRunnerCapabilities('COPILOT_CLI'), {
     model: true,
@@ -66,6 +74,7 @@ test('Copilot CLI supports model selection but not fast mode or sub-agent delega
     effort: true,
     modelEnumeration: false,
     subAgentDelegation: false,
+    tokenUsage: true,
   });
   assert.deepEqual(describeUnsupportedRunnerOptions('COPILOT_CLI', { model: 'gpt-5', fastMode: false }), []);
 });
@@ -77,6 +86,7 @@ test('Cursor CLI supports model selection but not fast mode, effort, or sub-agen
     effort: false,
     modelEnumeration: true,
     subAgentDelegation: false,
+    tokenUsage: false,
   });
   assert.deepEqual(describeUnsupportedRunnerOptions('CURSOR_CLI', { model: 'client-default', fastMode: false }), []);
 });
@@ -88,6 +98,7 @@ test('Kimi CLI supports model selection but not fast mode, effort, or sub-agent 
     effort: false,
     modelEnumeration: false,
     subAgentDelegation: false,
+    tokenUsage: false,
   });
   assert.deepEqual(describeUnsupportedRunnerOptions('KIMI_CLI', { model: 'k3', fastMode: false }), []);
 });
@@ -100,6 +111,7 @@ test('Kiro CLI supports model selection but not fast mode, effort, or sub-agent 
     effort: false,
     modelEnumeration: true,
     subAgentDelegation: false,
+    tokenUsage: false,
   });
   assert.deepEqual(describeUnsupportedRunnerOptions('KIRO_CLI', { model: 'auto', fastMode: false }), []);
 });
@@ -125,6 +137,7 @@ test('unknown runner types default to no capabilities', () => {
     effort: false,
     modelEnumeration: false,
     subAgentDelegation: false,
+    tokenUsage: false,
   });
   assert.equal(runnerSupportsFastMode('SOMETHING_ELSE'), false);
   assert.equal(runnerSupportsSubAgentDelegation('SOMETHING_ELSE'), false);

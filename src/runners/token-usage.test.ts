@@ -3,7 +3,12 @@ import { createOpenCodeJsonLineParser, createOpenCodeFinalTextCapturer } from '.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { createTokenUsageCollector, emptyTokenUsage, usageSupportedRunners } from './token-usage.js';
+import {
+  createTokenUsageCollector,
+  createTokenUsageCollectorWithDescriptor,
+  emptyTokenUsage,
+  usageSupportedRunners,
+} from './token-usage.js';
 
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}-usage.jsonl`, import.meta.url), 'utf8');
 const expected = {
@@ -80,8 +85,10 @@ test('거대 행과 잘못된 JSON 뒤에서 수집을 재개하고 완전 수�
   assert.deepEqual(collector.get(), { ...expected, status: 'PARTIAL' });
 });
 test('미지원 엔진은 수집 누락과 다르다', () => {
-  assert.equal(emptyTokenUsage('CODEX').status, 'UNSUPPORTED');
+  assert.equal(emptyTokenUsage('AMP').status, 'UNSUPPORTED');
   assert.equal(emptyTokenUsage('AMP').inputTokens, null);
+  assert.equal(emptyTokenUsage('CODEX').status, 'MISSING');
+  assert.equal(emptyTokenUsage('OMP').status, 'MISSING');
 });
 
 for (const [engine, name] of [
@@ -159,4 +166,258 @@ test('OpenCode 최종 텍스트도 같은 파싱 이벤트로 수집한다', () 
   parser.push('{"type":"text","part":{"type":"text","messageID":"a","text":"최종 결과"}}');
   parser.flush();
   assert.equal(capture.get(), '최종 결과');
+});
+
+test('세션 id 없는 사용량 이벤트는 별도 세션 이벤트로 확정되어 집계된다', () => {
+  const collector = createTokenUsageCollectorWithDescriptor({
+    reportableKeys: ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens'],
+    allowUsageWithoutSession: true,
+    useSyntheticId: false,
+    parse: (event) => {
+      if (event.type === 'session-start') return { kind: 'session', sessionId: event.sid };
+      if (event.type !== 'usage') return { kind: 'ignore' };
+      const counts = event as Record<string, number>;
+      return {
+        kind: 'usage',
+        counts: {
+          inputTokens: counts.input,
+          outputTokens: counts.output,
+          cacheReadInputTokens: counts.cacheRead,
+          cacheCreationInputTokens: counts.cacheWrite,
+        },
+        id: (event as Record<string, unknown>).stepId,
+        terminal: (event as Record<string, unknown>).done === true,
+      };
+    },
+  });
+  // 세션을 아직 못 본 상태의 사용량 이벤트를 버리지 않는다(단일 프로세스 = 단일 세션).
+  collector.acceptEvent({ type: 'usage', stepId: 's1', input: 100, output: 10, cacheRead: 20, cacheWrite: 5 });
+  collector.acceptEvent({ type: 'session-start', sid: 'sess-1' });
+  collector.acceptEvent({
+    type: 'usage',
+    stepId: 's2',
+    input: 50,
+    output: 30,
+    cacheRead: 30,
+    cacheWrite: 5,
+    done: true,
+  });
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'COMPLETE',
+    inputTokens: 150,
+    outputTokens: 40,
+    cacheReadInputTokens: 50,
+    cacheCreationInputTokens: 10,
+  });
+});
+
+test('보고 가능 집합에 없는 필드가 null이어도 종료 근거가 있으면 COMPLETE다', () => {
+  const collector = createTokenUsageCollectorWithDescriptor({
+    reportableKeys: ['inputTokens', 'outputTokens', 'cacheReadInputTokens'],
+    allowUsageWithoutSession: false,
+    useSyntheticId: false,
+    parse: (event) => {
+      if (event.type !== 'usage') return { kind: 'ignore' };
+      const counts = event as Record<string, number>;
+      return {
+        kind: 'usage',
+        sessionId: (event as Record<string, unknown>).sid,
+        counts: {
+          inputTokens: counts.input,
+          outputTokens: counts.output,
+          cacheReadInputTokens: counts.cacheRead,
+          cacheCreationInputTokens: null,
+        },
+        id: (event as Record<string, unknown>).stepId,
+        terminal: (event as Record<string, unknown>).done === true,
+      };
+    },
+  });
+  collector.acceptEvent({
+    type: 'usage',
+    sid: 'sess-1',
+    stepId: 's1',
+    input: 150,
+    output: 40,
+    cacheRead: 50,
+    done: true,
+  });
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'COMPLETE',
+    inputTokens: 150,
+    outputTokens: 40,
+    cacheReadInputTokens: 50,
+    cacheCreationInputTokens: null,
+  });
+});
+
+const codexFixture = () => readFileSync(new URL('./fixtures/codex-events.jsonl', import.meta.url), 'utf8');
+
+test('CODEX: turn.completed 사용량을 계약대로 매핑한다', () => {
+  const collector = createTokenUsageCollector('CODEX');
+  for (const character of codexFixture()) collector.push(character);
+  collector.flush();
+  // input_tokens(78699)는 캐시 읽기분(57600)을 포함하므로 계약상 입력은 차감값이다.
+  // output_tokens(292)는 추론 출력(15)을 이미 포함하므로 더하지 않는다.
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'COMPLETE',
+    inputTokens: 21099,
+    outputTokens: 292,
+    cacheReadInputTokens: 57600,
+    cacheCreationInputTokens: null,
+  });
+});
+
+test('CODEX: 세션 시작만으로는 사용량이 없다', () => {
+  const collector = createTokenUsageCollector('CODEX');
+  collector.push(`${codexFixture().split('\n')[0]}\n`);
+  collector.flush();
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'MISSING',
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadInputTokens: null,
+    cacheCreationInputTokens: null,
+  });
+});
+
+const ompFixture = () => readFileSync(new URL('./fixtures/omp-events.jsonl', import.meta.url), 'utf8');
+
+test('OMP: assistant message_end 4건의 합이 나오고 COMPLETE다', () => {
+  const collector = createTokenUsageCollector('OMP');
+  for (const character of ompFixture()) collector.push(character);
+  collector.flush();
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'COMPLETE',
+    inputTokens: 13165,
+    outputTokens: 253,
+    cacheReadInputTokens: 71680,
+    cacheCreationInputTokens: 0,
+  });
+});
+
+test('OMP: reasoningTokens를 output에 더하지 않는다', () => {
+  const collector = createTokenUsageCollector('OMP');
+  for (const character of ompFixture()) collector.push(character);
+  collector.flush();
+  // 4건 output 단순 합 191+29+24+9=253. reasoning 103을 더한 356이 아니다.
+  // 근거: input + cacheRead + output = totalTokens 항등식.
+  assert.equal(collector.get().outputTokens, 253);
+});
+
+test('OMP: user·toolResult message_end는 집계에 포함되지 않는다', () => {
+  const collector = createTokenUsageCollector('OMP');
+  collector.acceptEvent({ type: 'session', version: 3, id: 'sess-omp-1' });
+  collector.acceptEvent({ type: 'message_end', message: { role: 'user', content: [] } });
+  collector.acceptEvent({ type: 'message_end', message: { role: 'toolResult', content: [] } });
+  collector.acceptEvent({
+    type: 'message_end',
+    message: { role: 'assistant', stopReason: 'stop', usage: { input: 10, output: 5, cacheRead: 3, cacheWrite: 1 } },
+  });
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'COMPLETE',
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheReadInputTokens: 3,
+    cacheCreationInputTokens: 1,
+  });
+});
+
+const grokFixture = () => readFileSync(new URL('./fixtures/grok-usage.jsonl', import.meta.url), 'utf8');
+
+test('GROK_BUILD: result 누적값이 나오고 COMPLETE다', () => {
+  const collector = createTokenUsageCollector('GROK_BUILD');
+  for (const character of grokFixture()) collector.push(character);
+  collector.flush();
+  // 실측 수치(2026-09-08, grok 1.0.13): result.usage가 assistant 2건 합과 일치한다.
+  // 입력 8343+3075=11418, 출력 84+59=143, 캐시 읽기 6272+11648=17920.
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'COMPLETE',
+    inputTokens: 11418,
+    outputTokens: 143,
+    cacheReadInputTokens: 17920,
+    cacheCreationInputTokens: 0,
+  });
+});
+
+test('GROK_BUILD: 중복 행은 한 번만 집계하고 result 전에는 출력이 없다', () => {
+  const collector = createTokenUsageCollector('GROK_BUILD');
+  collector.push(grokFixture().split('\n').slice(0, 2).join('\n'));
+  collector.flush();
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'PARTIAL',
+    inputTokens: 8343,
+    outputTokens: null,
+    cacheReadInputTokens: 6272,
+    cacheCreationInputTokens: 0,
+  });
+});
+
+test('GROK_BUILD: modelUsage 분해는 무시하고 usage 네 필드만 읽는다', () => {
+  const collector = createTokenUsageCollector('GROK_BUILD');
+  collector.acceptEvent({
+    type: 'result',
+    session_id: 'session-grok-a',
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_input_tokens: 3,
+      cache_creation_input_tokens: 1,
+    },
+    modelUsage: { 'grok-4.6-build': { inputTokens: 999, outputTokens: 999 } },
+  });
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'COMPLETE',
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheReadInputTokens: 3,
+    cacheCreationInputTokens: 1,
+  });
+});
+
+const copilotFixture = () => readFileSync(new URL('./fixtures/copilot-events.jsonl', import.meta.url), 'utf8');
+
+test('COPILOT_CLI: 출력 토큰만 합산하고 PARTIAL이 상한이다', () => {
+  const collector = createTokenUsageCollector('COPILOT_CLI');
+  for (const character of copilotFixture()) collector.push(character);
+  collector.flush();
+  // assistant.message 3건의 outputTokens 합 428+253+17=698. 입력·캐시는 엔진이
+  // 제공하지 않아 null이며, 입력 부재 상한에 따라 종료 근거가 있어도 PARTIAL이다.
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'PARTIAL',
+    inputTokens: null,
+    outputTokens: 698,
+    cacheReadInputTokens: null,
+    cacheCreationInputTokens: null,
+  });
+});
+
+test('COPILOT_CLI: 같은 messageId는 한 번만 계산한다', () => {
+  const collector = createTokenUsageCollector('COPILOT_CLI');
+  const line = JSON.stringify({ type: 'assistant.message', data: { messageId: 'm-1', outputTokens: 100 } });
+  collector.push(`${line}\n${line}\n`);
+  collector.push(JSON.stringify({ type: 'result', sessionId: 'sess-1', exitCode: 0 }) + '\n');
+  collector.flush();
+  assert.equal(collector.get().outputTokens, 100);
+  assert.equal(collector.get().status, 'PARTIAL');
+});
+
+test('COPILOT_CLI: 출력만 있는 수집기는 입력 상한 때문에 COMPLETE가 되지 않는다', () => {
+  const collector = createTokenUsageCollector('COPILOT_CLI');
+  collector.acceptEvent({ type: 'assistant.message', data: { messageId: 'm-1', outputTokens: 10 } });
+  collector.acceptEvent({ type: 'result', sessionId: 'sess-1', exitCode: 0 });
+  const usage = collector.get();
+  assert.equal(usage.outputTokens, 10);
+  assert.equal(usage.inputTokens, null);
+  assert.equal(usage.status, 'PARTIAL');
 });

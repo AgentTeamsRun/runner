@@ -8,6 +8,7 @@ import { logger } from '../logger.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
+import { createTokenUsageCollector } from './token-usage.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 import { buildRunnerChildEnv } from './session-env.js';
 import { findGrokBuildExecutable, isGrokBuildExecutable } from './grok-build-identity.js';
@@ -300,6 +301,7 @@ export class GrokBuildRunner implements Runner {
       return trimmed || undefined;
     };
 
+    const usageCollector = createTokenUsageCollector('GROK_BUILD');
     const idleTimer = { reset: (): void => {} };
     const streamParser = createStreamJsonLineParser(
       (entries) => {
@@ -307,7 +309,7 @@ export class GrokBuildRunner implements Runner {
           opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
         }
       },
-      { cwd },
+      { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
 
     child.stdout?.on('data', (chunk) => {
@@ -381,7 +383,14 @@ export class GrokBuildRunner implements Runner {
         clearTimeout(timeoutId);
         await cleanup();
         logger.error('Runner process launch failed', { triggerId: opts.triggerId, error: error.message });
-        resolve({ exitCode: 1, lastOutput, outputText: finalizeOutputText(), errorMessage: error.message });
+        streamParser.flush();
+        resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
+          exitCode: 1,
+          lastOutput,
+          outputText: finalizeOutputText(),
+          errorMessage: error.message,
+        });
       });
 
       const closeWatchdog = this.deps.setupCloseWatchdog(child, opts.triggerId);
@@ -398,6 +407,7 @@ export class GrokBuildRunner implements Runner {
           const resolvedOutputText =
             idleTimedOut && finalizedOutputText ? extractGrokResultText(finalizedOutputText) : finalizedOutputText;
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             timedOut,
             idleTimedOut,
@@ -411,6 +421,7 @@ export class GrokBuildRunner implements Runner {
         }
         if (cancelled) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             cancelled: true,
             lastOutput,
@@ -420,6 +431,7 @@ export class GrokBuildRunner implements Runner {
           return;
         }
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: code ?? 1,
           lastOutput,
           outputText: finalizeOutputText(),
