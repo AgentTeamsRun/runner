@@ -7,6 +7,7 @@ import { describeExecutableResolution, resolveExecutablePathWithPreference, spaw
 import { logger } from '../logger.js';
 import { createCodexFinalTextCapturer, createCodexJsonLineParser } from './codex-json-parser.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
+import { createTokenUsageCollector } from './token-usage.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 import { buildRunnerChildEnv } from './session-env.js';
@@ -219,6 +220,7 @@ export class CodexRunner implements Runner {
       outputText += chunk.slice(0, OUTPUT_CAPTURE_MAX - outputText.length);
     };
 
+    const usageCollector = createTokenUsageCollector('CODEX');
     const idleTimer = { reset: (): void => {} };
     const jsonLineParser = createCodexJsonLineParser(
       (entries) => {
@@ -227,7 +229,7 @@ export class CodexRunner implements Runner {
           opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
         }
       },
-      { cwd },
+      { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
 
     const finalizeOutputText = (): string | undefined => {
@@ -358,7 +360,9 @@ export class CodexRunner implements Runner {
           triggerId: opts.triggerId,
           error: error.message,
         });
+        jsonLineParser.flush();
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: 1,
           lastOutput,
           outputText: finalizeOutputText(),
@@ -382,6 +386,7 @@ export class CodexRunner implements Runner {
 
         if (timedOut) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             timedOut,
             idleTimedOut,
@@ -396,6 +401,7 @@ export class CodexRunner implements Runner {
 
         if (cancelled) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             cancelled: true,
             lastOutput,
@@ -406,6 +412,7 @@ export class CodexRunner implements Runner {
         }
 
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: code ?? 1,
           lastOutput,
           outputText: finalizeOutputText(),

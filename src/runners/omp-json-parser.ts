@@ -335,6 +335,10 @@ export const createOmpStreamConsumer = (
     if (!parsed) {
       return;
     }
+    // 한 줄을 한 번만 디코드해 로그·결과·사용량 수집에 팬아웃한다.
+    // 수집기에 stdout 원문을 직접 넣으면 라인당 JSON.parse가 두 번 돌므로,
+    // 이 팬아웃 지점에 수집기를 붙이는 쪽이 중복 파싱을 피한다.
+    options?.onEvent?.(parsed);
     const entries = parseOmpEvent(parsed, options);
     if (entries.length > 0) {
       onEntries(entries);

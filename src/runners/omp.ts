@@ -10,6 +10,7 @@ import { createAnsiStripper } from './kiro-cli.js';
 import { findOmpExecutable, isOmpExecutable } from './omp-identity.js';
 import { createOmpStreamConsumer } from './omp-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
+import { createTokenUsageCollector } from './token-usage.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 import { buildRunnerChildEnv } from './session-env.js';
 
@@ -276,6 +277,7 @@ export class OmpRunner implements Runner {
     let firstErrorSignal = '';
     const stdoutStripper = createAnsiStripper();
     const stderrStripper = createAnsiStripper();
+    const usageCollector = createTokenUsageCollector('OMP');
     const idleTimer = { reset: (): void => {} };
     // 각 NDJSON 라인을 한 번만 파싱해 라이브 로그와 결과 판정 양쪽에 전달한다.
     const streamConsumer = createOmpStreamConsumer(
@@ -285,7 +287,7 @@ export class OmpRunner implements Runner {
           opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
         }
       },
-      { cwd },
+      { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
 
     child.stdout?.on('data', (chunk) => {
@@ -363,7 +365,9 @@ export class OmpRunner implements Runner {
         clearTimeout(timeoutId);
         await cleanup();
         logger.error('Runner process launch failed', { triggerId: opts.triggerId, error: error.message });
+        streamConsumer.flush();
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: 1,
           lastOutput,
           outputText: streamConsumer.getFinalText() ?? streamConsumer.getStreamedTextFallback() ?? undefined,
@@ -386,6 +390,7 @@ export class OmpRunner implements Runner {
 
         if (timedOut) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             timedOut,
             idleTimedOut,
@@ -399,6 +404,7 @@ export class OmpRunner implements Runner {
         }
         if (cancelled) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             cancelled: true,
             lastOutput,
@@ -411,6 +417,7 @@ export class OmpRunner implements Runner {
         // 코드가 무엇이든 실패로 보고한다.
         if (streamFailureMessage) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: code && code !== 0 ? code : 1,
             lastOutput,
             outputText: finalizedOutputText,
@@ -419,6 +426,7 @@ export class OmpRunner implements Runner {
           return;
         }
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: code ?? 1,
           lastOutput,
           outputText: finalizedOutputText,

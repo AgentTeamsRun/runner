@@ -5,6 +5,7 @@
  * contents are never copied into log messages.
  */
 
+import { createJsonLineBuffer } from './json-line-buffer.js';
 import type { ParseOptions, ParsedLogEntry } from './stream-json-parser.js';
 import { firstSentence, shortenPath } from './stream-json-parser.js';
 
@@ -77,19 +78,20 @@ const failureMessage = (parsed: CodexEvent): string => {
   return typeof parsed.message === 'string' ? parsed.message : '';
 };
 
-export const parseCodexJsonLine = (line: string, options?: ParseOptions): ParsedLogEntry[] => {
+const decodeCodexEvent = (line: string): CodexEvent | null => {
   const trimmed = line.trim();
   if (trimmed.length === 0) {
-    return [];
+    return null;
   }
 
-  let parsed: CodexEvent;
   try {
-    parsed = JSON.parse(trimmed) as CodexEvent;
+    return JSON.parse(trimmed) as CodexEvent;
   } catch {
-    return [];
+    return null;
   }
+};
 
+const parseCodexEvent = (parsed: CodexEvent, options?: ParseOptions): ParsedLogEntry[] => {
   if (parsed.type === 'turn.completed') {
     return [{ level: 'INFO', category: 'RESULT', message: '[Result] Completed' }];
   }
@@ -182,36 +184,28 @@ export const parseCodexJsonLine = (line: string, options?: ParseOptions): Parsed
   }
 };
 
+export const parseCodexJsonLine = (line: string, options?: ParseOptions): ParsedLogEntry[] => {
+  const parsed = decodeCodexEvent(line);
+  return parsed ? parseCodexEvent(parsed, options) : [];
+};
+
+// 한 줄을 한 번만 디코드해 로그 정제와 사용량 수집에 팬아웃한다.
+// stdout 원문을 수집기 push에 직접 넣으면 라인당 JSON.parse가 두 번 돌므로,
+// claude-code/opencode 선례대로 파서 계약 확장 방식을 쓴다.
 export const createCodexJsonLineParser = (
   onEntries: (entries: ParsedLogEntry[]) => void,
   options?: ParseOptions,
-): { push: (chunk: string) => void; flush: () => void } => {
-  let buffer = '';
-
-  const scan = (line: string): void => {
-    const entries = parseCodexJsonLine(line, options);
-    if (entries.length > 0) {
-      onEntries(entries);
+): { push: (chunk: string) => void; flush: () => void } =>
+  createJsonLineBuffer((line) => {
+    const parsed = decodeCodexEvent(line);
+    if (parsed) {
+      options?.onEvent?.(parsed);
+      const entries = parseCodexEvent(parsed, options);
+      if (entries.length > 0) {
+        onEntries(entries);
+      }
     }
-  };
-
-  return {
-    push(chunk: string) {
-      buffer += chunk;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        scan(line);
-      }
-    },
-    flush() {
-      if (buffer.trim().length > 0) {
-        scan(buffer);
-      }
-      buffer = '';
-    },
-  };
-};
+  }, options?.onDropped);
 
 const assistantText = (line: string): string | null => {
   let parsed: CodexEvent;
