@@ -59,12 +59,12 @@ test('CODEX enumerates models from the installed CLI catalog', () => {
   assert.equal(RUNNER_CAPABILITIES.CODEX.modelEnumeration, true);
 });
 
-test('only claude-code, opencode, codex, and omp collect structured token usage', () => {
+test('only claude-code, opencode, codex, omp, and copilot collect structured token usage', () => {
   const supported = Object.entries(RUNNER_CAPABILITIES)
     .filter(([, capabilities]) => capabilities.tokenUsage)
     .map(([runnerType]) => runnerType);
 
-  assert.deepEqual(supported, ['CLAUDE_CODE', 'CODEX', 'OPENCODE', 'OMP']);
+  assert.deepEqual(supported, ['CLAUDE_CODE', 'CODEX', 'OPENCODE', 'COPILOT_CLI', 'OMP']);
 });
 
 test('Copilot CLI supports model selection but not fast mode or sub-agent delegation', () => {
@@ -74,7 +74,7 @@ test('Copilot CLI supports model selection but not fast mode or sub-agent delega
     effort: true,
     modelEnumeration: false,
     subAgentDelegation: false,
-    tokenUsage: false,
+    tokenUsage: true,
   });
   assert.deepEqual(describeUnsupportedRunnerOptions('COPILOT_CLI', { model: 'gpt-5', fastMode: false }), []);
 });

@@ -25,7 +25,7 @@ const count = (value: unknown): number | null =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 const add = (a: number | null, b: number | null): number | null => (a === null || b === null ? null : count(a + b));
 
-type UsageSupportedRunner = 'CLAUDE_CODE' | 'OPENCODE' | 'CODEX' | 'OMP';
+type UsageSupportedRunner = 'CLAUDE_CODE' | 'OPENCODE' | 'CODEX' | 'OMP' | 'COPILOT_CLI';
 
 // 지원 판정의 SSOT는 `RUNNER_CAPABILITIES.tokenUsage`다. 이 목록은 거기서 파생되며,
 // 러너 이름을 직접 나열하지 않는다.
@@ -169,6 +169,28 @@ const parseOmp = (event: Record<string, unknown>): EngineParseResult => {
   };
 };
 
+const parseCopilot = (event: Record<string, unknown>): EngineParseResult => {
+  if (event.type === 'result') {
+    // 세션 키는 최종 result의 최상위 sessionId에만 있다. 토큰 수치는 싣지 않으므로
+    // 세션 확정으로만 쓰고 종료 근거(terminal)는 세션 확정으로 갈음한다.
+    // 상태는 입력 부재 상한에 따라 PARTIAL이 상한이다.
+    return { kind: 'session', sessionId: event.sessionId };
+  }
+  if (event.type !== 'assistant.message') return { kind: 'ignore' };
+  const data = record(event.data);
+  return {
+    kind: 'usage',
+    counts: {
+      inputTokens: null,
+      outputTokens: count(data.outputTokens),
+      cacheReadInputTokens: null,
+      cacheCreationInputTokens: null,
+    },
+    id: data.messageId,
+    terminal: false,
+  };
+};
+
 const ENGINE_DESCRIPTORS: Record<UsageSupportedRunner, TokenUsageEngineDescriptor> = {
   CLAUDE_CODE: {
     reportableKeys: keys,
@@ -201,6 +223,18 @@ const ENGINE_DESCRIPTORS: Record<UsageSupportedRunner, TokenUsageEngineDescripto
     allowUsageWithoutSession: true,
     useSyntheticId: true,
     parse: parseOmp,
+  },
+  COPILOT_CLI: {
+    // assistant.message.data.outputTokens를 메시지 단위로 합산한다. fixture 3건
+    // (428/253/17)이 단조 증가하지 않으므로 누적값이 아니라 메시지 단위로 판단한다.
+    // Copilot CLI 문서에 누적 명세가 없어 fixture 관측에 근거하며, 불확실성은
+    // fixtures/token-usage.md에 명시한다. 입력·캐시는 엔진이 제공하지 않는다.
+    // totalNanoAiu·premiumRequests·totalApiDurationMs는 토큰이 아니라 매핑하지 않는다.
+    // 세션 키는 최종 result.sessionId에만 있어 사용량 이벤트는 세션 없이 받는다.
+    reportableKeys: ['outputTokens'],
+    allowUsageWithoutSession: true,
+    useSyntheticId: false,
+    parse: parseCopilot,
   },
 };
 
@@ -305,6 +339,10 @@ const createCollectorWithDescriptor = (descriptor: TokenUsageEngineDescriptor) =
     get(interrupted = false): TokenUsage {
       const counts = invalidSession ? empty() : aggregate();
       const hasCounts = keys.some((key) => counts[key] !== null);
+      // COMPLETE의 최소 요건은 입력·출력 토큰 둘 다 수집됨이다. 보고 가능 집합만으로는
+      // 출력만 보고하는 엔진이 COMPLETE가 되어 "실행 사용량 전부"로 오해된다.
+      // 이 상한은 엔진 서술에서 파생되는 일반 규칙이며 특정 엔진 특례가 아니다.
+      const hasInputAndOutput = counts.inputTokens !== null && counts.outputTokens !== null;
       return {
         ...counts,
         scope: 'MAIN_LOOP',
@@ -313,6 +351,7 @@ const createCollectorWithDescriptor = (descriptor: TokenUsageEngineDescriptor) =
           : terminal &&
               (!incomplete || finalCounts !== undefined) &&
               !interrupted &&
+              hasInputAndOutput &&
               descriptor.reportableKeys.every((key) => counts[key] !== null)
             ? 'COMPLETE'
             : 'PARTIAL',

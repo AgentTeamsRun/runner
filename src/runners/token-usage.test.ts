@@ -328,3 +328,41 @@ test('OMP: user·toolResult message_end는 집계에 포함되지 않는다', ()
     cacheCreationInputTokens: 1,
   });
 });
+
+const copilotFixture = () => readFileSync(new URL('./fixtures/copilot-events.jsonl', import.meta.url), 'utf8');
+
+test('COPILOT_CLI: 출력 토큰만 합산하고 PARTIAL이 상한이다', () => {
+  const collector = createTokenUsageCollector('COPILOT_CLI');
+  for (const character of copilotFixture()) collector.push(character);
+  collector.flush();
+  // assistant.message 3건의 outputTokens 합 428+253+17=698. 입력·캐시는 엔진이
+  // 제공하지 않아 null이며, 입력 부재 상한에 따라 종료 근거가 있어도 PARTIAL이다.
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'PARTIAL',
+    inputTokens: null,
+    outputTokens: 698,
+    cacheReadInputTokens: null,
+    cacheCreationInputTokens: null,
+  });
+});
+
+test('COPILOT_CLI: 같은 messageId는 한 번만 계산한다', () => {
+  const collector = createTokenUsageCollector('COPILOT_CLI');
+  const line = JSON.stringify({ type: 'assistant.message', data: { messageId: 'm-1', outputTokens: 100 } });
+  collector.push(`${line}\n${line}\n`);
+  collector.push(JSON.stringify({ type: 'result', sessionId: 'sess-1', exitCode: 0 }) + '\n');
+  collector.flush();
+  assert.equal(collector.get().outputTokens, 100);
+  assert.equal(collector.get().status, 'PARTIAL');
+});
+
+test('COPILOT_CLI: 출력만 있는 수집기는 입력 상한 때문에 COMPLETE가 되지 않는다', () => {
+  const collector = createTokenUsageCollector('COPILOT_CLI');
+  collector.acceptEvent({ type: 'assistant.message', data: { messageId: 'm-1', outputTokens: 10 } });
+  collector.acceptEvent({ type: 'result', sessionId: 'sess-1', exitCode: 0 });
+  const usage = collector.get();
+  assert.equal(usage.outputTokens, 10);
+  assert.equal(usage.inputTokens, null);
+  assert.equal(usage.status, 'PARTIAL');
+});

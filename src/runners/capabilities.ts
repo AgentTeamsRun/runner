@@ -106,14 +106,16 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
     subAgentDelegation: false,
     tokenUsage: false,
   },
-  // 후속 단계에서 판정: 토큰 사용량 구조화 이벤트 지원 여부 미확인.
+  // Copilot CLI는 assistant.message.data.outputTokens만 보고한다. 입력·캐시는
+  // 엔진이 제공하지 않으므로 수집 상태는 PARTIAL이 상한이다(축은 boolean이므로
+  // 부분 지원의 의미는 주석과 fixtures/token-usage.md가 소유한다).
   COPILOT_CLI: {
     model: true,
     fastMode: false,
     effort: true,
     modelEnumeration: false,
     subAgentDelegation: false,
-    tokenUsage: false,
+    tokenUsage: true,
   },
   // Cursor는 effort 접미사가 있는 모델 id를 선택한다. 별도 축의 모델별 계약은 미확인이다.
   // 후속 단계에서 판정: 토큰 사용량 구조화 이벤트 지원 여부 미확인.

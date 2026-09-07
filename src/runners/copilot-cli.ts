@@ -7,6 +7,7 @@ import { describeExecutableResolution, resolveExecutablePathWithPreference, spaw
 import { logger } from '../logger.js';
 import { createCopilotFinalTextCapturer, createCopilotJsonLineParser } from './copilot-json-parser.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
+import { createTokenUsageCollector } from './token-usage.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 import { buildRunnerChildEnv } from './session-env.js';
@@ -130,6 +131,7 @@ export class CopilotCliRunner implements Runner {
       }
     };
     const idleTimer = { reset: (): void => {} };
+    const usageCollector = createTokenUsageCollector('COPILOT_CLI');
     const jsonLineParser = createCopilotJsonLineParser(
       (entries) => {
         for (const entry of entries) {
@@ -137,7 +139,7 @@ export class CopilotCliRunner implements Runner {
           opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
         }
       },
-      { cwd },
+      { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
 
     const finalizeOutputText = (): string | undefined => {
@@ -231,7 +233,14 @@ export class CopilotCliRunner implements Runner {
         clearTimeout(timeoutId);
         cleanup();
         logger.error('Runner process launch failed', { triggerId: opts.triggerId, error: error.message });
-        resolve({ exitCode: 1, lastOutput, outputText: finalizeOutputText(), errorMessage: error.message });
+        jsonLineParser.flush();
+        resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
+          exitCode: 1,
+          lastOutput,
+          outputText: finalizeOutputText(),
+          errorMessage: error.message,
+        });
       });
 
       const closeWatchdog = setupCloseWatchdog(child, opts.triggerId);
@@ -245,6 +254,7 @@ export class CopilotCliRunner implements Runner {
 
         if (timedOut) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             timedOut,
             idleTimedOut,
@@ -258,6 +268,7 @@ export class CopilotCliRunner implements Runner {
         }
         if (cancelled) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             cancelled: true,
             lastOutput,
@@ -267,6 +278,7 @@ export class CopilotCliRunner implements Runner {
           return;
         }
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: code ?? 1,
           lastOutput,
           outputText: finalizedOutputText,

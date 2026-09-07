@@ -5,6 +5,7 @@
  * events are discarded before payload inspection so blobs and tool bodies cannot reach logs.
  */
 
+import { createJsonLineBuffer } from './json-line-buffer.js';
 import type { ParseOptions, ParsedLogEntry } from './stream-json-parser.js';
 import { firstSentence, shortenPath } from './stream-json-parser.js';
 
@@ -61,19 +62,20 @@ export const summarizeCopilotTool = (
   return keys ? `${toolName}(${keys})` : toolName;
 };
 
-export const parseCopilotJsonLine = (line: string, options?: ParseOptions): ParsedLogEntry[] => {
+const decodeCopilotEvent = (line: string): CopilotEvent | null => {
   const trimmed = line.trim();
   if (trimmed.length === 0) {
-    return [];
+    return null;
   }
 
-  let parsed: CopilotEvent;
   try {
-    parsed = JSON.parse(trimmed) as CopilotEvent;
+    return JSON.parse(trimmed) as CopilotEvent;
   } catch {
-    return [];
+    return null;
   }
+};
 
+const parseCopilotEvent = (parsed: CopilotEvent, options?: ParseOptions): ParsedLogEntry[] => {
   if (parsed.ephemeral === true) {
     return [];
   }
@@ -128,36 +130,28 @@ export const parseCopilotJsonLine = (line: string, options?: ParseOptions): Pars
   }
 };
 
+export const parseCopilotJsonLine = (line: string, options?: ParseOptions): ParsedLogEntry[] => {
+  const parsed = decodeCopilotEvent(line);
+  return parsed ? parseCopilotEvent(parsed, options) : [];
+};
+
+// 한 줄을 한 번만 디코드해 로그 정제와 사용량 수집에 팬아웃한다.
+// stdout 원문을 수집기 push에 직접 넣으면 라인당 JSON.parse가 두 번 돌므로,
+// codex 선례대로 파서 계약 확장 방식을 쓴다.
 export const createCopilotJsonLineParser = (
   onEntries: (entries: ParsedLogEntry[]) => void,
   options?: ParseOptions,
-): { push: (chunk: string) => void; flush: () => void } => {
-  let buffer = '';
-
-  const scan = (line: string): void => {
-    const entries = parseCopilotJsonLine(line, options);
-    if (entries.length > 0) {
-      onEntries(entries);
+): { push: (chunk: string) => void; flush: () => void } =>
+  createJsonLineBuffer((line) => {
+    const parsed = decodeCopilotEvent(line);
+    if (parsed) {
+      options?.onEvent?.(parsed);
+      const entries = parseCopilotEvent(parsed, options);
+      if (entries.length > 0) {
+        onEntries(entries);
+      }
     }
-  };
-
-  return {
-    push(chunk: string) {
-      buffer += chunk;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        scan(line);
-      }
-    },
-    flush() {
-      if (buffer.trim().length > 0) {
-        scan(buffer);
-      }
-      buffer = '';
-    },
-  };
-};
+  }, options?.onDropped);
 
 const assistantText = (line: string): string | null => {
   let parsed: CopilotEvent;
