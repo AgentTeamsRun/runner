@@ -1,4 +1,5 @@
 import { executeMuseCodeModelList } from './muse-code-models.js';
+import { findCursorCliExecutable } from '../runners/cursor-cli-identity.js';
 import { findMuseCodeExecutable } from '../runners/muse-code-identity.js';
 import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
@@ -36,6 +37,7 @@ export type ModelEnumerationResult =
 
 export type ModelEnumeratorDependencies = {
   executeMuseCode?: typeof executeMuseCodeModelList;
+  findCursorCli?: typeof findCursorCliExecutable;
   findMuseCode?: typeof findMuseCodeExecutable;
   execute: (executablePath: string, args: string[]) => Promise<{ stdout: string }>;
   platform: () => NodeJS.Platform;
@@ -618,7 +620,12 @@ export const enumerateModels = async (
         return parseLineModels((await deps.execute(executable, ['models'])).stdout, 'tab');
       }
       case 'CURSOR_CLI': {
-        const executable = resolveEngineExecutable(runnerType);
+        // `agent`는 다른 도구(예: Grok Build 별칭)가 선점할 수 있어 러너 기동과 같은 신원 확인을 거친다.
+        const executable = await (deps.findCursorCli ?? findCursorCliExecutable)(
+          getEngineExecutablePreference(runnerType, opencodeCommand, isWindows),
+          { platform: deps.platform },
+        );
+        if (!executable) return { status: 'COMMAND_FAILED', message: 'Cannot find the Cursor CLI executable' };
         return parseCursorModels((await deps.execute(executable, ['models'])).stdout);
       }
       case 'GROK_BUILD': {

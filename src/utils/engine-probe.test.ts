@@ -50,7 +50,7 @@ describe('probeInstalledEngines', () => {
     assert.deepEqual(preferences.get('claude'), ['claude.cmd', 'claude']);
     assert.deepEqual(preferences.get('kimi'), ['kimi.cmd', 'kimi']);
     assert.deepEqual(preferences.get('kiro-cli'), ['kiro-cli.exe', 'kiro-cli']);
-    assert.deepEqual(preferences.get('agent'), ['agent']);
+    assert.deepEqual(preferences.get('agent'), ['cursor-agent', 'agent']);
     assert.deepEqual(preferences.get('grok'), ['grok.exe', 'grok']);
   });
 
@@ -86,6 +86,19 @@ describe('probeInstalledEngines', () => {
     assert.deepEqual((await probe('Unrelated agent utility')).engines, []);
     // 타임아웃으로 죽은 --help는 null을 돌려주며, 오탐 대신 미설치로 취급한다.
     assert.deepEqual((await probe(null)).engines, []);
+  });
+
+  // Grok Build 설치기가 만드는 `agent` 별칭이 PATH 앞에 있어도, 뒤에 있는 진짜 Cursor 설치를 찾아야 한다.
+  it('accepts Cursor when a Grok agent alias precedes the real Cursor Agent in PATH', async () => {
+    const result = await probeInstalledEngines('opencode', {
+      getNpmGlobalPrefixAsync: async () => null,
+      runProbeCommand: async (path) => (path.includes('.grok') ? 'Grok Build TUI' : 'Start the Cursor Agent'),
+      resolveExecutablePathsWithPreferenceAsync: async (name) =>
+        name === 'agent' ? ['/home/me/.grok/bin/agent', '/home/me/.local/bin/agent'] : [],
+      resolveExecutablePathWithPreferenceAsync: async () => null,
+    });
+
+    assert.deepEqual(result.engines, ['CURSOR_CLI']);
   });
 
   // `grok`은 무관한 npm 패키지(@vibe-kit/grok-cli)도 쓰는 이름이라, 공식 help 문구가 없으면

@@ -7,6 +7,7 @@ import {
   runProbeCommand,
   type AsyncExecutableDeps,
 } from '../executable.js';
+import { findCursorCliExecutable } from '../runners/cursor-cli-identity.js';
 import { ENGINE_COMMANDS, getEngineCommand, getEngineExecutablePreference } from '../runners/engine-commands.js';
 import { findGrokBuildExecutable } from '../runners/grok-build-identity.js';
 import { findMuseCodeExecutable } from '../runners/muse-code-identity.js';
@@ -27,15 +28,6 @@ export type EngineProbeResult = {
   reliable: boolean;
 };
 
-const isCursorAgent = async (
-  executablePath: string,
-  run: typeof runProbeCommand,
-  deps: EngineProbeDependencies,
-): Promise<boolean> => {
-  const output = await run(executablePath, ['--help'], deps);
-  return output !== null && output.includes('Start the Cursor Agent');
-};
-
 export const probeInstalledEngines = async (
   runnerCmd: string,
   deps: EngineProbeDependencies = {},
@@ -53,7 +45,12 @@ export const probeInstalledEngines = async (
   const engines: RunnerType[] = [];
 
   for (const runnerType of Object.keys(ENGINE_COMMANDS) as RunnerType[]) {
-    if (runnerType === 'GROK_BUILD' || runnerType === 'OMP' || runnerType === 'MUSE_CODE') {
+    if (
+      runnerType === 'GROK_BUILD' ||
+      runnerType === 'OMP' ||
+      runnerType === 'MUSE_CODE' ||
+      runnerType === 'CURSOR_CLI'
+    ) {
       const preferredNames = getEngineExecutablePreference(runnerType, runnerCmd, isWindows);
       const identityDependencies =
         deps.resolveExecutablePathWithPreferenceAsync && !deps.resolveExecutablePathsWithPreferenceAsync
@@ -71,7 +68,9 @@ export const probeInstalledEngines = async (
           ? await findGrokBuildExecutable(preferredNames, identityDependencies)
           : runnerType === 'MUSE_CODE'
             ? await findMuseCodeExecutable(preferredNames, identityDependencies)
-            : await findOmpExecutable(preferredNames, identityDependencies);
+            : runnerType === 'CURSOR_CLI'
+              ? await findCursorCliExecutable(preferredNames, identityDependencies)
+              : await findOmpExecutable(preferredNames, identityDependencies);
       if (found) engines.push(runnerType);
       continue;
     }
@@ -82,11 +81,6 @@ export const probeInstalledEngines = async (
       executableDeps,
     );
     if (!executablePath) {
-      continue;
-    }
-
-    // `agent`는 일반적인 이름이므로 Cursor 고유 help 문구까지 확인해 오탐을 막는다.
-    if (runnerType === 'CURSOR_CLI' && !(await isCursorAgent(executablePath, runCommand, deps))) {
       continue;
     }
 

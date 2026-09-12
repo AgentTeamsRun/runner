@@ -3,9 +3,14 @@ import { createWriteStream } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describeExecutableResolution, resolveExecutablePath } from '../executable.js';
+import {
+  describeExecutableResolution,
+  resolveExecutablePathsWithPreferenceAsync,
+  runProbeCommand,
+} from '../executable.js';
 import { logger } from '../logger.js';
 import { extractResultTextFromStreamJson } from './claude-code.js';
+import { findCursorCliExecutable, isCursorCliExecutable } from './cursor-cli-identity.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import { createCursorStreamJsonLineParser, createResultLineCapturer } from './stream-json-parser.js';
@@ -16,6 +21,10 @@ const OUTPUT_PREVIEW_MAX = 400;
 const OUTPUT_CAPTURE_MAX = 200_000;
 
 const normalizedModel = (model?: string | null): string => (typeof model === 'string' ? model.trim() : '');
+
+// 공식 설치 이름은 `agent`지만 `cursor-agent`도 같은 바이너리를 가리키므로 충돌 여지가 적은 이름을 먼저 본다.
+// 어느 후보든 cursor-cli-identity의 help 문구 확인을 통과해야 기동한다.
+export const getCursorExecutablePreference = (_isWindows: boolean): string[] => ['cursor-agent', 'agent'];
 
 export const buildCursorCliArgs = (prompt: string, model?: string | null): string[] => {
   const selectedModel = normalizedModel(model);
@@ -54,7 +63,8 @@ const toOutputPreview = (chunk: unknown): string => {
 
 type CursorCliRunnerDependencies = {
   platform: typeof platform;
-  resolveExecutablePath: typeof resolveExecutablePath;
+  resolveExecutablePathsWithPreferenceAsync: typeof resolveExecutablePathsWithPreferenceAsync;
+  runProbeCommand: typeof runProbeCommand;
   describeExecutableResolution: typeof describeExecutableResolution;
   spawn: typeof spawn;
   createWriteStream: typeof createWriteStream;
@@ -67,7 +77,8 @@ type CursorCliRunnerDependencies = {
 
 const defaultDependencies: CursorCliRunnerDependencies = {
   platform,
-  resolveExecutablePath,
+  resolveExecutablePathsWithPreferenceAsync,
+  runProbeCommand,
   describeExecutableResolution,
   spawn,
   createWriteStream,
@@ -95,7 +106,21 @@ export class CursorCliRunner implements Runner {
     const logPath = join(cwd, '.agentteams', 'runner', 'log', `${opts.triggerId}.log`);
     await this.deps.mkdir(dirname(logPath), { recursive: true });
     const isWindows = this.deps.platform() === 'win32';
-    const resolvedExecutablePath = this.deps.resolveExecutablePath('agent');
+    const identityDependencies = {
+      resolveExecutablePathsWithPreferenceAsync: this.deps.resolveExecutablePathsWithPreferenceAsync,
+      runProbeCommand: this.deps.runProbeCommand,
+      platform: this.deps.platform,
+    };
+    const resolvedExecutablePath = await findCursorCliExecutable(
+      getCursorExecutablePreference(isWindows),
+      identityDependencies,
+    );
+    if (!resolvedExecutablePath) {
+      const message =
+        "Cannot find the Cursor CLI executable. Every 'agent' candidate failed the Cursor Agent identity check.";
+      logger.error('Cursor CLI executable identity check failed', { triggerId: opts.triggerId });
+      return { exitCode: 1, errorMessage: message };
+    }
     const windowsPromptFilePath = isWindows
       ? join(cwd, '.agentteams', 'runner', 'tmp', `${opts.triggerId}.prompt.txt`)
       : null;
@@ -134,6 +159,13 @@ export class CursorCliRunner implements Runner {
     });
 
     const env = buildRunnerChildEnv(process.env, opts);
+
+    if (!(await isCursorCliExecutable(resolvedExecutablePath, identityDependencies))) {
+      await removeWindowsPromptFile();
+      const message = 'The resolved Cursor CLI executable changed identity before launch; execution was refused.';
+      logger.error('Cursor CLI executable identity changed before launch', { triggerId: opts.triggerId });
+      return { exitCode: 1, errorMessage: message };
+    }
 
     let child: ReturnType<typeof spawn>;
     try {

@@ -1,4 +1,5 @@
 import type { RunnerType } from '@agentteams/core-constants';
+import { getCursorExecutablePreference } from './cursor-cli.js';
 import { getGrokExecutablePreference } from './grok-build.js';
 import { getKimiExecutablePreference } from './kimi-cli.js';
 import { getKiroExecutablePreference } from './kiro-cli.js';
@@ -28,8 +29,9 @@ export const ENGINE_COMMANDS: Record<RunnerType, EngineDefinition> = {
   ANTIGRAVITY: { command: 'agy', preference: npmShimPreference },
   AMP: { command: 'amp', preference: npmShimPreference },
   COPILOT_CLI: { command: 'copilot', preference: npmShimPreference },
-  // Cursor는 러너도 선호 목록 없이 이름만으로 해석한다.
-  CURSOR_CLI: { command: 'agent', preference: (command) => [command] },
+  // `agent`는 일반적인 이름이라(Grok Build 설치기도 같은 별칭을 만든다) 선호 목록과
+  // cursor-cli-identity의 신원 확인이 함께 붙는다.
+  CURSOR_CLI: { command: 'agent', preference: (_command, isWindows) => getCursorExecutablePreference(isWindows) },
   KIMI_CLI: { command: 'kimi', preference: (_command, isWindows) => getKimiExecutablePreference(isWindows) },
   KIRO_CLI: { command: 'kiro-cli', preference: (_command, isWindows) => getKiroExecutablePreference(isWindows) },
   // `grok`은 무관한 npm 패키지(@vibe-kit/grok-cli)도 쓰는 이름이라, 해석 우선순위
