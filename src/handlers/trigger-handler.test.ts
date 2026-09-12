@@ -2975,6 +2975,437 @@ test('createTriggerHandler fails when the workspace exists but is neither a proj
   });
 });
 
+test('createTriggerHandler fails before starting the runner when expected commits are missing', async () => {
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+  const logEntries: Array<{ level: string; message: string }> = [];
+  let runnerCalled = false;
+  let createWorktreeCalled = false;
+
+  const client = {
+    fetchTriggerRuntime: async () => ({
+      ...runtime,
+      planType: 'FEATURE',
+      expectedCommits: [{ commit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', branch: 'feat/missing' }],
+    }),
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerHistory', args });
+    },
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+    reportWorktreeStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'reportWorktreeStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      isGitRepo: () => true,
+      preflightGitState: async () => ({
+        missing: [{ kind: 'commit', ref: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' }],
+        baseCommit: null,
+      }),
+      createWorktree: () => {
+        createWorktreeCalled = true;
+        return '/tmp/worktree';
+      },
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: (level, message) => {
+          logEntries.push({ level, message });
+        },
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.equal(runnerCalled, false);
+  assert.equal(createWorktreeCalled, false);
+  assert.equal(clientCalls.filter((call) => call.method === 'reportWorktreeStatus').length, 0);
+  const statusCall = clientCalls.filter((call) => call.method === 'updateTriggerStatus').at(-1);
+  assert.equal(statusCall?.args[1], 'FAILED');
+  assert.match(String(statusCall?.args[2]), /^GIT_STATE_UNAVAILABLE:/);
+  assert.match(String(statusCall?.args[2]), /deadbeefdeadbeefdeadbeefdeadbeefdeadbeef/);
+  assert.equal(
+    logEntries.some((entry) => entry.level === 'ERROR' && entry.message.startsWith('GIT_STATE_UNAVAILABLE:')),
+    true,
+  );
+});
+
+test('createTriggerHandler does not run Git preflight when expectedCommits is absent', async () => {
+  let preflightCalled = false;
+  let runnerCalled = false;
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => ({ ...runtime, planType: 'FEATURE' }),
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      isGitRepo: () => true,
+      preflightGitState: async () => {
+        preflightCalled = true;
+        return { missing: [{ kind: 'commit', ref: 'should-not-run' }], baseCommit: null };
+      },
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.equal(preflightCalled, false);
+  assert.equal(runnerCalled, true);
+  assert.equal(clientCalls.at(-1)?.args[1], 'DONE');
+});
+
+test('createTriggerHandler runs the runner when Git preflight finds every expected ref', async () => {
+  let runnerCalled = false;
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => ({
+      ...runtime,
+      planType: 'FEATURE',
+      baseBranch: 'dev',
+      expectedCommits: [{ commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', branch: 'feat/ready' }],
+    }),
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      isGitRepo: () => true,
+      preflightGitState: async () => ({ missing: [], baseCommit: null }),
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.equal(runnerCalled, true);
+  assert.equal(clientCalls.at(-1)?.args[1], 'DONE');
+});
+
+test('createTriggerHandler는 preflight에서 확인한 커밋을 worktree에 전달한다', async () => {
+  let runnerCalled = false;
+  let actualBase: string | null | undefined;
+  const baseCommit = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => ({
+      ...runtime,
+      planType: 'FEATURE',
+      baseBranch: 'dev',
+      useWorktree: true,
+      worktreeId: 'remote-base',
+      expectedCommits: [{ commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', branch: 'feat/ready' }],
+    }),
+    reportWorktreeStatus: async () => undefined,
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      isGitRepo: () => true,
+      preflightGitState: async () => ({ missing: [], baseCommit }),
+      createWorktree: (_repo, options) => {
+        actualBase = options.baseBranch;
+        return '/auth/worktree';
+      },
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.equal(actualBase, baseCommit);
+  assert.equal(runnerCalled, true);
+  assert.equal(clientCalls.at(-1)?.args[1], 'DONE');
+});
+
+test('createTriggerHandler는 preflight 도중 취소를 전달하고 러너 생성을 막는다', async () => {
+  let runnerCalled = false;
+  let preflightStarted = false;
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => ({
+      ...runtime,
+      planType: 'FEATURE',
+      baseBranch: 'dev',
+      expectedCommits: [{ commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', branch: 'feat/ready' }],
+    }),
+    isTriggerCancelRequested: async () => preflightStarted,
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      isGitRepo: () => true,
+      cancelPollIntervalMs: 1,
+      preflightGitState: async ({ signal }) => {
+        assert.ok(signal);
+        preflightStarted = true;
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('취소 신호가 전달되지 않음')), 1000);
+          signal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        return { missing: [], baseCommit: null };
+      },
+      createRunnerFactory: () => () => {
+        runnerCalled = true;
+        return {
+          run: async () => {
+            return { exitCode: 0 } satisfies RunResult;
+          },
+        };
+      },
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '### Summary\n- done\n',
+      resolveRunnerHistoryPaths: () => ({
+        currentHistoryPath: '/auth/path/.agentteams/runner/history/trigger-1.md',
+        parentHistoryPath: null,
+      }),
+    },
+  );
+
+  await handler({ ...trigger, parentTriggerId: null });
+
+  assert.equal(preflightStarted, true);
+  assert.equal(runnerCalled, false);
+  assert.equal(clientCalls.at(-1)?.args[1], 'CANCELLED');
+});
+
+test('createTriggerHandler does not create a managed worktree when Git preflight fails', async () => {
+  let createWorktreeCalled = false;
+  let runnerCalled = false;
+  const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+
+  const client = {
+    fetchTriggerRuntime: async () => ({
+      ...runtime,
+      useWorktree: true,
+      worktreeId: 'wt-1',
+      planType: 'FEATURE',
+      expectedCommits: [{ commit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', branch: null }],
+    }),
+    isTriggerCancelRequested: async () => false,
+    updateTriggerHistory: async () => undefined,
+    updateTriggerStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'updateTriggerStatus', args });
+    },
+    reportWorktreeStatus: async (...args: unknown[]) => {
+      clientCalls.push({ method: 'reportWorktreeStatus', args });
+    },
+  };
+
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'daemon-token',
+        apiUrl: 'https://api.example',
+        pollingIntervalMs: 5000,
+        maxPollingIntervalMs: 120_000,
+        timeoutMs: 1500,
+        idleTimeoutMs: 500,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: client as never,
+    },
+    {
+      pathExists: () => true,
+      isGitRepo: () => true,
+      preflightGitState: async () => ({
+        missing: [{ kind: 'commit', ref: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' }],
+        baseCommit: null,
+      }),
+      createWorktree: () => {
+        createWorktreeCalled = true;
+        return '/tmp/worktree';
+      },
+      createRunnerFactory: () => () => ({
+        run: async () => {
+          runnerCalled = true;
+          return { exitCode: 0 } satisfies RunResult;
+        },
+      }),
+      createLogReporter: () => ({
+        start: () => undefined,
+        append: () => undefined,
+        stop: async () => undefined,
+      }),
+      readHistoryFile: async () => '',
+    },
+  );
+
+  await handler({ ...trigger, useWorktree: true, worktreeId: 'wt-1', parentTriggerId: null });
+
+  assert.equal(createWorktreeCalled, false);
+  assert.equal(runnerCalled, false);
+  assert.equal(clientCalls.filter((call) => call.method === 'reportWorktreeStatus').length, 0);
+  assert.equal(clientCalls.at(-1)?.args[1], 'FAILED');
+  assert.match(String(clientCalls.at(-1)?.args[2]), /^GIT_STATE_UNAVAILABLE:/);
+});
+
 test('createTriggerHandler runs normally when the workspace carries the project marker', async () => {
   await withTempDir(async (dir) => {
     const runnerInputs: Array<{ authPath: string | null }> = [];

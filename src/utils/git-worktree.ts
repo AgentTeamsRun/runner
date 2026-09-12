@@ -1,8 +1,9 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
 import path from 'node:path';
+import { logger } from '../logger.js';
 
-// 모든 git 호출은 이 헬퍼를 통해 실행해야 한다. windowsHide 누락 시 Windows에서
+// 동기 git 조회는 이 헬퍼를 통해 실행한다. windowsHide 누락 시 Windows에서
 // 콘솔 미부착 부모(데몬) 프로세스가 git.exe를 띄울 때 콘솔 창이 잠깐 노출된다.
 function runGit(args: string[], cwd: string): Buffer {
   return execFileSync('git', args, { cwd, stdio: 'pipe', windowsHide: true });
@@ -15,6 +16,92 @@ export function isGitRepo(dirPath: string): boolean {
   } catch {
     return false;
   }
+}
+
+export type ExpectedCommit = { commit: string; branch: string | null };
+
+export type GitPreflightMissing = { kind: 'baseBranch' | 'commit'; ref: string };
+
+export type PreflightGitStateInput = {
+  repoPath: string;
+  baseBranch?: string | null;
+  expectedCommits?: ExpectedCommit[];
+  fetchTimeoutMs?: number;
+  signal?: AbortSignal;
+};
+
+const resolveGitCommit = (repoPath: string, ref: string): string | null => {
+  try {
+    return runGit(['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`], repoPath)
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
+};
+
+export function resolveBaseCommit(repoPath: string, baseBranch: string): string | null {
+  const ref = baseBranch.trim();
+  if (!ref) return null;
+  return resolveGitCommit(repoPath, ref) ?? resolveGitCommit(repoPath, `refs/remotes/origin/${ref}`);
+}
+
+const gitCommitExists = (repoPath: string, commit: string): boolean => {
+  try {
+    runGit(['cat-file', '-e', `${commit}^{commit}`], repoPath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export async function preflightGitState(
+  input: PreflightGitStateInput,
+): Promise<{ missing: GitPreflightMissing[]; baseCommit: string | null }> {
+  input.signal?.throwIfAborted();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        'git',
+        ['fetch', 'origin', '--prune'],
+        {
+          cwd: input.repoPath,
+          windowsHide: true,
+          timeout: input.fetchTimeoutMs ?? 30_000,
+          killSignal: 'SIGKILL',
+          signal: input.signal,
+          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        },
+        (error) => (error ? reject(error) : resolve()),
+      );
+    });
+  } catch (error) {
+    input.signal?.throwIfAborted();
+    logger.warn('Git fetch origin --prune failed; continuing with local refs', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  input.signal?.throwIfAborted();
+  const missing: GitPreflightMissing[] = [];
+  const baseBranch = input.baseBranch?.trim() ?? '';
+  const baseCommit = baseBranch ? resolveBaseCommit(input.repoPath, baseBranch) : null;
+  if (baseBranch && !baseCommit) {
+    missing.push({ kind: 'baseBranch', ref: baseBranch });
+  }
+
+  for (const item of input.expectedCommits ?? []) {
+    const commitExists = gitCommitExists(input.repoPath, item.commit);
+    const remoteBranchExists =
+      typeof item.branch === 'string' && item.branch.trim().length > 0
+        ? resolveGitCommit(input.repoPath, `refs/remotes/origin/${item.branch.trim()}`)
+        : false;
+    if (!commitExists && !remoteBranchExists) {
+      missing.push({ kind: 'commit', ref: item.commit });
+    }
+  }
+
+  return { missing, baseCommit };
 }
 
 export function resolveWorktreePath(authPath: string, worktreeId: string): string {
@@ -75,7 +162,9 @@ export function createWorktree(
   try {
     const args = ['worktree', 'add', '-b', branchName, worktreePath];
     if (baseBranch) {
-      args.push(baseBranch);
+      const baseCommit = resolveBaseCommit(authPath, baseBranch);
+      if (!baseCommit) throw new Error(`Invalid base reference: ${baseBranch}`);
+      args.push(baseCommit);
     }
     runGit(args, authPath);
   } catch (error) {
