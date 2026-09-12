@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference } from '../executable.js';
 import { logger } from '../logger.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
+import { createKimiFinalTextCapturer, createKimiJsonLineParser } from './kimi-json-parser.js';
+import type { ParsedLogEntry } from './stream-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 import { buildRunnerChildEnv } from './session-env.js';
@@ -18,7 +20,7 @@ const normalizedModel = (model?: string | null): string => (typeof model === 'st
 export const buildKimiCliArgs = (prompt: string, model?: string | null): string[] => {
   const selectedModel = normalizedModel(model);
   const modelArgs = selectedModel.length > 0 && selectedModel !== 'default' ? ['-m', selectedModel] : [];
-  return ['-p', prompt, ...modelArgs];
+  return ['-p', prompt, ...modelArgs, '--output-format', 'stream-json'];
 };
 
 export const getKimiExecutablePreference = (isWindows: boolean): string[] =>
@@ -42,7 +44,7 @@ export const toKimiPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '-p' $promptText${modelSegment}`,
+    `& ${toPowerShellLiteral(resolvedExecutablePath)} '-p' $promptText${modelSegment} '--output-format' 'stream-json'`,
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -179,22 +181,43 @@ export class KimiCliRunner implements Runner {
     let lastOutput = '';
     let lastErrorOutput = '';
     let outputText = '';
+    const finalTextCapturer = createKimiFinalTextCapturer();
     const appendOutputText = (chunk: string): void => {
       if (outputText.length < OUTPUT_CAPTURE_MAX) {
         outputText += chunk.slice(0, OUTPUT_CAPTURE_MAX - outputText.length);
       }
     };
     const idleTimer = { reset: (): void => {} };
+    const emitEntry = (entry: ParsedLogEntry): void => {
+      lastOutput = entry.message;
+      opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
+    };
+    const jsonLineParser = createKimiJsonLineParser(
+      (entries) => {
+        for (const entry of entries) {
+          emitEntry(entry);
+        }
+      },
+      { cwd },
+    );
+
+    const finalizeOutputText = (): string | undefined => {
+      finalTextCapturer.flush();
+      return finalTextCapturer.get() ?? (lastOutput || outputText.trim() || undefined);
+    };
 
     child.stdout?.on('data', (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
       appendOutputText(rawOutput);
-      const output = toOutputPreview(rawOutput);
-      if (output.length > 0) {
-        lastOutput = output;
+      if (rawOutput.length > 0) {
+        finalTextCapturer.push(rawOutput);
+        jsonLineParser.push(rawOutput);
         idleTimer.reset();
-        opts.onStdoutChunk?.(output, 'TEXT');
-        logger.info('Runner stdout', { triggerId: opts.triggerId, pid: child.pid, output });
+        logger.info('Runner stdout', {
+          triggerId: opts.triggerId,
+          pid: child.pid,
+          output: toOutputPreview(rawOutput),
+        });
       }
     });
     child.stderr?.on('data', (chunk) => {
@@ -258,7 +281,8 @@ export class KimiCliRunner implements Runner {
         clearTimeout(timeoutId);
         await cleanup();
         logger.error('Runner process launch failed', { triggerId: opts.triggerId, error: error.message });
-        resolve({ exitCode: 1, lastOutput, outputText: outputText.trim() || undefined, errorMessage: error.message });
+        jsonLineParser.flush();
+        resolve({ exitCode: 1, lastOutput, outputText: finalizeOutputText(), errorMessage: error.message });
       });
 
       const closeWatchdog = this.deps.setupCloseWatchdog(child, opts.triggerId);
@@ -267,7 +291,13 @@ export class KimiCliRunner implements Runner {
         clearTimeout(timeoutId);
         await cleanup();
         logger.info('Runner process closed', { triggerId: opts.triggerId, pid: child.pid, exitCode: code, timedOut });
-        const finalizedOutputText = outputText.trim() || undefined;
+        jsonLineParser.flush();
+        // Kimi stream-json에는 완료 이벤트가 없으므로 종료 코드 0을 완료로 보고한다.
+        // 실패 경로의 stderr 우선 메시지는 그대로 보존한다.
+        if (!timedOut && !cancelled && (code ?? 1) === 0) {
+          emitEntry({ level: 'INFO', category: 'RESULT', message: '[Result] Completed' });
+        }
+        const finalizedOutputText = finalizeOutputText();
 
         if (timedOut) {
           resolve({
