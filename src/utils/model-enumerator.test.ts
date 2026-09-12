@@ -12,6 +12,7 @@ import {
   executeModelEnumerationCommand,
   parseCursorModels,
   parseGrokModels,
+  parseKimiModels,
   parseKiroModels,
   parseOmpModels,
   parseLineModels,
@@ -194,6 +195,40 @@ describe('model enumerator parsers', () => {
       label: 'claude-sonnet-4.5',
       maxInputTokens: 200000,
     });
+  });
+
+  // 픽스처는 `kimi provider list --json` 실출력에서 가져온 것이다(2026-09-12, kimi 0.42.0).
+  // `providers.<id>.apiKey`는 평문으로 나오므로 픽스처에는 더미 값 `"***"`만 둔다.
+  // 파서는 `models` 맵만 읽고 `providers`를 어떤 경로로도 참조하지 않는다.
+  test('parses Kimi models from the provider catalog map', async () => {
+    const result = parseKimiModels(await fixture('kimi-models.json'));
+    assert.equal(result.status, 'SUCCESS');
+    if (result.status !== 'SUCCESS') return;
+    assert.equal(result.values.length, 4);
+    assert.deepEqual(result.values[1], {
+      value: 'moonshot-ai/kimi-k3',
+      label: 'kimi-k3 (moonshot-ai)',
+      maxInputTokens: 1048576,
+    });
+    // 추론 강도(`supportEfforts`)는 이번 탐지에서 보고하지 않는다. KIMI_CLI의 effort
+    // 판정이 false라 API가 레벨을 버리므로, 필드를 싣지 않고 "미확인"으로 남긴다.
+    for (const model of result.values) {
+      assert.equal(asEnumeratedMeta(model).supportedEffortLevels, undefined);
+    }
+  });
+
+  test('classifies an empty Kimi catalog as EMPTY_OUTPUT and malformed output as FORMAT_MISMATCH', () => {
+    // provider 키가 하나도 없으면 kimi는 빈 맵을 낸다. 성공이지만 보고할 모델이 없다.
+    assert.deepEqual(parseKimiModels('{"providers":{},"models":{}}'), { status: 'EMPTY_OUTPUT' });
+    assert.deepEqual(parseKimiModels(''), { status: 'EMPTY_OUTPUT' });
+    assert.deepEqual(parseKimiModels('not json'), { status: 'FORMAT_MISMATCH' });
+    // omp의 `{"models":[]}`와 달리 Kimi의 `models`는 맵이다. 배열이 오면 형식 불일치다.
+    assert.deepEqual(parseKimiModels('{"models":[]}'), { status: 'FORMAT_MISMATCH' });
+    // 키가 비었거나 model이 문자열이 아닌 항목은 건너뛴다.
+    assert.deepEqual(
+      parseKimiModels(JSON.stringify({ models: { '': { provider: 'x', model: 'y' }, 'p/broken': { provider: 'p' } } })),
+      { status: 'FORMAT_MISMATCH' },
+    );
   });
 
   test('parses Antigravity values without treating status text or labels as ids', async () => {
@@ -447,6 +482,30 @@ describe('enumerateModels', () => {
       status: 'SUCCESS',
       values: [{ value: 'anthropic/claude-sonnet-4', label: 'Claude Sonnet 4', maxInputTokens: 200000 }],
     });
+  });
+
+  test('enumerates Kimi models from the provider list command', async () => {
+    const calls: Array<{ executable: string; args: string[] }> = [];
+    const result = await enumerateModels(
+      'KIMI_CLI',
+      dependencies(async (executable, args) => {
+        calls.push({ executable, args });
+        return { stdout: await fixture('kimi-models.json') };
+      }),
+    );
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0]?.args, ['provider', 'list', '--json']);
+    assert.equal(result.status, 'SUCCESS');
+    if (result.status !== 'SUCCESS') return;
+    assert.deepEqual(
+      result.values.map((model) => model.value),
+      [
+        'moonshot-ai/kimi-k2.6',
+        'moonshot-ai/kimi-k3',
+        'moonshot-ai/kimi-k2.7-code-highspeed',
+        'moonshot-ai/kimi-k2.7-code',
+      ],
+    );
   });
 
   test('enumerates ANTIGRAVITY models with tab parser', async () => {

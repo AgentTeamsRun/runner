@@ -133,11 +133,13 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   },
   // Kimi는 설정 파일의 thinking.effort만 확인됐고 실행 단위 전달 경로는 미확인이다.
   // 평문 출력이라 구조화 사용량 이벤트가 없다.
+  // `kimi provider list --json`이 `models` 맵을 낸다(2026-09-12 실측, kimi 0.42.0).
+  // 키 미설정이면 빈 맵. 출력에 provider apiKey가 평문으로 포함되므로 파서는 `models`만 읽는다.
   KIMI_CLI: {
     model: true,
     fastMode: false,
     effort: false,
-    modelEnumeration: false,
+    modelEnumeration: true,
     subAgentDelegation: false,
     tokenUsage: false,
   },
