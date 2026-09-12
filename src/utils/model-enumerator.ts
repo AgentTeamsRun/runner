@@ -1,6 +1,8 @@
 import { executeMuseCodeModelList } from './muse-code-models.js';
 import { findCursorCliExecutable } from '../runners/cursor-cli-identity.js';
+import { findGrokBuildExecutable } from '../runners/grok-build-identity.js';
 import { findMuseCodeExecutable } from '../runners/muse-code-identity.js';
+import { findOmpExecutable } from '../runners/omp-identity.js';
 import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
 import type { RunnerType } from '@agentteams/core-constants';
@@ -38,7 +40,9 @@ export type ModelEnumerationResult =
 export type ModelEnumeratorDependencies = {
   executeMuseCode?: typeof executeMuseCodeModelList;
   findCursorCli?: typeof findCursorCliExecutable;
+  findGrokBuild?: typeof findGrokBuildExecutable;
   findMuseCode?: typeof findMuseCodeExecutable;
+  findOmp?: typeof findOmpExecutable;
   execute: (executablePath: string, args: string[]) => Promise<{ stdout: string }>;
   platform: () => NodeJS.Platform;
   resolveExecutable: (name: string, preferredNames: string[]) => string;
@@ -304,6 +308,60 @@ export const parseKiroModels = (output: string): ModelEnumerationResult => {
           ];
         })
       : [];
+    return parsedResult(output, models);
+  } catch {
+    return { status: 'FORMAT_MISMATCH' };
+  }
+};
+
+/**
+ * `kimi provider list --json` (2026-09-12 실측, kimi 0.42.0). 최상위 `providers`/`models` 맵을 낸다.
+ *
+ *   {"providers": {"moonshot-ai": {"type": "kimi", "baseUrl": "...", "apiKey": "..."}},
+ *    "models": {"moonshot-ai/kimi-k3": {"provider": "moonshot-ai", "model": "kimi-k3",
+ *               "maxContextSize": 1048576, "capabilities": [...]}, ...}}
+ *
+ * **provider 키가 하나도 없으면 `{"providers": {}, "models": {}}`를 낸다(exit 0).** 성공이지만
+ * 보고할 모델이 없으므로 EMPTY_OUTPUT이다(omp의 `{"models":[]}`와 의미는 같지만 형태가 달라
+ * 그쪽은 FORMAT_MISMATCH인 반면 여기는 빈 맵을 명시적으로 판정한다).
+ *
+ * ⚠️ `providers.<id>.apiKey`가 평문으로 출력된다. 파서는 `models` 맵만 읽고 `providers`를
+ * 어떤 경로로도 참조하지 않는다 — stdout 원문을 로그·오류 메시지에 싣지 않는 기존 구조와 함께
+ * 키가 어디에도 남지 않게 한다.
+ *
+ * `-m <model>`은 "LLM model alias"를 받으며 `default_model = "moonshot-ai/kimi-k3"`처럼
+ * 맵 키 그대로가 alias다. 그래서 `value`로는 맵 키를 쓴다.
+ *
+ * 모델별 추론 강도(`supportEfforts`/`defaultEffort`, 있을 때만 존재)는 보고하지 않는다.
+ * KIMI_CLI의 effort 판정이 false라 API가 레벨을 버리는데다 실행 단위 전달 경로도 미확인이다.
+ */
+export const parseKimiModels = (output: string): ModelEnumerationResult => {
+  if (output.trim().length === 0) return { status: 'EMPTY_OUTPUT' };
+
+  try {
+    const parsed = JSON.parse(output) as {
+      models?: Record<string, { provider?: unknown; model?: unknown; maxContextSize?: unknown }>;
+    };
+    if (typeof parsed.models !== 'object' || parsed.models === null || Array.isArray(parsed.models)) {
+      return { status: 'FORMAT_MISMATCH' };
+    }
+    const entries = Object.entries(parsed.models);
+    if (entries.length === 0) return { status: 'EMPTY_OUTPUT' };
+    const models = entries.flatMap(([key, entry]): EnumeratedModel[] => {
+      if (key.trim().length === 0 || typeof entry?.model !== 'string' || entry.model.trim().length === 0) return [];
+      const provider = typeof entry.provider === 'string' ? entry.provider.trim() : '';
+      const maxInputTokens =
+        typeof entry.maxContextSize === 'number' && Number.isInteger(entry.maxContextSize) && entry.maxContextSize > 0
+          ? entry.maxContextSize
+          : undefined;
+      return [
+        {
+          value: key,
+          label: provider.length > 0 ? `${entry.model} (${provider})` : entry.model,
+          ...(maxInputTokens ? { maxInputTokens } : {}),
+        },
+      ];
+    });
     return parsedResult(output, models);
   } catch {
     return { status: 'FORMAT_MISMATCH' };
@@ -601,6 +659,10 @@ export const enumerateModels = async (
         const executable = resolveEngineExecutable(runnerType);
         return parseKiroModels((await deps.execute(executable, ['chat', '--list-models', '--format', 'json'])).stdout);
       }
+      case 'KIMI_CLI': {
+        const executable = resolveEngineExecutable(runnerType);
+        return parseKimiModels((await deps.execute(executable, ['provider', 'list', '--json'])).stdout);
+      }
       case 'OPENCODE': {
         const executable = resolveEngineExecutable(runnerType);
         try {
@@ -629,11 +691,21 @@ export const enumerateModels = async (
         return parseCursorModels((await deps.execute(executable, ['models'])).stdout);
       }
       case 'GROK_BUILD': {
-        const executable = resolveEngineExecutable(runnerType);
+        // `grok`은 다른 도구가 선점할 수 있어 러너 기동과 같은 신원 확인을 거친다.
+        const executable = await (deps.findGrokBuild ?? findGrokBuildExecutable)(
+          getEngineExecutablePreference(runnerType, opencodeCommand, isWindows),
+          { platform: deps.platform },
+        );
+        if (!executable) return { status: 'COMMAND_FAILED', message: 'Cannot find an official Grok Build executable' };
         return parseGrokModels((await deps.execute(executable, ['models'])).stdout);
       }
       case 'OMP': {
-        const executable = resolveEngineExecutable(runnerType);
+        // `omp`는 npm의 무관한 동명 패키지와 충돌할 수 있어 러너 기동과 같은 신원 확인을 거친다.
+        const executable = await (deps.findOmp ?? findOmpExecutable)(
+          getEngineExecutablePreference(runnerType, opencodeCommand, isWindows),
+          { platform: deps.platform },
+        );
+        if (!executable) return { status: 'COMMAND_FAILED', message: 'Cannot find an official OMP executable' };
         return parseOmpModels((await deps.execute(executable, ['models', '--json'])).stdout);
       }
       default:

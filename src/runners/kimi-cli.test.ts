@@ -1,7 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   buildKimiCliArgs,
   getKimiExecutablePreference,
@@ -11,9 +13,9 @@ import {
 import type { RunnerOptions } from './types.js';
 
 test('buildKimiCliArgs uses Kimi print mode without approval bypass flags', () => {
-  assert.deepEqual(buildKimiCliArgs('hello', null), ['-p', 'hello']);
-  assert.deepEqual(buildKimiCliArgs('hello', 'default'), ['-p', 'hello']);
-  assert.deepEqual(buildKimiCliArgs('hello', 'k3'), ['-p', 'hello', '-m', 'k3']);
+  assert.deepEqual(buildKimiCliArgs('hello', null), ['-p', 'hello', '--output-format', 'stream-json']);
+  assert.deepEqual(buildKimiCliArgs('hello', 'default'), ['-p', 'hello', '--output-format', 'stream-json']);
+  assert.deepEqual(buildKimiCliArgs('hello', 'k3'), ['-p', 'hello', '-m', 'k3', '--output-format', 'stream-json']);
 });
 
 test('uses platform-specific Kimi executable preferences', () => {
@@ -29,7 +31,7 @@ test('toKimiPowerShellEncodedCommand reads the prompt from a file and preserves 
   );
 
   assert.match(script, /\[System\.IO\.File\]::ReadAllText/);
-  assert.match(script, /'-p' \$promptText '-m' 'k3'/);
+  assert.match(script, /'-p' \$promptText '-m' 'k3' '--output-format' 'stream-json'/);
   assert.doesNotMatch(script, /--yolo|--auto|--plan/);
 });
 
@@ -39,6 +41,7 @@ test('toKimiPowerShellEncodedCommand omits the default model', () => {
   );
 
   assert.match(script, /'-p' \$promptText/);
+  assert.match(script, /'--output-format' 'stream-json'/);
   assert.doesNotMatch(script, /-m/);
 });
 
@@ -52,9 +55,11 @@ const createFakeChild = (): FakeChild => {
   return child;
 };
 
-test('KimiCliRunner launches print mode and captures text output', async () => {
+test('KimiCliRunner replays stream-json into sanitized logs and final text', async () => {
+  const fixture = await readFile(fileURLToPath(new URL('./fixtures/kimi-events.jsonl', import.meta.url)), 'utf8');
   const child = createFakeChild();
   const spawned: { command: string; args: readonly string[]; options: Record<string, unknown> }[] = [];
+  const chunks: { message: string; category: string }[] = [];
   const runner = new KimiCliRunner({
     platform: () => 'linux',
     resolveExecutablePathWithPreference: (() => '/usr/local/bin/kimi') as never,
@@ -70,7 +75,9 @@ test('KimiCliRunner launches print mode and captures text output', async () => {
     spawn: ((command: string, args: readonly string[], options: Record<string, unknown>) => {
       spawned.push({ command, args, options });
       queueMicrotask(() => {
-        child.stdout.emit('data', Buffer.from('Kimi result'));
+        const cut = Math.floor(fixture.length / 2);
+        child.stdout.emit('data', Buffer.from(fixture.slice(0, cut)));
+        child.stdout.emit('data', Buffer.from(fixture.slice(cut)));
         child.stderr.emit('data', Buffer.from('tool progress'));
         child.emit('close', 0);
       });
@@ -90,17 +97,34 @@ test('KimiCliRunner launches print mode and captures text output', async () => {
     agentConfigId: 'agent',
     runnerType: 'KIMI_CLI',
     model: 'k3',
+    onStdoutChunk: (message, category) => {
+      chunks.push({ message, category });
+    },
     onStderrChunk: () => assert.fail('Kimi stderr progress must not be reported as an error chunk'),
   };
 
   const result = await runner.run(options);
 
   assert.equal(result.exitCode, 0);
-  assert.equal(result.outputText, 'Kimi result');
-  assert.equal(result.lastOutput, 'Kimi result');
+  assert.deepEqual(
+    chunks.map((chunk) => chunk.category),
+    ['TOOL', 'TOOL', 'TEXT', 'RESULT'],
+  );
+  assert.deepEqual(
+    chunks.map((chunk) => chunk.message),
+    ['[Tool] Read: input.txt', '[Tool] Write: output.txt', 'Done.', '[Result] Completed'],
+  );
+  const logged = chunks.map((chunk) => chunk.message).join('\n');
+  assert.ok(!logged.includes('{"role"'));
+  assert.ok(!logged.includes('hello kimi'));
+  assert.equal(
+    result.outputText,
+    'Done. `input.txt` contained "hello kimi", and I wrote that single line to `output.txt`.',
+  );
+  assert.equal(result.lastOutput, '[Result] Completed');
   assert.equal(result.errorMessage, undefined);
   assert.equal(spawned[0]?.command, '/usr/local/bin/kimi');
-  assert.deepEqual(spawned[0]?.args, ['-p', 'hello', '-m', 'k3']);
+  assert.deepEqual(spawned[0]?.args, ['-p', 'hello', '-m', 'k3', '--output-format', 'stream-json']);
   assert.equal(spawned[0]?.options.windowsHide, true);
 
   // 실행 스냅샷 3종이 자식 프로세스 환경에 실려야 CLI가 --runner-type/--model을 폴백할 수 있다.

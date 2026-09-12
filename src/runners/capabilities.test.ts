@@ -48,6 +48,7 @@ test('only runners with verified non-interactive catalogs support model enumerat
     'OPENCODE',
     'ANTIGRAVITY',
     'CURSOR_CLI',
+    'KIMI_CLI',
     'KIRO_CLI',
     'GROK_BUILD',
     'OMP',
@@ -91,12 +92,12 @@ test('Cursor CLI supports model selection but not fast mode, effort, or sub-agen
   assert.deepEqual(describeUnsupportedRunnerOptions('CURSOR_CLI', { model: 'client-default', fastMode: false }), []);
 });
 
-test('Kimi CLI supports model selection but not fast mode, effort, or sub-agent delegation', () => {
+test('Kimi CLI supports model selection and model enumeration but not fast mode, effort, or sub-agent delegation', () => {
   assert.deepEqual(getRunnerCapabilities('KIMI_CLI'), {
     model: true,
     fastMode: false,
     effort: false,
-    modelEnumeration: false,
+    modelEnumeration: true,
     subAgentDelegation: false,
     tokenUsage: false,
   });
