@@ -10,7 +10,7 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { resolveRunnerHistoryPaths } from '../utils/runner-history.js';
-import { isGitRepo, createWorktree } from '../utils/git-worktree.js';
+import { isGitRepo, createWorktree, preflightGitState } from '../utils/git-worktree.js';
 import { resolveWorktreeAuthPath } from '../utils/resolve-member-repo.js';
 import { resolveDiscoveredWorktreePath } from '../utils/discovered-worktree-store.js';
 import { existsSync, realpathSync } from 'node:fs';
@@ -91,6 +91,7 @@ type TriggerHandlerDependencies = {
   createLogReporter?: (client: DaemonApiClient, triggerId: string) => ReporterLike;
   isGitRepo?: typeof isGitRepo;
   createWorktree?: typeof createWorktree;
+  preflightGitState?: typeof preflightGitState;
   resolveWorktreeAuthPath?: typeof resolveWorktreeAuthPath;
   resolveDiscoveredWorktreePath?: (localKey: string) => string | null;
   pathExists?: (path: string) => boolean;
@@ -111,6 +112,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
   const createRunner = (dependencies.createRunnerFactory ?? createRunnerFactory)(config.runnerCmd);
   const checkIsGitRepo = dependencies.isGitRepo ?? isGitRepo;
   const createRunnerWorktree = dependencies.createWorktree ?? createWorktree;
+  const runPreflightGitState = dependencies.preflightGitState ?? preflightGitState;
   const resolveMemberAuthPath = dependencies.resolveWorktreeAuthPath ?? resolveWorktreeAuthPath;
   const resolveDiscoveredPath = dependencies.resolveDiscoveredWorktreePath ?? resolveDiscoveredWorktreePath;
   const pathExists = dependencies.pathExists ?? existsSync;
@@ -409,6 +411,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     let cancelInterval: NodeJS.Timeout | null = null;
     let attachmentDir: string | null = null;
     let collectedUsage: TokenUsage | undefined;
+    const cancelController = new AbortController();
 
     try {
       if (trigger.parentTriggerId && /[\/\\]|\.\./.test(trigger.parentTriggerId)) {
@@ -448,7 +451,57 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       });
       activeLogReporter.append('INFO', `Runtime fetched (agentConfigId=${runtime.agentConfigId}).`);
 
+      let cancelRequested = false;
+      let cancelCheckInFlight = false;
+      const checkCancelRequested = async () => {
+        if (cancelRequested || cancelCheckInFlight) {
+          return;
+        }
+
+        cancelCheckInFlight = true;
+        try {
+          const requested = await client.isTriggerCancelRequested(trigger.id);
+          if (requested) {
+            cancelRequested = true;
+            activeLogReporter.append('WARN', 'Cancellation requested by user. Stopping runner.');
+            cancelController.abort();
+          }
+        } catch (error) {
+          logger.warn('Failed to fetch trigger cancel status', {
+            triggerId: trigger.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          cancelCheckInFlight = false;
+        }
+      };
+      const startCancelPolling = async () => {
+        if (cancelInterval) return;
+        await checkCancelRequested();
+        cancelInterval = setIntervalFn(() => {
+          void checkCancelRequested();
+        }, cancelPollIntervalMs);
+      };
+
       let effectiveAuthPath = runtime.authPath;
+      const shouldPreflightGitState = runtime.planType != null && Array.isArray(runtime.expectedCommits);
+      const assertGitStateAvailable = async (repoPath: string) => {
+        if (!shouldPreflightGitState) return;
+        await startCancelPolling();
+        cancelController.signal.throwIfAborted();
+        const { missing, baseCommit } = await runPreflightGitState({
+          repoPath,
+          baseBranch: runtime.baseBranch,
+          expectedCommits: runtime.expectedCommits,
+          signal: cancelController.signal,
+        });
+        cancelController.signal.throwIfAborted();
+        if (missing.length === 0) return baseCommit;
+        const listing = missing.map((item) => `${item.kind}=${item.ref}`).join(', ');
+        const reason = `GIT_STATE_UNAVAILABLE: missing ${listing}`;
+        activeLogReporter.append('ERROR', reason);
+        throw new Error(reason);
+      };
 
       if (runtime.discoveredWorktreeLocalKey) {
         // 발견(discovered) worktree 재사용 실행.
@@ -486,6 +539,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           activeLogReporter.append('ERROR', reason);
           throw new Error(reason);
         }
+        await assertGitStateAvailable(canonicalPath);
         effectiveAuthPath = canonicalPath;
         if (onAuthPathDiscovered) {
           // 발견 worktree의 소유 저장소 경로도 known으로 등록해 두면 cleanup/convention sync 범위에 포함된다.
@@ -545,10 +599,12 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           });
         }
 
+        const baseCommit = await assertGitStateAvailable(worktreeRepoPath);
+
         try {
           const worktreePath = createRunnerWorktree(worktreeRepoPath, {
             worktreeId: runtime.worktreeId ?? trigger.id,
-            baseBranch: runtime.baseBranch,
+            baseBranch: baseCommit ?? runtime.baseBranch,
           });
           effectiveAuthPath = worktreePath;
           await client.reportWorktreeStatus(trigger.id, 'ACTIVE');
@@ -584,6 +640,9 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           activeLogReporter.append('ERROR', workingDirectoryCheck.reason);
           throw new Error(workingDirectoryCheck.reason);
         }
+        if (effectiveAuthPath) {
+          await assertGitStateAvailable(effectiveAuthPath);
+        }
       }
 
       const historyPaths = resolveHistoryPaths(effectiveAuthPath, trigger.id, trigger.parentTriggerId);
@@ -606,39 +665,11 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       );
 
       const runner = createRunner(trigger.runnerType);
-      const cancelController = new AbortController();
       // 구조화 로그 파서가 만든 RESULT 청크 중 실제 원인이 담긴 마지막 값. 러너의 stderr 마지막
       // 줄은 원인과 무관한 잡음("Reading additional input from stdin...")인 경우가 많아, 실패
       // 사유로는 이쪽 원문을 우선한다.
       let lastCauseBearingResultMessage: string | undefined;
-      let cancelRequested = false;
-      let cancelCheckInFlight = false;
-      const checkCancelRequested = async () => {
-        if (cancelRequested || cancelCheckInFlight) {
-          return;
-        }
-
-        cancelCheckInFlight = true;
-        try {
-          const requested = await client.isTriggerCancelRequested(trigger.id);
-          if (requested) {
-            cancelRequested = true;
-            activeLogReporter.append('WARN', 'Cancellation requested by user. Stopping runner.');
-            cancelController.abort();
-          }
-        } catch (error) {
-          logger.warn('Failed to fetch trigger cancel status', {
-            triggerId: trigger.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        } finally {
-          cancelCheckInFlight = false;
-        }
-      };
-      await checkCancelRequested();
-      cancelInterval = setIntervalFn(() => {
-        void checkCancelRequested();
-      }, cancelPollIntervalMs);
+      await startCancelPolling();
       const runnerFastMode = runnerSupportsFastMode(trigger.runnerType) ? trigger.fastMode : false;
       const runnerEffort = runnerSupportsEffort(trigger.runnerType) ? trigger.effort : null;
       const idleTimeout = selectIdleTimeoutMs({
@@ -700,7 +731,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         },
       });
       collectedUsage = runResult.tokenUsage;
-      clearIntervalFn(cancelInterval);
+      if (cancelInterval) clearIntervalFn(cancelInterval);
       cancelInterval = null;
       logger.info('Trigger runner finished', {
         triggerId: trigger.id,
@@ -794,8 +825,8 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         const rawErrorMsg = error instanceof Error ? error.message : String(error);
         await client.updateTriggerStatus(
           trigger.id,
-          'FAILED',
-          sanitizeErrorMessage(rawErrorMsg),
+          cancelController.signal.aborted ? 'CANCELLED' : 'FAILED',
+          cancelController.signal.aborted ? 'Runner cancelled by user' : sanitizeErrorMessage(rawErrorMsg),
           collectedUsage ?? emptyTokenUsage(trigger.runnerType),
         );
       } catch (statusError) {

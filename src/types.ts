@@ -122,6 +122,7 @@ export type TriggerRuntime = {
   discoveredWorktreeLocalKey?: string | null;
   conventions?: ConventionMeta[];
   planType?: string | null;
+  expectedCommits?: Array<{ commit: string; branch: string | null }>;
   userConventionIds?: string[];
 };
 

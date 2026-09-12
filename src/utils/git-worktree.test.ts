@@ -20,6 +20,7 @@ import {
   removeWorktree,
   resolveWorktreePath,
   normalizeClaudeSandboxPath,
+  preflightGitState,
 } from './git-worktree.js';
 
 const makeTempGitRepo = (): string => {
@@ -57,6 +58,155 @@ test('isGitRepo returns false for a non-git directory', () => {
 test('isGitRepo returns false for a non-existent directory', () => {
   assert.equal(isGitRepo(join(tmpdir(), 'nonexistent-dir-' + Date.now())), false);
 });
+
+test('preflightGitState passes when the commit and local base branch exist even if fetch fails', async () => {
+  const repo = makeTempGitRepo();
+  try {
+    const commit = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], {
+      stdio: 'pipe',
+      encoding: 'utf8',
+    }).trim();
+    const branch = execFileSync('git', ['-C', repo, 'branch', '--show-current'], {
+      stdio: 'pipe',
+      encoding: 'utf8',
+    }).trim();
+
+    const { missing } = await preflightGitState({
+      repoPath: repo,
+      baseBranch: branch,
+      expectedCommits: [{ commit, branch }],
+    });
+    assert.deepEqual(missing, []);
+  } finally {
+    cleanupDir(repo);
+  }
+});
+
+test('preflightGitState fails when the commit and remote branch are both missing', async () => {
+  const repo = makeTempGitRepo();
+  try {
+    const { missing } = await preflightGitState({
+      repoPath: repo,
+      expectedCommits: [{ commit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', branch: 'feat/missing-elsewhere' }],
+    });
+    assert.deepEqual(missing, [{ kind: 'commit', ref: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' }]);
+  } finally {
+    cleanupDir(repo);
+  }
+});
+
+test('preflightGitState passes when the SHA is missing but origin/<branch> exists', async () => {
+  const repo = makeTempGitRepo();
+  try {
+    execFileSync('git', ['-C', repo, 'update-ref', 'refs/remotes/origin/feat/rebased', 'HEAD'], {
+      stdio: 'pipe',
+    });
+    const { missing } = await preflightGitState({
+      repoPath: repo,
+      expectedCommits: [{ commit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', branch: 'feat/rebased' }],
+    });
+    assert.deepEqual(missing, []);
+  } finally {
+    cleanupDir(repo);
+  }
+});
+
+test('preflightGitState fails a missing baseBranch that exists neither locally nor on origin', async () => {
+  const repo = makeTempGitRepo();
+  try {
+    const { missing } = await preflightGitState({
+      repoPath: repo,
+      baseBranch: 'does-not-exist',
+      expectedCommits: [],
+    });
+    assert.deepEqual(missing, [{ kind: 'baseBranch', ref: 'does-not-exist' }]);
+  } finally {
+    cleanupDir(repo);
+  }
+});
+
+test(
+  'preflightGitState는 지연 fetch 중 타이머를 실행하고 제한 시간 후 로컬 참조를 검사한다',
+  {
+    skip: process.platform === 'win32',
+  },
+  async () => {
+    const repo = makeTempGitRepo();
+    let heartbeat = false;
+    const timer = setTimeout(() => {
+      heartbeat = true;
+    }, 10);
+    try {
+      execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', repo], { windowsHide: true });
+      execFileSync('git', ['-C', repo, 'config', 'remote.origin.uploadpack', 'sleep 1; git-upload-pack'], {
+        windowsHide: true,
+      });
+      const started = Date.now();
+      const { missing } = await preflightGitState({
+        repoPath: repo,
+        baseBranch: 'HEAD',
+        expectedCommits: [{ commit: 'HEAD', branch: null }],
+        fetchTimeoutMs: 100,
+      });
+      assert.equal(heartbeat, true);
+      assert.ok(Date.now() - started < 900, 'fetch 제한 시간 안에 복귀해야 한다');
+      assert.deepEqual(missing, []);
+
+      const controller = new AbortController();
+      const abortTimer = setTimeout(() => controller.abort(), 100);
+      const cancelStarted = Date.now();
+      try {
+        await assert.rejects(preflightGitState({ repoPath: repo, signal: controller.signal }), {
+          name: 'AbortError',
+        });
+        assert.ok(Date.now() - cancelStarted < 900, '진행 중인 fetch도 취소되어야 한다');
+      } finally {
+        clearTimeout(abortTimer);
+      }
+    } finally {
+      clearTimeout(timer);
+      cleanupDir(repo);
+    }
+  },
+);
+
+test('preflightGitState는 취소 신호를 fetch에 전달하고 로컬 성공으로 바꾸지 않는다', async () => {
+  const repo = makeTempGitRepo();
+  try {
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(async () => preflightGitState({ repoPath: repo, signal: controller.signal }), {
+      name: 'AbortError',
+    });
+  } finally {
+    cleanupDir(repo);
+  }
+});
+
+for (const baseBranch of ['dev', 'origin/dev', 'refs/remotes/origin/dev']) {
+  test(`preflight부터 worktree 생성까지 원격 전용 ${baseBranch}를 사용한다`, async () => {
+    const repo = makeTempGitRepo();
+    const worktreeId = 'remote-only-base';
+    try {
+      execFileSync('git', ['-C', repo, 'update-ref', 'refs/remotes/origin/dev', 'HEAD'], { windowsHide: true });
+      const result = await preflightGitState({ repoPath: repo, baseBranch, expectedCommits: [] });
+      assert.deepEqual(result.missing, []);
+      assert.ok(result.baseCommit);
+      const worktreePath = createWorktree(repo, { worktreeId, baseBranch: result.baseCommit });
+      const head = execFileSync('git', ['-C', worktreePath, 'rev-parse', 'HEAD'], {
+        windowsHide: true,
+        encoding: 'utf8',
+      }).trim();
+      assert.equal(
+        head,
+        execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { windowsHide: true, encoding: 'utf8' }).trim(),
+      );
+    } finally {
+      cleanupDir(repo);
+      cleanupDir(dirname(resolveWorktreePath(repo, worktreeId)));
+    }
+  });
+}
 
 test('resolveWorktreePath returns sibling directory path', () => {
   const authPath = join('home', 'user', 'projects', 'my-repo');
