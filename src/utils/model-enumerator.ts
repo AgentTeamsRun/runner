@@ -1,6 +1,8 @@
 import { executeMuseCodeModelList } from './muse-code-models.js';
 import { findCursorCliExecutable } from '../runners/cursor-cli-identity.js';
+import { findGrokBuildExecutable } from '../runners/grok-build-identity.js';
 import { findMuseCodeExecutable } from '../runners/muse-code-identity.js';
+import { findOmpExecutable } from '../runners/omp-identity.js';
 import { spawn } from 'node:child_process';
 import { platform } from 'node:os';
 import type { RunnerType } from '@agentteams/core-constants';
@@ -38,7 +40,9 @@ export type ModelEnumerationResult =
 export type ModelEnumeratorDependencies = {
   executeMuseCode?: typeof executeMuseCodeModelList;
   findCursorCli?: typeof findCursorCliExecutable;
+  findGrokBuild?: typeof findGrokBuildExecutable;
   findMuseCode?: typeof findMuseCodeExecutable;
+  findOmp?: typeof findOmpExecutable;
   execute: (executablePath: string, args: string[]) => Promise<{ stdout: string }>;
   platform: () => NodeJS.Platform;
   resolveExecutable: (name: string, preferredNames: string[]) => string;
@@ -629,11 +633,21 @@ export const enumerateModels = async (
         return parseCursorModels((await deps.execute(executable, ['models'])).stdout);
       }
       case 'GROK_BUILD': {
-        const executable = resolveEngineExecutable(runnerType);
+        // `grok`은 다른 도구가 선점할 수 있어 러너 기동과 같은 신원 확인을 거친다.
+        const executable = await (deps.findGrokBuild ?? findGrokBuildExecutable)(
+          getEngineExecutablePreference(runnerType, opencodeCommand, isWindows),
+          { platform: deps.platform },
+        );
+        if (!executable) return { status: 'COMMAND_FAILED', message: 'Cannot find an official Grok Build executable' };
         return parseGrokModels((await deps.execute(executable, ['models'])).stdout);
       }
       case 'OMP': {
-        const executable = resolveEngineExecutable(runnerType);
+        // `omp`는 npm의 무관한 동명 패키지와 충돌할 수 있어 러너 기동과 같은 신원 확인을 거친다.
+        const executable = await (deps.findOmp ?? findOmpExecutable)(
+          getEngineExecutablePreference(runnerType, opencodeCommand, isWindows),
+          { platform: deps.platform },
+        );
+        if (!executable) return { status: 'COMMAND_FAILED', message: 'Cannot find an official OMP executable' };
         return parseOmpModels((await deps.execute(executable, ['models', '--json'])).stdout);
       }
       default:

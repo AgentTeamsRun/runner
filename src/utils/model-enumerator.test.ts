@@ -430,19 +430,19 @@ describe('enumerateModels', () => {
   });
 
   test('enumerates OMP models from JSON output', async () => {
-    const calls: string[][] = [];
-    const result = await enumerateModels(
-      'OMP',
-      dependencies(async (_executable, args) => {
-        calls.push(args);
+    const calls: Array<{ executable: string; args: string[] }> = [];
+    const result = await enumerateModels('OMP', {
+      ...dependencies(async (executable, args) => {
+        calls.push({ executable, args });
         return {
           stdout: JSON.stringify({
             models: [{ id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', contextWindow: 200000 }],
           }),
         };
       }),
-    );
-    assert.deepEqual(calls, [['models', '--json']]);
+      findOmp: async () => '/bin/omp',
+    });
+    assert.deepEqual(calls, [{ executable: '/bin/omp', args: ['models', '--json'] }]);
     assert.deepEqual(result, {
       status: 'SUCCESS',
       values: [{ value: 'anthropic/claude-sonnet-4', label: 'Claude Sonnet 4', maxInputTokens: 200000 }],
@@ -478,13 +478,25 @@ describe('enumerateModels', () => {
         preferences.set('agent', preferredNames);
         return 'C:\\bin\\agent';
       },
+      findGrokBuild: async (preferredNames) => {
+        preferences.set('grok', preferredNames);
+        return 'C:\\bin\\grok.exe';
+      },
+      findOmp: async (preferredNames) => {
+        preferences.set('omp', preferredNames);
+        return 'C:\\bin\\omp.exe';
+      },
     };
 
     await enumerateModels('CURSOR_CLI', deps);
     await enumerateModels('ANTIGRAVITY', deps);
+    await enumerateModels('GROK_BUILD', deps);
+    await enumerateModels('OMP', deps);
 
     assert.deepEqual(preferences.get('agent'), ['cursor-agent', 'agent']);
     assert.deepEqual(preferences.get('agy'), ['agy.cmd', 'agy']);
+    assert.deepEqual(preferences.get('grok'), ['grok.exe', 'grok']);
+    assert.deepEqual(preferences.get('omp'), ['omp.exe', 'omp']);
   });
 
   // 러너 기동과 같은 신원 확인을 거치므로, `agent`가 다른 도구면 그 도구의 모델 목록을 읽지 않는다.
@@ -509,6 +521,58 @@ describe('enumerateModels', () => {
     });
     assert.equal(found.status, 'SUCCESS');
     assert.deepEqual(executed, ['/home/me/.local/bin/cursor-agent']);
+  });
+
+  // 러너 기동과 같은 신원 확인을 거치므로, `grok`이 다른 도구면 그 도구의 모델 목록을 읽지 않는다.
+  test('Grok Build enumeration runs only an executable that passed the identity check', async () => {
+    const executed: string[] = [];
+    const deps: Partial<ModelEnumeratorDependencies> = {
+      execute: async (executable) => {
+        executed.push(executable);
+        return { stdout: 'Available models:\n  * grok-4.6 (default)\n' };
+      },
+      platform: () => 'linux',
+      resolveExecutable: () => '/usr/bin/grok',
+    };
+
+    const missing = await enumerateModels('GROK_BUILD', { ...deps, findGrokBuild: async () => null });
+    assert.equal(missing.status, 'COMMAND_FAILED');
+    assert.deepEqual(executed, []);
+
+    const found = await enumerateModels('GROK_BUILD', {
+      ...deps,
+      findGrokBuild: async () => '/home/me/.local/bin/grok',
+    });
+    assert.equal(found.status, 'SUCCESS');
+    assert.deepEqual(executed, ['/home/me/.local/bin/grok']);
+  });
+
+  // 러너 기동과 같은 신원 확인을 거치므로, `omp`가 무관한 동명 패키지면 그 도구의 모델 목록을 읽지 않는다.
+  test('OMP enumeration runs only an executable that passed the identity check', async () => {
+    const executed: string[] = [];
+    const deps: Partial<ModelEnumeratorDependencies> = {
+      execute: async (executable) => {
+        executed.push(executable);
+        return {
+          stdout: JSON.stringify({
+            models: [{ id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', contextWindow: 200000 }],
+          }),
+        };
+      },
+      platform: () => 'linux',
+      resolveExecutable: () => '/usr/lib/node_modules/omp',
+    };
+
+    const missing = await enumerateModels('OMP', { ...deps, findOmp: async () => null });
+    assert.equal(missing.status, 'COMMAND_FAILED');
+    assert.deepEqual(executed, []);
+
+    const found = await enumerateModels('OMP', {
+      ...deps,
+      findOmp: async () => '/home/me/.local/bin/omp',
+    });
+    assert.equal(found.status, 'SUCCESS');
+    assert.deepEqual(executed, ['/home/me/.local/bin/omp']);
   });
 });
 
