@@ -85,8 +85,8 @@ test('거대 행과 잘못된 JSON 뒤에서 수집을 재개하고 완전 수�
   assert.deepEqual(collector.get(), { ...expected, status: 'PARTIAL' });
 });
 test('미지원 엔진은 수집 누락과 다르다', () => {
-  assert.equal(emptyTokenUsage('AMP').status, 'UNSUPPORTED');
-  assert.equal(emptyTokenUsage('AMP').inputTokens, null);
+  assert.equal(emptyTokenUsage('CURSOR_CLI').status, 'UNSUPPORTED');
+  assert.equal(emptyTokenUsage('CURSOR_CLI').inputTokens, null);
   assert.equal(emptyTokenUsage('CODEX').status, 'MISSING');
   assert.equal(emptyTokenUsage('OMP').status, 'MISSING');
 });
@@ -420,4 +420,53 @@ test('COPILOT_CLI: 출력만 있는 수집기는 입력 상한 때문에 COMPLET
   assert.equal(usage.outputTokens, 10);
   assert.equal(usage.inputTokens, null);
   assert.equal(usage.status, 'PARTIAL');
+});
+
+const ampFixture = () => fixture('amp');
+
+test('AMP: assistant 메시지별 네 필드를 합산하고 end_turn에서 완결된다', () => {
+  const collector = createTokenUsageCollector('AMP');
+  const parser = createStreamJsonLineParser(() => {}, {
+    onEvent: collector.acceptEvent,
+    onDropped: collector.markDropped,
+  });
+  for (const character of ampFixture()) parser.push(character);
+  parser.flush();
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'COMPLETE',
+    inputTokens: 0,
+    outputTokens: 98,
+    cacheReadInputTokens: 40081,
+    cacheCreationInputTokens: 40370,
+  });
+  assert.equal(collector.get(true).status, 'PARTIAL');
+  collector.markDropped();
+  assert.equal(collector.get().status, 'PARTIAL');
+});
+
+test('AMP: 중간 사용량을 보존하고 수치 없는 result로 완결성을 올리지 않는다', () => {
+  const collector = createTokenUsageCollector('AMP');
+  const lines = ampFixture().trim().split('\n');
+  collector.push(lines[0]! + '\n' + lines[2]! + '\n');
+  assert.deepEqual(collector.get(), {
+    scope: 'MAIN_LOOP',
+    status: 'PARTIAL',
+    inputTokens: 0,
+    outputTokens: 77,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 40084,
+  });
+});
+
+test('AMP: 합성 순번은 중복 행을 제거하지 못하고 다른 세션은 무효화한다', () => {
+  const collector = createTokenUsageCollector('AMP');
+  collector.push(ampFixture());
+  collector.push(ampFixture());
+  assert.equal(collector.get().outputTokens, 196);
+  collector.acceptEvent({ type: 'result', session_id: 'foreign' });
+  assert.equal(collector.get().status, 'MISSING');
+  const child = createTokenUsageCollector('AMP');
+  child.push(ampFixture().split('\n')[0]!.replace('"parent_tool_use_id":null', '"parent_tool_use_id":"child"') + '\n');
+  assert.equal(child.get().status, 'MISSING');
 });

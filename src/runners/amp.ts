@@ -10,6 +10,7 @@ import { selectRunnerFailureMessage } from './failure-message.js';
 import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import { createTokenUsageCollector } from './token-usage.js';
 import { buildRunnerChildEnv } from './session-env.js';
 
 const PROMPT_PREVIEW_MAX = 500;
@@ -154,6 +155,7 @@ export class AmpCodeRunner implements Runner {
       return trimmed || undefined;
     };
 
+    const usageCollector = createTokenUsageCollector('AMP');
     const idleTimer = { reset: (): void => {} };
     const streamParser = createStreamJsonLineParser(
       (entries) => {
@@ -161,7 +163,7 @@ export class AmpCodeRunner implements Runner {
           opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
         }
       },
-      { cwd },
+      { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
     child.stdout?.on('data', (chunk) => {
       const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
@@ -263,6 +265,7 @@ export class AmpCodeRunner implements Runner {
       }
 
       child.on('error', (error) => {
+        streamParser.flush();
         clearTimeout(timeoutId);
         cleanup();
         logger.error('Runner process launch failed', {
@@ -270,6 +273,7 @@ export class AmpCodeRunner implements Runner {
           error: error.message,
         });
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: 1,
           lastOutput,
           outputText: finalizeOutputText(),
@@ -299,6 +303,7 @@ export class AmpCodeRunner implements Runner {
               ? extractResultTextFromStreamJson(finalizedOutputText)
               : finalizedOutputText;
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             timedOut,
             idleTimedOut,
@@ -313,6 +318,7 @@ export class AmpCodeRunner implements Runner {
 
         if (cancelled) {
           resolve({
+            tokenUsage: usageCollector.get(timedOut || cancelled),
             exitCode: 1,
             cancelled: true,
             lastOutput,
@@ -323,6 +329,7 @@ export class AmpCodeRunner implements Runner {
         }
 
         resolve({
+          tokenUsage: usageCollector.get(timedOut || cancelled),
           exitCode: code ?? 1,
           lastOutput,
           outputText: finalizeOutputText(),

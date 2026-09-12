@@ -25,7 +25,7 @@ const count = (value: unknown): number | null =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 const add = (a: number | null, b: number | null): number | null => (a === null || b === null ? null : count(a + b));
 
-type UsageSupportedRunner = 'CLAUDE_CODE' | 'OPENCODE' | 'CODEX' | 'OMP' | 'COPILOT_CLI' | 'GROK_BUILD';
+type UsageSupportedRunner = 'CLAUDE_CODE' | 'OPENCODE' | 'CODEX' | 'OMP' | 'COPILOT_CLI' | 'GROK_BUILD' | 'AMP';
 
 // 지원 판정의 SSOT는 `RUNNER_CAPABILITIES.tokenUsage`다. 이 목록은 거기서 파생되며,
 // 러너 이름을 직접 나열하지 않는다.
@@ -102,6 +102,27 @@ const parseAnthropicMessagesEvent = (event: Record<string, unknown>): EnginePars
     },
     id: message.id,
     terminal: false,
+  };
+};
+
+// AMP는 result.usage와 message.id가 없다. 메시지별 실측값을 합산하고
+// end_turn을 종료 근거로 쓴다. max_tokens는 한도이므로 사용량에 포함하지 않는다.
+const parseAmp = (event: Record<string, unknown>): EngineParseResult => {
+  if (event.parent_tool_use_id !== null && event.parent_tool_use_id !== undefined) return { kind: 'ignore' };
+  if (event.type === 'system' || event.type === 'result') return { kind: 'session', sessionId: event.session_id };
+  if (event.type !== 'assistant') return { kind: 'ignore' };
+  const message = record(event.message);
+  const usage = record(message.usage);
+  return {
+    kind: 'usage',
+    sessionId: event.session_id,
+    counts: {
+      inputTokens: count(usage.input_tokens),
+      outputTokens: count(usage.output_tokens),
+      cacheReadInputTokens: count(usage.cache_read_input_tokens),
+      cacheCreationInputTokens: count(usage.cache_creation_input_tokens),
+    },
+    terminal: message.stop_reason === 'end_turn',
   };
 };
 
@@ -200,6 +221,12 @@ const ENGINE_DESCRIPTORS: Record<UsageSupportedRunner, TokenUsageEngineDescripto
     allowUsageWithoutSession: false,
     useSyntheticId: false,
     parse: parseAnthropicMessagesEvent,
+  },
+  AMP: {
+    reportableKeys: keys,
+    allowUsageWithoutSession: false,
+    useSyntheticId: true,
+    parse: parseAmp,
   },
   GROK_BUILD: {
     // grok 1.0.13 실측(2026-09-08, fixtures/grok-usage.jsonl): result.usage에 네 필드

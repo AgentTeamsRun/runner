@@ -1,0 +1,3 @@
+{"type":"assistant","session_id":"session-amp-a","parent_tool_use_id":null,"message":{"role":"assistant","stop_reason":"tool_use","usage":{"input_tokens":0,"cache_creation_input_tokens":40084,"cache_read_input_tokens":0,"output_tokens":77,"max_tokens":272000}}}
+{"type":"assistant","session_id":"session-amp-a","parent_tool_use_id":null,"message":{"role":"assistant","stop_reason":"end_turn","usage":{"input_tokens":0,"cache_creation_input_tokens":286,"cache_read_input_tokens":40081,"output_tokens":21,"max_tokens":272000}}}
+{"type":"result","session_id":"session-amp-a","subtype":"success","is_error":false}
