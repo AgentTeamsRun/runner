@@ -474,13 +474,41 @@ describe('enumerateModels', () => {
         preferences.set(name, preferredNames);
         return `C:\\bin\\${name}`;
       },
+      findCursorCli: async (preferredNames) => {
+        preferences.set('agent', preferredNames);
+        return 'C:\\bin\\agent';
+      },
     };
 
     await enumerateModels('CURSOR_CLI', deps);
     await enumerateModels('ANTIGRAVITY', deps);
 
-    assert.deepEqual(preferences.get('agent'), ['agent']);
+    assert.deepEqual(preferences.get('agent'), ['cursor-agent', 'agent']);
     assert.deepEqual(preferences.get('agy'), ['agy.cmd', 'agy']);
+  });
+
+  // 러너 기동과 같은 신원 확인을 거치므로, `agent`가 다른 도구면 그 도구의 모델 목록을 읽지 않는다.
+  test('Cursor enumeration runs only an executable that passed the identity check', async () => {
+    const executed: string[] = [];
+    const deps: Partial<ModelEnumeratorDependencies> = {
+      execute: async (executable) => {
+        executed.push(executable);
+        return { stdout: 'composer-2 - Composer 2\n' };
+      },
+      platform: () => 'linux',
+      resolveExecutable: () => '/home/me/.grok/bin/agent',
+    };
+
+    const missing = await enumerateModels('CURSOR_CLI', { ...deps, findCursorCli: async () => null });
+    assert.equal(missing.status, 'COMMAND_FAILED');
+    assert.deepEqual(executed, []);
+
+    const found = await enumerateModels('CURSOR_CLI', {
+      ...deps,
+      findCursorCli: async () => '/home/me/.local/bin/cursor-agent',
+    });
+    assert.equal(found.status, 'SUCCESS');
+    assert.deepEqual(executed, ['/home/me/.local/bin/cursor-agent']);
   });
 });
 

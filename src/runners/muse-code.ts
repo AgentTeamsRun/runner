@@ -19,14 +19,14 @@ const OUTPUT_PREVIEW_MAX = 400;
 const normalizedModel = (model?: string | null): string => (typeof model === 'string' ? model.trim() : '');
 
 // muse 1.0.2 (2026-09-04): cwd가 workspace이며 프롬프트는 파일로 전달한다.
-// 승인을 비대화형으로 설정하되 기본 샌드박스는 유지한다.
+// 승인 프롬프트·샌드박스를 함께 끄고 워크스페이스를 신뢰한다(--yolo). 다른 엔진의 bypass 플래그와 같은 정책이며,
+// --approval-mode never만으로는 네트워크 샌드박스(proxy-only)가 남아 DB 등 TCP 접속이 차단된다(2026-09-12 실측).
 export const buildMuseCodeArgs = (promptFilePath: string, model?: string | null, effort?: string | null): string[] => {
   const selectedModel = normalizedModel(model);
   return [
     'exec',
     '--json',
-    '--approval-mode',
-    'never',
+    '--yolo',
     '--prompt-file',
     promptFilePath,
     ...(selectedModel && selectedModel !== 'default' ? ['--model', selectedModel] : []),

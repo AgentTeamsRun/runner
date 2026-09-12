@@ -4,7 +4,13 @@ import { PassThrough } from 'node:stream';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { extractResultTextFromStreamJson } from './claude-code.js';
-import { buildCursorCliArgs, CursorCliRunner, toCursorPowerShellEncodedCommand } from './cursor-cli.js';
+import { findCursorCliExecutable } from './cursor-cli-identity.js';
+import {
+  buildCursorCliArgs,
+  CursorCliRunner,
+  getCursorExecutablePreference,
+  toCursorPowerShellEncodedCommand,
+} from './cursor-cli.js';
 import type { RunnerOptions } from './types.js';
 
 test('buildCursorCliArgs fixes unattended stream-json flags and keeps the prompt last', () => {
@@ -87,10 +93,11 @@ const baseOptions = (overrides: Partial<RunnerOptions> = {}): RunnerOptions => (
 type HarnessOptions = {
   os: NodeJS.Platform;
   executablePath?: string;
+  helpText?: string | null;
   onSpawn?: (child: FakeChild) => void;
 };
 
-const createHarness = ({ os, executablePath, onSpawn }: HarnessOptions) => {
+const createHarness = ({ os, executablePath, helpText = 'Start the Cursor Agent', onSpawn }: HarnessOptions) => {
   const child = createFakeChild();
   const calls = {
     spawned: [] as Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }>,
@@ -100,8 +107,10 @@ const createHarness = ({ os, executablePath, onSpawn }: HarnessOptions) => {
   };
   const runner = new CursorCliRunner({
     platform: () => os,
-    resolveExecutablePath: (() =>
-      executablePath ?? (os === 'win32' ? 'C:/Cursor/agent.exe' : '/usr/local/bin/agent')) as never,
+    resolveExecutablePathsWithPreferenceAsync: (async () => [
+      executablePath ?? (os === 'win32' ? 'C:/Cursor/agent.exe' : '/usr/local/bin/agent'),
+    ]) as never,
+    runProbeCommand: (async () => helpText) as never,
     describeExecutableResolution: (() => ({
       requestedCommand: 'agent',
       resolvedExecutablePath: executablePath ?? '/usr/local/bin/agent',
@@ -167,6 +176,37 @@ for (const executablePath of ['C:/Cursor/agent.exe', 'C:/Users/test/AppData/Loca
     assert.equal(child.listenerCount('close') > 0, true);
   });
 }
+
+// Grok Build 설치기는 `~/.grok/bin/agent` 별칭을 만들고 PATH 앞에 둔다. 첫 후보가 grok이라는 이유로
+// 뒤에 있는 정상 Cursor 설치를 버리면 안 되고, grok을 Cursor 인자로 기동해서도 안 된다.
+test('Cursor identity skips a Grok agent alias earlier in PATH and selects the real Cursor Agent', async () => {
+  assert.deepEqual(getCursorExecutablePreference(false), ['cursor-agent', 'agent']);
+  const probed: string[] = [];
+  const selected = await findCursorCliExecutable(getCursorExecutablePreference(false), {
+    resolveExecutablePathsWithPreferenceAsync: async () => ['/Users/me/.grok/bin/agent', '/Users/me/.local/bin/agent'],
+    runProbeCommand: async (path) => {
+      probed.push(path);
+      return path.includes('.grok') ? 'Grok Build TUI' : 'Start the Cursor Agent';
+    },
+  });
+  assert.equal(selected, '/Users/me/.local/bin/agent');
+  assert.deepEqual(probed, ['/Users/me/.grok/bin/agent', '/Users/me/.local/bin/agent']);
+  assert.equal(
+    await findCursorCliExecutable(['agent'], {
+      resolveExecutablePathsWithPreferenceAsync: async () => ['/Users/me/.grok/bin/agent'],
+      runProbeCommand: async () => 'Grok Build TUI',
+    }),
+    null,
+  );
+});
+
+test('Runner refuses to launch when no agent candidate passes the Cursor identity check', async () => {
+  const { calls, runner } = createHarness({ os: 'linux', helpText: 'Grok Build TUI' });
+  const result = await runner.run(baseOptions({ prompt: 'hello' }));
+  assert.equal(result.exitCode, 1);
+  assert.match(result.errorMessage ?? '', /Cursor Agent identity check/);
+  assert.equal(calls.spawned.length, 0);
+});
 
 test('Unix runner launches the resolved agent directly with shell=false and a detached process group', async () => {
   const { calls, runner } = createHarness({

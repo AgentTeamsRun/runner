@@ -97,17 +97,16 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
   },
   // AMP는 `--model`이 아니라 `--mode`로 실행 프로필을 선택하므로 model:true로 둔다.
   // 실제 인자 조립은 runners/amp.ts에서 AmpCode 전용 계약으로 문서화한다.
-  // 토큰 사용량: 프로브 불가(2026-09-08). 이 머신에 Amp 인증이 없어
-  // `amp --execute ... --stream-json-thinking`이 "No API key found. Starting login
-  // flow..." 후 exit 1로 끝나 스트림을 관측하지 못했다. 미실측을 미지원으로
-  // 단정하지 않으므로 false를 유지하되 판정 자체는 미확정이다.
+  // 2026-09-12 실측: assistant message.usage에 네 토큰 필드, 모든 이벤트에 session_id.
+  // result.usage와 message.id는 없다. 메시지별 합산과 end_turn 판정을 사용하며
+  // 합성 순번으로 중복 제거는 불가능하다(fixtures/amp-usage.jsonl).
   AMP: {
     model: true,
     fastMode: false,
     effort: false,
     modelEnumeration: false,
     subAgentDelegation: false,
-    tokenUsage: false,
+    tokenUsage: true,
   },
   // Copilot CLI는 assistant.message.data.outputTokens만 보고한다. 입력·캐시는
   // 엔진이 제공하지 않으므로 수집 상태는 PARTIAL이 상한이다(축은 boolean이므로

@@ -24,13 +24,12 @@ const options: RunnerOptions = {
 const event = (payload_type: string, payload: object) =>
   JSON.stringify({ schema_version: 1, payload_type, payload }) + '\n';
 
-test('Muse arguments preserve sandbox and pass prompt, model, and effort without shell interpolation', () => {
+test('Muse arguments disable approval and sandbox via --yolo and pass prompt, model, and effort without shell interpolation', () => {
   const args = buildMuseCodeArgs("/repo/a'b.md", ' model-id ', 'high');
   assert.deepEqual(args, [
     'exec',
     '--json',
-    '--approval-mode',
-    'never',
+    '--yolo',
     '--prompt-file',
     "/repo/a'b.md",
     '--model',

@@ -59,12 +59,12 @@ test('CODEX enumerates models from the installed CLI catalog', () => {
   assert.equal(RUNNER_CAPABILITIES.CODEX.modelEnumeration, true);
 });
 
-test('only claude-code, opencode, codex, omp, copilot, and grok-build collect structured token usage', () => {
+test('only claude-code, opencode, codex, omp, copilot, grok-build, and amp collect structured token usage', () => {
   const supported = Object.entries(RUNNER_CAPABILITIES)
     .filter(([, capabilities]) => capabilities.tokenUsage)
     .map(([runnerType]) => runnerType);
 
-  assert.deepEqual(supported, ['CLAUDE_CODE', 'CODEX', 'OPENCODE', 'COPILOT_CLI', 'GROK_BUILD', 'OMP']);
+  assert.deepEqual(supported, ['CLAUDE_CODE', 'CODEX', 'OPENCODE', 'AMP', 'COPILOT_CLI', 'GROK_BUILD', 'OMP']);
 });
 
 test('Copilot CLI supports model selection but not fast mode or sub-agent delegation', () => {
