@@ -92,7 +92,7 @@ test('Cursor CLI supports model selection but not fast mode, effort, or sub-agen
   assert.deepEqual(describeUnsupportedRunnerOptions('CURSOR_CLI', { model: 'client-default', fastMode: false }), []);
 });
 
-test('Kimi CLI supports model selection and model enumeration but not fast mode, effort, or sub-agent delegation', () => {
+test('Kimi CLI supports model selection and model enumeration but not fast mode, effort, sub-agent delegation, or token usage', () => {
   assert.deepEqual(getRunnerCapabilities('KIMI_CLI'), {
     model: true,
     fastMode: false,

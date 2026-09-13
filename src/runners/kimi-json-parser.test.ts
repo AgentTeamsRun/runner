@@ -12,6 +12,37 @@ import {
 const fixturePath = fileURLToPath(new URL('./fixtures/kimi-events.jsonl', import.meta.url));
 const cwd = '/private/tmp/x';
 
+test('measured Kimi stream-json fixture has no usage fields or secrets', async () => {
+  const fixture = await readFile(fixturePath, 'utf8');
+  const usageLike = /(token|usage|cache)/i;
+  const secretLike = /(sk-|api[_-]?key|bearer |authorization)/i;
+  const roles = new Set<string>();
+
+  for (const line of fixture.trim().split('\n')) {
+    const event = JSON.parse(line) as Record<string, unknown>;
+    assert.equal(typeof event.role, 'string');
+    roles.add(String(event.role));
+    assert.equal(secretLike.test(line), false);
+    const walk = (value: unknown): void => {
+      if (value !== null && typeof value === 'object') {
+        for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+          assert.equal(usageLike.test(key), false, `unexpected usage-like key ${key}`);
+          walk(nested);
+        }
+      }
+    };
+    walk(event);
+  }
+
+  assert.deepEqual([...roles].sort(), ['assistant', 'meta', 'tool']);
+  assert.match(fixture, /"type":"system\.version"/);
+  assert.match(fixture, /"version":"0\.42\.0"/);
+  assert.match(fixture, /session_redacted/);
+
+  const printMode = await readFile(fileURLToPath(new URL('./fixtures/kimi-print-mode.jsonl', import.meta.url)), 'utf8');
+  assert.equal(printMode.trim(), '{"role":"meta","type":"system.version","version":"0.42.0"}');
+});
+
 test('parseKimiJsonLine ignores meta events and tool bodies', async () => {
   const lines = (await readFile(fixturePath, 'utf8')).trim().split('\n');
 
