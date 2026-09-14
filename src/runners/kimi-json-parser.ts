@@ -6,6 +6,15 @@
  * string. Tool lines hold the raw tool body, which is never copied into log messages.
  * This schema is incompatible with the Claude-style `type: system/assistant/result` contract,
  * so the shared `createStreamJsonLineParser` cannot be reused here.
+ *
+ * Token usage is not present on this stdout contract. The 0.42.0 success schema is
+ * `fixtures/kimi-events.jsonl` (roles only; no integer usage fields). A 2026-09-13
+ * print-mode re-probe of the same version (`kimi -p … --output-format stream-json`)
+ * emitted `system.version` (`fixtures/kimi-print-mode.jsonl`) then exited 1 with
+ * provider 429 (insufficient balance), so it did not add new event types. Official
+ * docs describe Assistant/Tool lines only. Session-directory internal logs are not
+ * this stdout contract and are not collected. Do not invent token counts from text
+ * length or other files.
  */
 
 import { createJsonLineBuffer } from './json-line-buffer.js';

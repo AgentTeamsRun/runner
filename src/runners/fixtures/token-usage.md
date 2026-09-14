@@ -10,6 +10,7 @@
 - Grok Build 1.0.13 (`grok --version`, 2026-09-08 실측). `--output-format streaming-messages-json`이 Anthropic Messages wire format을 내보낸다. `result.usage`에 네 토큰 필드 전부(`input_tokens`·`output_tokens`·`cache_read_input_tokens`·`cache_creation_input_tokens`), assistant `message.usage`에 메시지별 수치, 모든 이벤트에 `session_id`가 있다. result 누적값(입력 11418, 출력 143, 캐시 읽기 17920, 캐시 생성 0)이 assistant 2건 합(8343+3075, 84+59, 6272+11648, 0+0)과 일치하므로 별도 조정 없이 Claude와 같은 매핑을 쓴다. `result.modelUsage`는 같은 수치의 모델별 분해라 매핑하지 않는다. `fixtures/grok-usage.jsonl`은 이 실측의 재구성 fixture다.
 - AMP 0.0.1789200043-gdb3b35 (2026-09-12 실측)는 지원한다. 격리 디렉터리에서 `XDG_CACHE_HOME`을 쓰기 가능한 경로로 지정하고 `amp --execute '현재 디렉터리에 probe.txt 파일 하나를 만들고 내용으로 확인 완료를 쓰세요. 다른 파일을 읽거나 수정하지 말고 바로 종료하세요.' --dangerously-allow-all --stream-json-thinking`을 1회 실행했다. exit 0, 파일 생성 성공, stderr 0바이트, stdout 5914바이트다. 이벤트 6건은 system 1·user 2·assistant 2·result 1이며 모든 이벤트에 `session_id`가 있다. assistant `message.usage`에는 네 토큰 필드가 모두 있지만 `message.id`와 `result.usage`는 없다. `fixtures/amp-usage.jsonl`은 사용량 수치를 보존하고 세션 식별자를 합성한 재구성 fixture다. 원문은 로컬 `.agentteams/cli/temp/amp-probe/stdout.jsonl`에만 보관하며 커밋하지 않는다. 이전 2026-09-08 인증 실패에 따른 미확정 판정을 대체한다.
 - CURSOR_CLI는 미지원(정적 확인, 2026-09-08, 실행 프로브 없음). 전용 파서의 라인 타입 `CursorStreamJsonLine` 선언에 usage 필드가 없고 파서도 텍스트 로그 정제만 한다.
+- KIMI_CLI는 미지원(2026-09-13 실측, kimi 0.42.0). `kimi -p … --output-format stream-json` stdout은 role 기반 JSONL(`meta` / `assistant` / `tool`)이며 사용량 정수 필드가 없다. 성공 스키마는 `fixtures/kimi-events.jsonl`(버전 meta, tool_calls, tool 본문, assistant 텍스트, `session.resume_hint`). 같은 설치본의 최소 print-mode 프로브는 provider 429(계정 잔액 부족)로 exit 1이었고, stdout은 `fixtures/kimi-print-mode.jsonl`의 `system.version` 한 줄뿐이라 새 이벤트 타입을 추가하지 못했다. 공식 문서도 Assistant/Tool만 명시한다. 세션 디렉터리 내부 로그는 stream-json stdout 계약이 아니며 수치를 추정하거나 그 파일을 읽어 수집하지 않는다.
 - JSONL은 위 공식 형식에서 사용량 필드만 남기고 식별자와 수치를 고정한 재구성 fixture다. 실제 유료 실행 캡처라고 주장하지 않는다. 원문 프롬프트·응답·도구 입력을 포함하지 않는다. 중복 행은 재전송 검증을 위해 의도적으로 추가했다. 단 `grok-usage.jsonl`과 `amp-usage.jsonl`의 수치는 실제 유료 프로브 1회분의 관측값 그대로이며 식별자만 합성했다.
 
 ## 정규화 표
@@ -57,5 +58,6 @@
 - copilot-events.jsonl: assistant.message 3건의 합으로 입력 null, 출력 698(428+253+17), 캐시 읽기 null, 캐시 생성 null, PARTIAL. 같은 messageId 중복은 한 번만 계산한다.
 - grok-usage.jsonl: 전체를 흘려보내면 입력 11418, 출력 143, 캐시 읽기 17920, 캐시 생성 0, COMPLETE. 수치는 2026-09-08 실측 그대로고 식별자만 합성했다. 중복 assistant와 result는 한 번만 집계한다. 첫 두 행(중복 message)만 처리하면 입력 8343, 출력 null, 캐시 읽기 6272, 캐시 생성 0, PARTIAL.
 - amp-usage.jsonl: 입력 0, 출력 98, 캐시 읽기 40081, 캐시 생성 40370, COMPLETE. 첫 assistant만 처리하면 0/77/0/40084, PARTIAL. 수치 없는 result는 합계를 변경하지 않는다.
+- kimi-events.jsonl·kimi-print-mode.jsonl: 사용량 필드 없음. `emptyTokenUsage('KIMI_CLI')`는 UNSUPPORTED이고 네 값은 null이다. 수집기를 만들지 않는다.
 - 빈 스트림은 MISSING; 지원 외 엔진은 UNSUPPORTED; 네 필드가 실제 0인 종료 이벤트는 COMPLETE와 0을 유지한다.
 - 새 트리거의 수집기는 이전 호출 값을 상속하지 않는다. 세션 불일치가 발생하면 어느 세션이 주 실행인지 확정할 수 없으므로 수치를 비우고 MISSING으로 표시한다.

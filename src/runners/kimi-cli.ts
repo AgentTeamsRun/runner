@@ -192,6 +192,9 @@ export class KimiCliRunner implements Runner {
       lastOutput = entry.message;
       opts.onStdoutChunk?.(entry.message, entry.category, entry.toolName);
     };
+    // stream-json stdout has no usage fields (kimi 0.42.0, 2026-09-13). Do not
+    // wire a token-usage collector or invent counts. The trigger handler maps a
+    // missing RunResult.tokenUsage to UNSUPPORTED via emptyTokenUsage('KIMI_CLI').
     const jsonLineParser = createKimiJsonLineParser(
       (entries) => {
         for (const entry of entries) {

@@ -132,9 +132,14 @@ export const RUNNER_CAPABILITIES: Record<KnownRunnerType, RunnerCapabilities> = 
     tokenUsage: false,
   },
   // Kimi는 설정 파일의 thinking.effort만 확인됐고 실행 단위 전달 경로는 미확인이다.
-  // 평문 출력이라 구조화 사용량 이벤트가 없다.
   // `kimi provider list --json`이 `models` 맵을 낸다(2026-09-12 실측, kimi 0.42.0).
   // 키 미설정이면 빈 맵. 출력에 provider apiKey가 평문으로 포함되므로 파서는 `models`만 읽는다.
+  // 토큰 사용량: 미지원(2026-09-13 실측, kimi 0.42.0). print-mode는
+  // `--output-format stream-json` JSONL(role=meta/assistant/tool)이며 사용량 정수
+  // 필드가 없다. 성공 스키마는 fixtures/kimi-events.jsonl. 같은 설치본의 유료
+  // 프로브는 계정 잔액 부족(429)으로 assistant 행까지 도달하지 못했고 버전 meta만
+  // 관측했다. 공식 문서도 Assistant/Tool만 명시한다. 세션 디렉터리 내부 로그는
+  // 이 stdout 계약이 아니며 수집하지 않는다.
   KIMI_CLI: {
     model: true,
     fastMode: false,

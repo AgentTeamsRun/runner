@@ -87,8 +87,47 @@ test('거대 행과 잘못된 JSON 뒤에서 수집을 재개하고 완전 수�
 test('미지원 엔진은 수집 누락과 다르다', () => {
   assert.equal(emptyTokenUsage('CURSOR_CLI').status, 'UNSUPPORTED');
   assert.equal(emptyTokenUsage('CURSOR_CLI').inputTokens, null);
+  assert.equal(emptyTokenUsage('KIMI_CLI').status, 'UNSUPPORTED');
+  assert.equal(emptyTokenUsage('KIMI_CLI').inputTokens, null);
+  assert.equal(emptyTokenUsage('KIMI_CLI').outputTokens, null);
+  assert.equal(emptyTokenUsage('KIMI_CLI').cacheReadInputTokens, null);
+  assert.equal(emptyTokenUsage('KIMI_CLI').cacheCreationInputTokens, null);
   assert.equal(emptyTokenUsage('CODEX').status, 'MISSING');
   assert.equal(emptyTokenUsage('OMP').status, 'MISSING');
+});
+
+test('Kimi stream-json fixture has no usage fields and stays UNSUPPORTED', () => {
+  const usageLike = /(token|usage|cache)/i;
+  const roles = new Set<string>();
+  const inspect = (name: string): void => {
+    const text = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
+    for (const line of text.split('\n').filter(Boolean)) {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      assert.equal(typeof event.role, 'string');
+      roles.add(String(event.role));
+      const walk = (value: unknown): void => {
+        if (value !== null && typeof value === 'object') {
+          for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+            assert.equal(usageLike.test(key), false, `${name}: unexpected usage-like key ${key}`);
+            walk(nested);
+          }
+        }
+      };
+      walk(event);
+    }
+  };
+  inspect('kimi-events.jsonl');
+  inspect('kimi-print-mode.jsonl');
+  assert.deepEqual([...roles].sort(), ['assistant', 'meta', 'tool']);
+  assert.equal((usageSupportedRunners as readonly string[]).includes('KIMI_CLI'), false);
+  assert.deepEqual(emptyTokenUsage('KIMI_CLI'), {
+    status: 'UNSUPPORTED',
+    scope: 'MAIN_LOOP',
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadInputTokens: null,
+    cacheCreationInputTokens: null,
+  });
 });
 
 for (const [engine, name] of [

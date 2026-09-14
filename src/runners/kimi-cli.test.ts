@@ -123,6 +123,9 @@ test('KimiCliRunner replays stream-json into sanitized logs and final text', asy
   );
   assert.equal(result.lastOutput, '[Result] Completed');
   assert.equal(result.errorMessage, undefined);
+  // stream-json has no usage fields (kimi 0.42.0). Do not invent counts; the
+  // trigger handler maps a missing snapshot to UNSUPPORTED.
+  assert.equal(result.tokenUsage, undefined);
   assert.equal(spawned[0]?.command, '/usr/local/bin/kimi');
   assert.deepEqual(spawned[0]?.args, ['-p', 'hello', '-m', 'k3', '--output-format', 'stream-json']);
   assert.equal(spawned[0]?.options.windowsHide, true);
