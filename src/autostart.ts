@@ -9,7 +9,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { resolveExecutablePath } from './executable.js';
 import { readDaemonConfigFile } from './config.js';
 import { logger } from './logger.js';
-import { isProcessRunning } from './pid.js';
+import {
+  getDaemonStatus,
+  isProcessRunning,
+  removePidFile,
+  verifyRecordedDaemonInstance,
+  type RecordedInstanceVerification,
+} from './pid.js';
 import { cleanupInstalledWindowsLaunchers, installWindowsLauncher } from './windows-launcher.js';
 import {
   getRestartHandoffPath,
@@ -26,6 +32,43 @@ const WINDOWS_LOG_MAX_BYTES = 10 * 1024 * 1024;
 // a space (C:\Users\John Doe\...) would otherwise make the launcher's own tail
 // parsing cut the child command in the middle of the path.
 const LAUNCHER_EXEC_DELIMITER = '--exec';
+
+/**
+ * Task Scheduler priority for the runner action.
+ *
+ * Task Scheduler applies priority 7 when `<Priority>` is omitted, which maps to
+ * BELOW_NORMAL_PRIORITY_CLASS. Under sustained CPU pressure a BELOW_NORMAL
+ * process can be starved before it finishes loading: measured on Windows 11
+ * 26200 with 9 of 16 cores busy, the identical action completed in 0.4s at
+ * priority 5 and 0.7s at 6, while priority 7 had not loaded anything past
+ * ntdll/kernel32 after 150 seconds — no wrapper output, no PID file, and a task
+ * that stays "Running" forever.
+ *
+ * 5 is NORMAL_PRIORITY_CLASS with a normal thread priority: the least
+ * privileged setting that puts the runner on par with an interactive process.
+ */
+export const WINDOWS_TASK_PRIORITY = 5;
+
+/** The priority Task Scheduler applies when a task definition omits `<Priority>`. */
+export const WINDOWS_TASK_DEFAULT_PRIORITY = 7;
+
+/** The highest priority value that still maps to NORMAL_PRIORITY_CLASS. */
+const WINDOWS_TASK_MAX_NORMAL_PRIORITY = 6;
+
+const WINDOWS_TASK_PRIORITY_PATTERN = /<Priority>\s*(\d+)\s*<\/Priority>/u;
+
+/**
+ * The scheduling priority a live task definition actually runs at. An absent
+ * element is not "unset" — it is the starving default, so report it as such.
+ */
+export const parseWindowsTaskPriority = (taskXml: string): number => {
+  const match = taskXml.match(WINDOWS_TASK_PRIORITY_PATTERN);
+  if (!match) {
+    return WINDOWS_TASK_DEFAULT_PRIORITY;
+  }
+  const priority = Number.parseInt(match[1], 10);
+  return Number.isFinite(priority) ? priority : WINDOWS_TASK_DEFAULT_PRIORITY;
+};
 
 // --- Path helpers ---
 
@@ -241,6 +284,7 @@ export const buildWindowsTaskXmlContent = (
     <StartWhenAvailable>true</StartWhenAvailable>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Hidden>true</Hidden>
+    <Priority>${WINDOWS_TASK_PRIORITY}</Priority>
     <RestartOnFailure>
       <Interval>PT1M</Interval>
       <Count>3</Count>
@@ -551,22 +595,44 @@ type WindowsTaskMigrationDeps = {
   execSync?: (command: string, options: { windowsHide: boolean }) => unknown;
 };
 
-// True only when the live task definition is readable AND demonstrably still
-// points at a non-native action. An unreadable task returns false so a transient
-// query failure never triggers a needless re-registration.
-export const windowsTaskNeedsNativeLauncherMigration = (deps: WindowsTaskMigrationDeps = {}): boolean => {
+/**
+ * Why a live task definition has to be re-registered, or null when it does not.
+ * Two distinct defects need migration and they fail differently, so the reason
+ * travels with the verdict instead of collapsing into a single message.
+ */
+export type WindowsTaskMigrationReason = 'console-bound-action' | 'below-normal-priority';
+
+export const WINDOWS_TASK_MIGRATION_DESCRIPTIONS: Record<WindowsTaskMigrationReason, string> = {
+  'console-bound-action': 'uses a console-bound action',
+  'below-normal-priority': `runs at scheduling priority ${WINDOWS_TASK_DEFAULT_PRIORITY} (below-normal), which can starve the runner before it finishes loading`,
+};
+
+// A reason only when the live task definition is readable AND demonstrably still
+// runs the old way. An unreadable task returns null so a transient query failure
+// never triggers a needless re-registration.
+export const getWindowsTaskMigrationReason = (
+  deps: WindowsTaskMigrationDeps = {},
+): WindowsTaskMigrationReason | null => {
   const resolvedExecSync = deps.execSync ?? execSync;
   let liveTaskXml: string;
   try {
     liveTaskXml = String(resolvedExecSync(`schtasks /Query /TN "${TASK_NAME}" /XML`, { windowsHide: true }));
   } catch {
-    return false;
+    return null;
   }
   if (!liveTaskXml.includes('<Command>')) {
-    return false;
+    return null;
   }
-  return !NATIVE_LAUNCHER_COMMAND_PATTERN.test(liveTaskXml);
+  if (!NATIVE_LAUNCHER_COMMAND_PATTERN.test(liveTaskXml)) {
+    return 'console-bound-action';
+  }
+  // Every install registered before the priority fix carries no `<Priority>`,
+  // and a web restart / auto-update is the only path most of them ever take.
+  return parseWindowsTaskPriority(liveTaskXml) > WINDOWS_TASK_MAX_NORMAL_PRIORITY ? 'below-normal-priority' : null;
 };
+
+export const windowsTaskNeedsMigration = (deps: WindowsTaskMigrationDeps = {}): boolean =>
+  getWindowsTaskMigrationReason(deps) !== null;
 
 // Preserve the installed environment and executable path; only replace the known
 // legacy invocation. Stage with a restricted ACL before writing credentials.
@@ -599,7 +665,7 @@ type WindowsAutostartBootMigrationDeps = {
   platform?: typeof platform;
   refreshWindowsPowerShellWrapper?: typeof refreshWindowsPowerShellWrapper;
   getAutostartStatus?: typeof getAutostartStatus;
-  windowsTaskNeedsNativeLauncherMigration?: typeof windowsTaskNeedsNativeLauncherMigration;
+  getWindowsTaskMigrationReason?: typeof getWindowsTaskMigrationReason;
   getAutostartConfigFromEnv?: () => AutostartConfig | null;
   readDaemonConfigFile?: typeof readDaemonConfigFile;
   registerWindowsTask?: typeof registerWindowsTask;
@@ -609,8 +675,7 @@ type WindowsAutostartBootMigrationDeps = {
 export const migrateWindowsAutostartOnBoot = async (deps: WindowsAutostartBootMigrationDeps = {}): Promise<void> => {
   const resolvedPlatform = deps.platform ?? platform;
   const resolvedGetAutostartStatus = deps.getAutostartStatus ?? getAutostartStatus;
-  const resolvedNeedsMigration =
-    deps.windowsTaskNeedsNativeLauncherMigration ?? windowsTaskNeedsNativeLauncherMigration;
+  const resolvedMigrationReason = deps.getWindowsTaskMigrationReason ?? getWindowsTaskMigrationReason;
   const resolvedGetConfigFromEnv = deps.getAutostartConfigFromEnv ?? getAutostartConfigFromEnv;
   const resolvedReadConfigFile = deps.readDaemonConfigFile ?? readDaemonConfigFile;
   const resolvedRegisterWindowsTask = deps.registerWindowsTask ?? registerWindowsTask;
@@ -623,7 +688,8 @@ export const migrateWindowsAutostartOnBoot = async (deps: WindowsAutostartBootMi
 
     const status = resolvedGetAutostartStatus();
     if (!status.registered) return;
-    if (!resolvedNeedsMigration()) {
+    const migrationReason = resolvedMigrationReason();
+    if (!migrationReason) {
       if (await (deps.refreshWindowsPowerShellWrapper ?? refreshWindowsPowerShellWrapper)()) {
         resolvedLogger.info('Updated Windows autostart wrapper; stderr-safe logging applies on the next start');
       }
@@ -637,14 +703,15 @@ export const migrateWindowsAutostartOnBoot = async (deps: WindowsAutostartBootMi
     }
     if (!config) {
       resolvedLogger.warn(
-        'Windows Task Scheduler autostart still uses a console-bound action, but runtime configuration is unavailable',
+        `Windows Task Scheduler autostart still ${WINDOWS_TASK_MIGRATION_DESCRIPTIONS[migrationReason]}, but runtime configuration is unavailable`,
       );
       return;
     }
 
     await resolvedRegisterWindowsTask(config, { startImmediately: false });
     resolvedLogger.info(
-      'Migrated Windows Task Scheduler autostart to the native launcher; the hidden action applies on the next start',
+      `Re-registered Windows Task Scheduler autostart because it ${WINDOWS_TASK_MIGRATION_DESCRIPTIONS[migrationReason]}; ` +
+        'the new definition applies on the next start',
     );
   } catch (error) {
     resolvedLogger.warn('Failed to migrate Windows Task Scheduler autostart during boot; continuing startup', {
@@ -867,6 +934,11 @@ type RestartWindowsTaskDeps = {
   now?: () => number;
   registerWindowsTask?: typeof registerWindowsTask;
   launcherPath?: string;
+  getDaemonStatus?: typeof getDaemonStatus;
+  kill?: (pid: number, signal: NodeJS.Signals) => unknown;
+  isProcessRunning?: (pid: number) => boolean;
+  verifyRecordedDaemonInstance?: (pid: number) => Promise<RecordedInstanceVerification>;
+  removePidFile?: () => Promise<void>;
 };
 
 export const restartWindowsTask = async (
@@ -915,6 +987,51 @@ export const restartWindowsTask = async (
       `AgentRunner task did not reach a stopped state before restart (last state: ${taskState}); ` +
         'aborting /Run to avoid a silent IgnoreNew discard.',
     );
+  }
+
+  // A stopped task is not an idle runner. `schtasks /End` terminates the task's
+  // own process tree, but a grandchild that escaped the Job Object outlives it —
+  // and a surviving runner still owns the log file the replacement's wrapper
+  // appends to, so the replacement dies with exit 1 before writing a line.
+  // Measured on 2026-09-18: the replacement started, discovered worktrees, then
+  // exited 1 while the pre-restart runner still held the log. Stop the recorded
+  // instance by identity before `/Run`, never by name.
+  const recorded = await (deps.getDaemonStatus ?? getDaemonStatus)();
+  // Windows reuses PIDs aggressively and a crashed runner never removes its
+  // record, so confirm the live process really is the recorded instance before
+  // signalling it. Killing by PID alone would terminate whatever the user
+  // happened to be running under that number.
+  const verification =
+    recorded.running && recorded.pid !== null
+      ? await (deps.verifyRecordedDaemonInstance ?? verifyRecordedDaemonInstance)(recorded.pid)
+      : null;
+
+  if (verification === 'mismatch' && recorded.pid !== null) {
+    logger.warn('The recorded AgentRunner PID now belongs to an unrelated process — discarding the stale record', {
+      pid: recorded.pid,
+    });
+    await (deps.removePidFile ?? removePidFile)();
+  } else if (recorded.running && recorded.pid !== null) {
+    const recordedPid = recorded.pid;
+    logger.info('The pre-restart AgentRunner instance outlived the task; stopping it before the replacement starts', {
+      pid: recordedPid,
+    });
+    const stillRunning = deps.isProcessRunning ?? isProcessRunning;
+    try {
+      (deps.kill ?? process.kill.bind(process))(recordedPid, 'SIGTERM');
+    } catch {
+      // Already gone between the observation and the signal — nothing to stop.
+    }
+    const instanceDeadline = resolvedNow() + taskStopDeadlineMs;
+    while (stillRunning(recordedPid) && resolvedNow() < instanceDeadline) {
+      await resolvedSleep(taskStopPollIntervalMs);
+    }
+    if (stillRunning(recordedPid)) {
+      throw new Error(
+        `The pre-restart AgentRunner instance (pid ${recordedPid}) did not stop before the restart; ` +
+          'aborting /Run so the replacement never has to coexist with it.',
+      );
+    }
   }
 
   resolvedExecSync(`schtasks /Run /TN "${TASK_NAME}"`, { windowsHide: true });

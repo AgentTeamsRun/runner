@@ -3,14 +3,24 @@ import { randomUUID } from 'node:crypto';
 import { platform as getPlatform } from 'node:os';
 import {
   getAutostartStatus,
+  getWindowsTaskMigrationReason,
   launchWindowsHiddenDaemon,
   registerWindowsTask,
   restartAutostartService,
   scheduleWindowsTaskRestart,
-  windowsTaskNeedsNativeLauncherMigration,
+  WINDOWS_TASK_MIGRATION_DESCRIPTIONS,
 } from './autostart.js';
 import { logger } from './logger.js';
-import { getDaemonStatus } from './pid.js';
+import {
+  getDaemonStatus,
+  isProcessRunning,
+  isSameDaemonInstance,
+  removePidFile,
+  verifyRecordedDaemonInstance,
+  type DaemonInstanceRef,
+  type DaemonStatus,
+  type RecordedInstanceVerification,
+} from './pid.js';
 import { spawnExecutable } from './executable.js';
 import {
   acknowledgePreparedRestartHandoff,
@@ -23,9 +33,26 @@ import {
 } from './restart-handoff.js';
 import { promises as fs } from 'node:fs';
 
-type RunningDaemonStatus = {
+type RunningDaemonStatus = DaemonStatus;
+
+/**
+ * Why a restart confirmation succeeded or failed. `stale-instance` is the case
+ * that used to be reported as success: the restart was triggered, nothing
+ * replaced the old runner, and the pre-restart PID was still alive to answer.
+ */
+export type DaemonStartStage = 'replaced' | 'stale-instance' | 'not-ready' | 'not-running';
+
+export type DaemonStartConfirmation = {
   running: boolean;
   pid: number | null;
+  instanceId: string | null;
+  replaced: boolean;
+  stage: DaemonStartStage;
+};
+
+export type RestartOutcome = {
+  /** The instance observed before the restart was triggered, if any. */
+  previousInstance: DaemonInstanceRef | null;
 };
 
 type DetachedChildProcess = {
@@ -47,7 +74,7 @@ type ExecuteRestartDeps = {
   getAutostartStatus?: typeof getAutostartStatus;
   scheduleWindowsTaskRestart?: typeof scheduleWindowsTaskRestart;
   registerWindowsTask?: typeof registerWindowsTask;
-  windowsTaskNeedsNativeLauncherMigration?: typeof windowsTaskNeedsNativeLauncherMigration;
+  getWindowsTaskMigrationReason?: typeof getWindowsTaskMigrationReason;
   prepareDetachedDaemon?: () => Promise<RestartHandoffPreparation>;
   spawnDetachedDaemon?: (launch?: RestartHandoffLaunch) => DetachedChildProcess | void;
   acknowledgeRestart?: () => Promise<void>;
@@ -67,25 +94,58 @@ type WaitForStartDeps = {
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
   timeoutMs?: number;
+  /**
+   * The instance that was running before the restart was triggered. The wait
+   * only completes when a *different* instance reports ready; leaving it unset
+   * means "any ready instance will do" (a plain start, not a replacement).
+   */
+  previousInstance?: DaemonInstanceRef | null;
+};
+
+const toInstanceRef = (status: RunningDaemonStatus): DaemonInstanceRef | null =>
+  status.running && status.pid !== null ? { pid: status.pid, instanceId: status.instanceId } : null;
+
+const describeStartStage = (
+  status: RunningDaemonStatus,
+  previousInstance: DaemonInstanceRef | null,
+): DaemonStartStage => {
+  const observed = toInstanceRef(status);
+  if (!observed) {
+    return 'not-running';
+  }
+  if (isSameDaemonInstance(observed, previousInstance)) {
+    return 'stale-instance';
+  }
+  return status.ready ? 'replaced' : 'not-ready';
 };
 
 // A restart only *triggers* the replacement runner (a detached spawn, a
 // Task Scheduler `/Run`, or a supervised respawn); the new process needs a
 // moment to boot and write its PID file. Poll until it reports running so the
 // command can report accurately instead of racing an async startup.
-export const waitForDaemonToStart = async (deps: WaitForStartDeps = {}): Promise<RunningDaemonStatus> => {
+export const waitForDaemonToStart = async (deps: WaitForStartDeps = {}): Promise<DaemonStartConfirmation> => {
   const resolvedGetDaemonStatus = deps.getDaemonStatus ?? getDaemonStatus;
   const resolvedSleep = deps.sleep ?? ((milliseconds: number) => delay(milliseconds));
   const resolvedNow = deps.now ?? (() => Date.now());
   const timeoutMs = deps.timeoutMs ?? startTimeoutMs;
+  const previousInstance = deps.previousInstance ?? null;
 
   const deadline = resolvedNow() + timeoutMs;
   let status = await resolvedGetDaemonStatus();
-  while (!status.running && resolvedNow() < deadline) {
+  let stage = describeStartStage(status, previousInstance);
+  while (stage !== 'replaced' && resolvedNow() < deadline) {
     await resolvedSleep(restartPollIntervalMs);
     status = await resolvedGetDaemonStatus();
+    stage = describeStartStage(status, previousInstance);
   }
-  return status;
+
+  return {
+    running: status.running,
+    pid: status.pid,
+    instanceId: status.instanceId,
+    replaced: stage === 'replaced',
+    stage,
+  };
 };
 
 const waitForDaemonToStop = async (
@@ -104,6 +164,66 @@ const waitForDaemonToStop = async (
   }
 
   throw new Error(`Timed out waiting for AgentRunner process ${pid} to stop.`);
+};
+
+type TerminateInstanceDeps = {
+  kill?: typeof process.kill;
+  isProcessRunning?: (pid: number) => boolean;
+  verifyRecordedDaemonInstance?: (pid: number) => Promise<RecordedInstanceVerification>;
+  removePidFile?: () => Promise<void>;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  timeoutMs?: number;
+  logger?: Pick<typeof logger, 'warn'>;
+};
+
+/**
+ * Terminate one specific recorded instance. Identity-based on purpose: a restart
+ * must never kill "whatever looks like a runner", only the instance this
+ * installation wrote into its own PID file. A runner that died without cleaning
+ * up leaves that file behind, so the PID is confirmed to still belong to the
+ * recorded instance before any signal is sent. The wait watches that PID
+ * directly rather than the PID file, because a replacement may already own it.
+ */
+export const terminateDaemonInstance = async (
+  instance: DaemonInstanceRef,
+  deps: TerminateInstanceDeps = {},
+): Promise<void> => {
+  const resolvedKill = deps.kill ?? process.kill.bind(process);
+  const resolvedIsProcessRunning = deps.isProcessRunning ?? isProcessRunning;
+  const resolvedSleep = deps.sleep ?? ((milliseconds: number) => delay(milliseconds));
+  const resolvedNow = deps.now ?? (() => Date.now());
+  const resolvedVerify = deps.verifyRecordedDaemonInstance ?? ((pid: number) => verifyRecordedDaemonInstance(pid));
+  const resolvedRemovePidFile = deps.removePidFile ?? (() => removePidFile());
+  const resolvedLogger = deps.logger ?? logger;
+
+  if ((await resolvedVerify(instance.pid)) === 'mismatch') {
+    resolvedLogger.warn(
+      'The recorded AgentRunner PID now belongs to an unrelated process — discarding the stale record',
+      {
+        pid: instance.pid,
+      },
+    );
+    await resolvedRemovePidFile();
+    return;
+  }
+
+  try {
+    resolvedKill(instance.pid, 'SIGTERM');
+  } catch {
+    // Already gone between the observation and the signal — nothing to stop.
+    return;
+  }
+
+  const deadline = resolvedNow() + (deps.timeoutMs ?? stopTimeoutMs);
+  while (resolvedNow() < deadline) {
+    if (!resolvedIsProcessRunning(instance.pid)) {
+      return;
+    }
+    await resolvedSleep(restartPollIntervalMs);
+  }
+
+  throw new Error(`Timed out waiting for AgentRunner process ${instance.pid} to stop.`);
 };
 
 export const spawnDetachedDaemon = (launch?: RestartHandoffLaunch): DetachedChildProcess | void => {
@@ -186,8 +306,7 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
   const resolvedGetAutostartStatus = deps.getAutostartStatus ?? getAutostartStatus;
   const resolvedScheduleWindowsTaskRestart = deps.scheduleWindowsTaskRestart ?? scheduleWindowsTaskRestart;
   const resolvedRegisterWindowsTask = deps.registerWindowsTask ?? registerWindowsTask;
-  const resolvedNeedsLauncherMigration =
-    deps.windowsTaskNeedsNativeLauncherMigration ?? windowsTaskNeedsNativeLauncherMigration;
+  const resolvedMigrationReason = deps.getWindowsTaskMigrationReason ?? getWindowsTaskMigrationReason;
   const resolvedSpawnDetachedDaemon = deps.spawnDetachedDaemon ?? spawnDetachedDaemon;
   const acknowledgeRestart = deps.acknowledgeRestart ?? (async () => undefined);
   const acknowledgePreparedHandoff = deps.acknowledgePreparedHandoff ?? acknowledgePreparedRestartHandoff;
@@ -202,8 +321,9 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
     // keep their legacy `<Command>powershell.exe</Command>` action forever, so
     // re-register whenever the live definition is not the native launcher.
     const missingRegistration = !autostartStatus.registered;
-    const needsLauncherMigration = !missingRegistration && resolvedNeedsLauncherMigration();
-    if (missingRegistration || needsLauncherMigration) {
+    const migrationReason = missingRegistration ? null : resolvedMigrationReason();
+    if (missingRegistration || migrationReason) {
+      const outdatedDescription = migrationReason ? WINDOWS_TASK_MIGRATION_DESCRIPTIONS[migrationReason] : '';
       if (!deps.config) {
         return {
           status: 'retryable-failure',
@@ -214,7 +334,7 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
           reason: 'autostart-repair-failed',
           error: missingRegistration
             ? 'Windows Task Scheduler autostart is missing and runtime configuration is unavailable.'
-            : 'Windows Task Scheduler autostart still uses a console-bound action and runtime configuration is unavailable.',
+            : `Windows Task Scheduler autostart still ${outdatedDescription} and runtime configuration is unavailable.`,
         };
       }
 
@@ -222,7 +342,7 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
         resolvedLogger.info(
           missingRegistration
             ? 'Windows Task Scheduler autostart is missing — repairing it before restart'
-            : 'Windows Task Scheduler autostart still uses a console-bound action — migrating it to the native launcher',
+            : `Windows Task Scheduler autostart still ${outdatedDescription} — re-registering it`,
         );
         await resolvedRegisterWindowsTask(
           { token: deps.config.daemonToken, apiUrl: deps.config.apiUrl },
@@ -378,7 +498,7 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
   };
 };
 
-export const restartDaemon = async (deps: RestartDeps = {}): Promise<void> => {
+export const restartDaemon = async (deps: RestartDeps = {}): Promise<RestartOutcome> => {
   const resolvedGetDaemonStatus = deps.getDaemonStatus ?? getDaemonStatus;
   const resolvedGetAutostartStatus = deps.getAutostartStatus ?? getAutostartStatus;
   const resolvedRestartAutostartService = deps.restartAutostartService ?? restartAutostartService;
@@ -388,16 +508,26 @@ export const restartDaemon = async (deps: RestartDeps = {}): Promise<void> => {
   const resolvedLogger = deps.logger ?? logger;
 
   const autostartStatus = resolvedGetAutostartStatus();
+  // Snapshot the live instance *before* anything is triggered. Without it a
+  // restart cannot tell a genuine replacement from the previous runner that
+  // simply never died — which is exactly how a failed restart reported success.
+  const daemonStatus = await resolvedGetDaemonStatus();
+  const previousInstance = toInstanceRef(daemonStatus);
+
   if (autostartStatus.registered && autostartStatus.platform === 'task-scheduler') {
-    resolvedLogger.info('Restarting AgentRunner via registered Task Scheduler task');
+    // `schtasks /End` owns termination here; signalling the runner ourselves would
+    // race the task instance and can trip RestartOnFailure. The snapshot above is
+    // what turns a silently discarded /Run into a reported failure.
+    resolvedLogger.info('Restarting AgentRunner via registered Task Scheduler task', {
+      previousPid: previousInstance?.pid ?? null,
+    });
     await resolvedRestartAutostartService();
-    return;
+    return { previousInstance };
   }
 
-  const daemonStatus = await resolvedGetDaemonStatus();
-  if (daemonStatus.running && daemonStatus.pid !== null) {
-    resolvedLogger.info('Stopping AgentRunner before restart', { pid: daemonStatus.pid });
-    await waitForDaemonToStop(daemonStatus.pid, {
+  if (previousInstance) {
+    resolvedLogger.info('Stopping AgentRunner before restart', { pid: previousInstance.pid });
+    await waitForDaemonToStop(previousInstance.pid, {
       getDaemonStatus: resolvedGetDaemonStatus,
       kill: resolvedKill,
       sleep: resolvedSleep,
@@ -409,9 +539,10 @@ export const restartDaemon = async (deps: RestartDeps = {}): Promise<void> => {
       platform: autostartStatus.platform,
     });
     await resolvedRestartAutostartService();
-    return;
+    return { previousInstance };
   }
 
   resolvedLogger.info('Starting AgentRunner in background without autostart registration');
   resolvedSpawnDetachedDaemon();
+  return { previousInstance };
 };

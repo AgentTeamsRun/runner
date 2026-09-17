@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
-import { restartDaemon } from '../daemon-control.js';
+import { restartDaemon, terminateDaemonInstance, waitForDaemonToStart } from '../daemon-control.js';
+import { confirmDaemonReplacement } from '../restart-confirmation.js';
 import { runExecutableSync } from '../executable.js';
 import { logger } from '../logger.js';
 import { normalizeInstallError } from '../utils/npm-install-error.js';
@@ -12,6 +13,9 @@ const packageName = '@agentteams/runner';
 type UpdateDeps = {
   runExecutableSync?: typeof runExecutableSync;
   restartDaemon?: typeof restartDaemon;
+  waitForDaemonToStart?: typeof waitForDaemonToStart;
+  terminateDaemonInstance?: typeof terminateDaemonInstance;
+  confirmDaemonReplacement?: typeof confirmDaemonReplacement;
   logger?: Pick<typeof logger, 'info' | 'warn'>;
 };
 
@@ -55,10 +59,20 @@ export const runUpdateCommand = async (deps: UpdateDeps = {}): Promise<void> => 
     version: latestVersion ?? 'latest',
   });
 
-  await resolvedRestartDaemon();
+  // The package on disk is new, but the running runner is still the old one.
+  // Until a *different* instance reports ready the update has not taken effect,
+  // so confirm the replacement instead of reporting success on the trigger.
+  const outcome = await resolvedRestartDaemon();
+  const confirmation = await (deps.confirmDaemonReplacement ?? confirmDaemonReplacement)('update', outcome, {
+    waitForDaemonToStart: deps.waitForDaemonToStart,
+    terminateDaemonInstance: deps.terminateDaemonInstance,
+    logger: resolvedLogger,
+  });
 
   resolvedLogger.info('AgentRunner update completed', {
     currentVersion,
     targetVersion: latestVersion ?? 'latest',
+    pid: confirmation.pid,
+    previousPid: outcome.previousInstance?.pid ?? null,
   });
 };

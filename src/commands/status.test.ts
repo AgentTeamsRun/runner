@@ -25,14 +25,14 @@ test('runStatusCommand reports a pending legacy Windows autostart migration', as
 
   await runStatusCommand({
     platform: () => 'win32',
-    getDaemonStatus: async () => ({ running: true, pid: 4321 }),
+    getDaemonStatus: async () => ({ running: true, pid: 4321, instanceId: null, ready: true }),
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => true,
+    getWindowsTaskMigrationReason: () => 'console-bound-action',
     logger: observed.logger,
   });
 
   assert.deepEqual(observed.infos, [
-    { message: 'Daemon is running', meta: { pid: 4321 } },
+    { message: 'Daemon is running', meta: { pid: 4321, ready: true } },
     { message: 'Autostart is enabled', meta: { platform: 'task-scheduler' } },
   ]);
   assert.equal(observed.warnings.length, 1);
@@ -45,9 +45,9 @@ test('runStatusCommand stays quiet when the Windows task already uses the native
 
   await runStatusCommand({
     platform: () => 'win32',
-    getDaemonStatus: async () => ({ running: false, pid: null }),
+    getDaemonStatus: async () => ({ running: false, pid: null, instanceId: null, ready: false }),
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => false,
+    getWindowsTaskMigrationReason: () => null,
     logger: observed.logger,
   });
 
@@ -60,11 +60,11 @@ test('runStatusCommand preserves non-Windows output without probing the Windows 
 
   await runStatusCommand({
     platform: () => 'linux',
-    getDaemonStatus: async () => ({ running: false, pid: null }),
+    getDaemonStatus: async () => ({ running: false, pid: null, instanceId: null, ready: false }),
     getAutostartStatus: () => ({ registered: true, platform: 'systemd' }),
-    windowsTaskNeedsNativeLauncherMigration: () => {
+    getWindowsTaskMigrationReason: () => {
       migrationChecks += 1;
-      return true;
+      return 'console-bound-action';
     },
     logger: observed.logger,
   });

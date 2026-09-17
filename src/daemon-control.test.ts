@@ -16,10 +16,10 @@ test('restartDaemon stops running daemon and restarts via autostart when registe
     getDaemonStatus: async () => {
       statusChecks += 1;
       if (statusChecks === 1) {
-        return { running: true, pid: 4321 };
+        return { running: true, pid: 4321, instanceId: null, ready: true };
       }
 
-      return { running: false, pid: null };
+      return { running: false, pid: null, instanceId: null, ready: false };
     },
     getAutostartStatus: () => ({ registered: true, platform: 'systemd' }),
     restartAutostartService: async () => {
@@ -41,7 +41,7 @@ test('restartDaemon starts detached daemon when autostart is not registered', as
   let started = false;
 
   await restartDaemon({
-    getDaemonStatus: async () => ({ running: false, pid: null }),
+    getDaemonStatus: async () => ({ running: false, pid: null, instanceId: null, ready: false }),
     getAutostartStatus: () => ({ registered: false, platform: 'manual' }),
     restartAutostartService: async () => {
       throw new Error('should not restart autostart');
@@ -60,10 +60,10 @@ test('restartDaemon starts detached daemon when autostart is not registered', as
 
 test('restartDaemon delegates Windows task restart without signaling the daemon first', async () => {
   const events: string[] = [];
-  await restartDaemon({
+  const outcome = await restartDaemon({
     getDaemonStatus: async () => {
       events.push('status');
-      return { running: true, pid: 4321 };
+      return { running: true, pid: 4321, instanceId: null, ready: true };
     },
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
     restartAutostartService: async () => {
@@ -76,10 +76,14 @@ test('restartDaemon delegates Windows task restart without signaling the daemon 
     logger: { info: () => undefined },
   });
 
-  assert.deepEqual(events, ['task-restart']);
+  // `schtasks /End` still owns termination — the runner is never signalled here.
+  // The status read is a snapshot, not a stop: without it the caller cannot tell a
+  // replacement from the previous instance that survived a discarded `/Run`.
+  assert.deepEqual(events, ['status', 'task-restart']);
+  assert.deepEqual(outcome.previousInstance, { pid: 4321, instanceId: null });
 });
 
-test('waitForDaemonToStart returns once the runner reports running', async () => {
+test('waitForDaemonToStart returns once the runner reports ready', async () => {
   let checks = 0;
   const sleeps: number[] = [];
 
@@ -87,7 +91,9 @@ test('waitForDaemonToStart returns once the runner reports running', async () =>
     getDaemonStatus: async () => {
       checks += 1;
       // Runner is still booting for the first two polls, then writes its PID.
-      return checks < 3 ? { running: false, pid: null } : { running: true, pid: 999 };
+      return checks < 3
+        ? { running: false, pid: null, instanceId: null, ready: false }
+        : { running: true, pid: 999, instanceId: null, ready: true };
     },
     sleep: async (milliseconds) => {
       sleeps.push(milliseconds);
@@ -95,7 +101,7 @@ test('waitForDaemonToStart returns once the runner reports running', async () =>
     now: () => 0,
   });
 
-  assert.deepEqual(status, { running: true, pid: 999 });
+  assert.deepEqual(status, { running: true, pid: 999, instanceId: null, replaced: true, stage: 'replaced' });
   assert.equal(checks, 3);
   assert.equal(sleeps.length, 2);
 });
@@ -108,7 +114,7 @@ test('waitForDaemonToStart gives up after the deadline and reports not running',
   const status = await waitForDaemonToStart({
     getDaemonStatus: async () => {
       checks += 1;
-      return { running: false, pid: null };
+      return { running: false, pid: null, instanceId: null, ready: false };
     },
     sleep: async () => undefined,
     now: () => now[Math.min(tick++, now.length - 1)] ?? 0,
@@ -167,7 +173,7 @@ test('executeRestartRequest schedules an explicit restart and exits cleanly for 
 
   await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => false,
+    getWindowsTaskMigrationReason: () => null,
     scheduleWindowsTaskRestart: async () => {
       scheduled = true;
       return {
@@ -201,7 +207,7 @@ test('executeRestartRequest keeps the daemon alive when the Windows restart help
 
   await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => false,
+    getWindowsTaskMigrationReason: () => null,
     // Helper creation failed — must NOT exit, or the runner dies with no replacement.
     scheduleWindowsTaskRestart: async () => ({
       status: 'retryable-failure',
@@ -335,7 +341,7 @@ test('executeRestartRequest preserves the current runner and request when the Wi
 
   const result = await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => false,
+    getWindowsTaskMigrationReason: () => null,
     scheduleWindowsTaskRestart: async () => ({
       status: 'retryable-failure',
       handoffId: 'handoff-query-failure',
@@ -408,7 +414,7 @@ test('executeRestartRequest migrates a registered but console-bound Windows task
     // Already registered — the legacy `<Command>powershell.exe</Command>` action
     // is exactly what auto-update + web restart never used to replace.
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => true,
+    getWindowsTaskMigrationReason: () => 'console-bound-action',
     registerWindowsTask: async (_config, deps) => {
       events.push(`register:startImmediately=${String(deps?.startImmediately)}`);
       return { registered: true, servicePath: 'task.xml', platform: 'task-scheduler' };
@@ -442,7 +448,7 @@ test('executeRestartRequest leaves an already-native Windows task untouched', as
 
   await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => false,
+    getWindowsTaskMigrationReason: () => null,
     registerWindowsTask: async () => {
       events.push('register');
       return { registered: true, servicePath: 'task.xml', platform: 'task-scheduler' };
@@ -476,7 +482,7 @@ test('executeRestartRequest keeps the runner alive when Windows handoff preparat
 
   const result = await executeRestartRequest({
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => false,
+    getWindowsTaskMigrationReason: () => null,
     scheduleWindowsTaskRestart: async () => {
       throw new Error('launcher manifest is missing');
     },
