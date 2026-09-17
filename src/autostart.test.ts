@@ -62,7 +62,8 @@ test('buildWindowsPowerShellWrapper passes environment and rotates the bounded d
   assert.match(content, /\$maxLogBytes = 10485760/u);
   assert.match(content, /Move-Item -LiteralPath \$logPath -Destination "\$logPath\.1" -Force/u);
   assert.match(content, /Clear-Content -LiteralPath \$logPath -ErrorAction SilentlyContinue/u);
-  assert.match(content, /& 'C:\\Program Files\\AgentTeams\\agentrunner\.cmd' start \*>> '.*agentrunner\.log'/u);
+  assert.match(content, /Get-Command 'C:\\Program Files\\AgentTeams\\agentrunner\.cmd' -ErrorAction Stop/u);
+  assert.doesNotMatch(content, /catch\s*\{\s*throw\s*\}/u);
 });
 
 test('getAutostartStatus queries Task Scheduler with hidden execution on Windows', () => {
@@ -335,6 +336,7 @@ test('migrateWindowsAutostartOnBoot skips unregistered and already-native tasks'
 
   await migrateWindowsAutostartOnBoot({
     platform: () => 'win32',
+    refreshWindowsPowerShellWrapper: async () => false,
     getAutostartStatus: () => ({ registered: false, platform: 'task-scheduler' }),
     windowsTaskNeedsNativeLauncherMigration: () => {
       migrationChecks += 1;
@@ -344,6 +346,7 @@ test('migrateWindowsAutostartOnBoot skips unregistered and already-native tasks'
   });
   await migrateWindowsAutostartOnBoot({
     platform: () => 'win32',
+    refreshWindowsPowerShellWrapper: async () => false,
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
     windowsTaskNeedsNativeLauncherMigration: () => {
       migrationChecks += 1;
@@ -361,6 +364,7 @@ test('migrateWindowsAutostartOnBoot repairs a legacy action without starting a d
 
   await migrateWindowsAutostartOnBoot({
     platform: () => 'win32',
+    refreshWindowsPowerShellWrapper: async () => false,
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
     windowsTaskNeedsNativeLauncherMigration: () => true,
     getAutostartConfigFromEnv: () => ({ token: 'env-token', apiUrl: 'https://api.example' }),
@@ -380,6 +384,7 @@ test('migrateWindowsAutostartOnBoot uses file config and remains idempotent afte
 
   const deps = {
     platform: () => 'win32' as NodeJS.Platform,
+    refreshWindowsPowerShellWrapper: async () => false,
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
     windowsTaskNeedsNativeLauncherMigration: () => {
       migrationChecks += 1;
@@ -406,6 +411,7 @@ test('migrateWindowsAutostartOnBoot warns instead of registering when config is 
 
   await migrateWindowsAutostartOnBoot({
     platform: () => 'win32',
+    refreshWindowsPowerShellWrapper: async () => false,
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
     windowsTaskNeedsNativeLauncherMigration: () => true,
     getAutostartConfigFromEnv: () => null,

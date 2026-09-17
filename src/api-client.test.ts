@@ -326,9 +326,10 @@ test('requestWithRetry aborts stalled requests at the transport timeout and retr
   assert.equal(signals.length, 4, 'initial request plus three retries');
   assert.ok(signals.every((signal) => signal.aborted));
   assert.deepEqual(delays, [30_000, 1000, 30_000, 2000, 30_000, 4000, 30_000]);
-  assert.equal(warnings.length, 3);
+  assert.equal(warnings.length, 4);
+  assert.equal(warnings[3]?.meta?.stage, 'headers');
   assert.deepEqual(
-    warnings.map((warning) => ({
+    warnings.slice(0, 3).map((warning) => ({
       path: warning.meta?.path,
       retryNumber: warning.meta?.retryNumber,
       delayMs: warning.meta?.delayMs,

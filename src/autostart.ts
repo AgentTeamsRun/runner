@@ -154,6 +154,27 @@ const escapeForPowerShellString = (value: string): string => value.replaceAll("'
 const escapeForXml = (value: string): string =>
   value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
+const buildWindowsNativeInvocation = (quotedCommand: string): string =>
+  [
+    '# runner-wrapper-version: 2',
+    `$runnerCommand = Get-Command ${quotedCommand} -ErrorAction Stop`,
+    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    'try {',
+    '$runnerExitCode = & {',
+    // PowerShell 5.1 turns native stderr into ErrorRecord. Limit Continue to the
+    // native invocation; log-write failures must still terminate the wrapper.
+    "  $ErrorActionPreference = 'Continue'",
+    '  & $runnerCommand.Source start 2>&1 | ForEach-Object { $_.ToString() } | Out-File -LiteralPath $logPath -Append -Encoding Unicode -ErrorAction Stop',
+    '  $LASTEXITCODE',
+    '}',
+    // Continue 스코프의 terminating error가 바깥 호출에서 정상 종료로 바뀌지 않게 한다.
+    '} catch {',
+    '  Write-Error -ErrorRecord $_ -ErrorAction Continue',
+    '  exit 1',
+    '}',
+    'exit $runnerExitCode',
+  ].join('\r\n');
+
 export const buildWindowsPowerShellWrapper = (
   config: AutostartConfig,
   daemonPath: string = resolveExecutablePath('agentrunner'),
@@ -175,8 +196,7 @@ export const buildWindowsPowerShellWrapper = (
     '} catch {',
     '  Clear-Content -LiteralPath $logPath -ErrorAction SilentlyContinue',
     '}',
-    `& '${escapeForPowerShellString(daemonPath)}' start *>> '${escapeForPowerShellString(logPath)}'`,
-    'exit $LASTEXITCODE',
+    buildWindowsNativeInvocation(`'${escapeForPowerShellString(daemonPath)}'`),
   ].join('\r\n');
 };
 
@@ -548,8 +568,36 @@ export const windowsTaskNeedsNativeLauncherMigration = (deps: WindowsTaskMigrati
   return !NATIVE_LAUNCHER_COMMAND_PATTERN.test(liveTaskXml);
 };
 
+// Preserve the installed environment and executable path; only replace the known
+// legacy invocation. Stage with a restricted ACL before writing credentials.
+export const refreshWindowsPowerShellWrapper = async (
+  wrapperPath = getWindowsWrapperPath(),
+  secureFile: (path: string) => void = (path) => {
+    const userName = process.env.USERNAME ?? '';
+    if (!userName) throw new Error('Cannot update Windows wrapper: current user is unknown.');
+    const userId = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${userName}` : userName;
+    execSync(buildWindowsWrapperAclCommand(path, userId), { windowsHide: true });
+  },
+): Promise<boolean> => {
+  const content = await fs.readFile(wrapperPath, 'utf8');
+  const legacy = /^& ('(?:[^']|'')*') start \*>> '(?:[^']|'')*'\r?\nexit \$LASTEXITCODE\s*$/mu;
+  const updated = content.replace(legacy, (_match, command: string) => buildWindowsNativeInvocation(command));
+  if (updated === content) return false;
+  const stagedPath = `${wrapperPath}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(stagedPath, '', { flag: 'wx', mode: 0o600 });
+    secureFile(stagedPath);
+    await fs.writeFile(stagedPath, updated, 'utf8');
+    await fs.rename(stagedPath, wrapperPath);
+    return true;
+  } finally {
+    await fs.unlink(stagedPath).catch(() => undefined);
+  }
+};
+
 type WindowsAutostartBootMigrationDeps = {
   platform?: typeof platform;
+  refreshWindowsPowerShellWrapper?: typeof refreshWindowsPowerShellWrapper;
   getAutostartStatus?: typeof getAutostartStatus;
   windowsTaskNeedsNativeLauncherMigration?: typeof windowsTaskNeedsNativeLauncherMigration;
   getAutostartConfigFromEnv?: () => AutostartConfig | null;
@@ -574,7 +622,11 @@ export const migrateWindowsAutostartOnBoot = async (deps: WindowsAutostartBootMi
     }
 
     const status = resolvedGetAutostartStatus();
-    if (!status.registered || !resolvedNeedsMigration()) {
+    if (!status.registered) return;
+    if (!resolvedNeedsMigration()) {
+      if (await (deps.refreshWindowsPowerShellWrapper ?? refreshWindowsPowerShellWrapper)()) {
+        resolvedLogger.info('Updated Windows autostart wrapper; stderr-safe logging applies on the next start');
+      }
       return;
     }
 

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import * as fsModule from 'node:fs';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test, { mock } from 'node:test';
 import { logger } from './logger.js';
+import { DaemonApiClient } from './api-client.js';
 import { MAX_REPORTED_MODEL_VALUES_PER_RUNNER, startPolling } from './poller.js';
 import type { DaemonTrigger, PollStateResponse, RuntimeConfig } from './types.js';
 import type { EnumeratedModel } from './utils/model-enumerator.js';
@@ -1329,6 +1331,75 @@ const backoffDependencies = (timeouts: ReturnType<typeof createTimeoutRecorder>,
   loadAuthPaths: () => [],
   saveAuthPath: () => '/tmp/auth-paths.json',
   keepAlive,
+});
+
+test('startPolling recovers after response body timeout and handles the next trigger', async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((callback, delay, ...args) =>
+    originalSetTimeout(
+      callback,
+      delay === 30_000 ? 50 : [1000, 2000, 4000].includes(delay as number) ? 1 : delay,
+      ...args,
+    )) as typeof setTimeout;
+  let stalled = true;
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    if (stalled) response.write('{"data":');
+    else response.end(JSON.stringify(pollState({ pendingTrigger: trigger })));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const client = new DaemonApiClient(`http://127.0.0.1:${address.port}`, 'fixture');
+  const timeouts = createTimeoutRecorder();
+  let finish: () => void = () => undefined;
+  let ready: () => void = () => undefined;
+  const started = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  const handled: string[] = [];
+  const polling = startPolling(
+    config,
+    () => async (next) => {
+      handled.push(next.id);
+    },
+    {
+      ...backoffDependencies(timeouts, () => {
+        ready();
+        return new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      }),
+      createClient: () => makeClient({ fetchPollState: () => client.fetchPollState() }),
+      probeInstalledEngines: async () => ({ engines: [], reliable: true }),
+    },
+  );
+  let guard: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      started,
+      new Promise<never>((_resolve, reject) => {
+        guard = originalSetTimeout(() => reject(new Error('poll cycle did not recover')), 3000);
+      }),
+    ]);
+    assert.equal(timeouts.scheduled.length, 1);
+    stalled = false;
+    timeouts.scheduled[0]!.callback();
+    for (let i = 0; i < 100 && handled.length === 0; i += 1) {
+      await new Promise((resolve) => originalSetTimeout(resolve, 10));
+    }
+    assert.deepEqual(handled, [trigger.id]);
+    assert.equal(timeouts.scheduled.length, 2);
+  } finally {
+    clearTimeout(guard);
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    globalThis.setTimeout = originalSetTimeout;
+    // A failed reproduction may still be unwinding the initial fetch.
+    await Promise.race([started, new Promise((resolve) => originalSetTimeout(resolve, 100))]);
+    finish();
+    await polling;
+  }
 });
 
 test('startPolling schedules one next poll after fetchPollState rejects', async () => {
