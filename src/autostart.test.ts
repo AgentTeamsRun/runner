@@ -12,7 +12,7 @@ import {
   restartWindowsTask,
   scheduleWindowsTaskRestart,
   unregisterWindowsTask,
-  windowsTaskNeedsNativeLauncherMigration,
+  windowsTaskNeedsMigration,
 } from './autostart.js';
 
 const originalPath = process.env.PATH;
@@ -280,24 +280,36 @@ test('registerWindowsTask preserves legacy task executables when candidate creat
   );
 });
 
-test('windowsTaskNeedsNativeLauncherMigration detects a legacy action and stays quiet when unreadable', () => {
+test('windowsTaskNeedsMigration detects a legacy action and stays quiet when unreadable', () => {
   assert.equal(
-    windowsTaskNeedsNativeLauncherMigration({
+    windowsTaskNeedsMigration({
       execSync: () => Buffer.from('<Task><Actions><Exec><Command>powershell.exe</Command></Exec></Actions></Task>'),
     }),
     true,
   );
   assert.equal(
-    windowsTaskNeedsNativeLauncherMigration({
+    windowsTaskNeedsMigration({
+      execSync: () =>
+        Buffer.from(
+          '<Task><Settings><Priority>5</Priority></Settings>' +
+            '<Actions><Exec><Command>C:\\x\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe</Command></Exec></Actions></Task>',
+        ),
+    }),
+    false,
+  );
+  // A native action registered before the priority fix still runs at the
+  // starving Task Scheduler default, so it must be re-registered.
+  assert.equal(
+    windowsTaskNeedsMigration({
       execSync: () =>
         Buffer.from(
           '<Task><Actions><Exec><Command>C:\\x\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe</Command></Exec></Actions></Task>',
         ),
     }),
-    false,
+    true,
   );
   assert.equal(
-    windowsTaskNeedsNativeLauncherMigration({
+    windowsTaskNeedsMigration({
       execSync: () => {
         throw new Error('task not found');
       },
@@ -316,9 +328,9 @@ test('migrateWindowsAutostartOnBoot skips non-Windows platforms before probing r
       statusChecks += 1;
       return { registered: true, platform: 'task-scheduler' };
     },
-    windowsTaskNeedsNativeLauncherMigration: () => {
+    getWindowsTaskMigrationReason: () => {
       migrationChecks += 1;
-      return true;
+      return 'console-bound-action';
     },
   });
 
@@ -338,9 +350,9 @@ test('migrateWindowsAutostartOnBoot skips unregistered and already-native tasks'
     platform: () => 'win32',
     refreshWindowsPowerShellWrapper: async () => false,
     getAutostartStatus: () => ({ registered: false, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => {
+    getWindowsTaskMigrationReason: () => {
       migrationChecks += 1;
-      return true;
+      return 'console-bound-action';
     },
     registerWindowsTask,
   });
@@ -348,9 +360,9 @@ test('migrateWindowsAutostartOnBoot skips unregistered and already-native tasks'
     platform: () => 'win32',
     refreshWindowsPowerShellWrapper: async () => false,
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => {
+    getWindowsTaskMigrationReason: () => {
       migrationChecks += 1;
-      return false;
+      return null;
     },
     registerWindowsTask,
   });
@@ -366,7 +378,7 @@ test('migrateWindowsAutostartOnBoot repairs a legacy action without starting a d
     platform: () => 'win32',
     refreshWindowsPowerShellWrapper: async () => false,
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => true,
+    getWindowsTaskMigrationReason: () => 'console-bound-action',
     getAutostartConfigFromEnv: () => ({ token: 'env-token', apiUrl: 'https://api.example' }),
     registerWindowsTask: async (config, options) => {
       registrations.push({ ...config, startImmediately: options?.startImmediately });
@@ -386,9 +398,9 @@ test('migrateWindowsAutostartOnBoot uses file config and remains idempotent afte
     platform: () => 'win32' as NodeJS.Platform,
     refreshWindowsPowerShellWrapper: async () => false,
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => {
+    getWindowsTaskMigrationReason: () => {
       migrationChecks += 1;
-      return migrationChecks === 1;
+      return migrationChecks === 1 ? 'console-bound-action' : null;
     },
     getAutostartConfigFromEnv: () => null,
     readDaemonConfigFile: async () => ({ daemonToken: 'file-token', apiUrl: 'https://file.example' }),
@@ -413,7 +425,7 @@ test('migrateWindowsAutostartOnBoot warns instead of registering when config is 
     platform: () => 'win32',
     refreshWindowsPowerShellWrapper: async () => false,
     getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-    windowsTaskNeedsNativeLauncherMigration: () => true,
+    getWindowsTaskMigrationReason: () => 'console-bound-action',
     getAutostartConfigFromEnv: () => null,
     readDaemonConfigFile: async () => null,
     registerWindowsTask: async () => {
@@ -434,7 +446,7 @@ test('migrateWindowsAutostartOnBoot isolates registration failures', async () =>
     migrateWindowsAutostartOnBoot({
       platform: () => 'win32',
       getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-      windowsTaskNeedsNativeLauncherMigration: () => true,
+      getWindowsTaskMigrationReason: () => 'console-bound-action',
       getAutostartConfigFromEnv: () => ({ token: 'env-token', apiUrl: 'https://api.example' }),
       registerWindowsTask: async () => {
         throw new Error('registration failed');
@@ -471,6 +483,7 @@ test('unregisterWindowsTask deletes the task and all generated or legacy artifac
 test('restartWindowsTask ends the task, probes its state, then starts it again', async () => {
   const commands: string[] = [];
   await restartWindowsTask(null, {
+    getDaemonStatus: async () => ({ running: false, pid: null, instanceId: null, ready: false }),
     execSync: (command, options) => {
       commands.push(command);
       assert.equal(options.windowsHide, true);
@@ -491,6 +504,7 @@ test('restartWindowsTask waits while the task is still running before starting i
   let stateQueries = 0;
 
   await restartWindowsTask(null, {
+    getDaemonStatus: async () => ({ running: false, pid: null, instanceId: null, ready: false }),
     execSync: (command, options) => {
       commands.push(command);
       assert.equal(options.windowsHide, true);
@@ -520,6 +534,7 @@ test('restartWindowsTask aborts /Run (throws) when the task never reaches a stop
 
   await assert.rejects(
     restartWindowsTask(null, {
+      getDaemonStatus: async () => ({ running: false, pid: null, instanceId: null, ready: false }),
       execSync: (command) => {
         commands.push(command);
         // Always reports State 4 (Running) — the old instance never stops.
@@ -546,6 +561,7 @@ test('restartWindowsTask aborts /Run (throws) when the task state cannot be dete
 
   await assert.rejects(
     restartWindowsTask(null, {
+      getDaemonStatus: async () => ({ running: false, pid: null, instanceId: null, ready: false }),
       execSync: (command) => {
         commands.push(command);
         // State probe fails → 'unknown'; must not be treated as stopped.

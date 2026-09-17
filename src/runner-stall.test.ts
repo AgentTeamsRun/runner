@@ -77,7 +77,7 @@ test('native installs refresh only the legacy wrapper, atomically and idempotent
       await migrateWindowsAutostartOnBoot({
         platform: () => 'win32',
         getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
-        windowsTaskNeedsNativeLauncherMigration: () => false,
+        getWindowsTaskMigrationReason: () => null,
         refreshWindowsPowerShellWrapper: refresh,
         registerWindowsTask: async () => {
           throw new Error('must not register or start');

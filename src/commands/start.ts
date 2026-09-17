@@ -2,7 +2,7 @@ import { resolveRuntimeConfig } from '../config.js';
 import { startPolling } from '../poller.js';
 import { DaemonApiClient } from '../api-client.js';
 import { createTriggerHandler } from '../handlers/trigger-handler.js';
-import { writePidFile, removePidFile } from '../pid.js';
+import { writePidFile, removePidFile, markDaemonReady } from '../pid.js';
 import { logger } from '../logger.js';
 import { refreshWindowsPathFromRegistry } from '../windows-path.js';
 import { activatePreparedRestartHandoff } from '../restart-handoff.js';
@@ -42,6 +42,7 @@ type StartCommandDeps = {
   activatePreparedRestartHandoff?: typeof activatePreparedRestartHandoff;
   writePidFile?: typeof writePidFile;
   removePidFile?: typeof removePidFile;
+  markDaemonReady?: typeof markDaemonReady;
   migrateWindowsAutostartOnBoot?: () => Promise<void>;
   processOn?: (event: 'SIGINT' | 'SIGTERM' | 'exit', listener: () => void) => void;
   resolveRuntimeConfig?: typeof resolveRuntimeConfig;
@@ -58,7 +59,6 @@ export const runStartCommand = async (deps: StartCommandDeps = {}): Promise<void
     resolvedLogger.info('Replacement runner activated after restart handoff');
   }
   await (deps.writePidFile ?? writePidFile)();
-  await (deps.migrateWindowsAutostartOnBoot ?? migrateWindowsAutostartOnBoot)();
 
   const cleanup = async () => {
     await (deps.removePidFile ?? removePidFile)();
@@ -73,6 +73,19 @@ export const runStartCommand = async (deps: StartCommandDeps = {}): Promise<void
 
   const config = await (deps.resolveRuntimeConfig ?? resolveRuntimeConfig)();
   const client = new DaemonApiClient(config.apiUrl, config.daemonToken);
+
+  // Everything a replacement runner needs is now in place. Stamp the PID record
+  // as ready so `agentrunner restart` can require an initialized instance rather
+  // than a process that merely exists — a starved autostart process reaches
+  // neither point, and one that stalls mid-initialization reaches only the first.
+  await (deps.markDaemonReady ?? markDaemonReady)();
+
+  // Re-registering the scheduled task only changes what the *next* start uses,
+  // so it must not sit between process creation and the readiness stamp: that
+  // stretch is what `agentrunner restart` waits out, and the migration's half
+  // dozen subprocesses (SHA-256 verification, file copies, icacls, schtasks)
+  // are slowest under exactly the CPU pressure the restart timeout budgets for.
+  await (deps.migrateWindowsAutostartOnBoot ?? migrateWindowsAutostartOnBoot)();
 
   await (deps.startPolling ?? startPolling)(config, (onAuthPathDiscovered) =>
     createTriggerHandler({ config, client, onAuthPathDiscovered }),

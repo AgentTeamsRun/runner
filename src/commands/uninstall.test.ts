@@ -9,7 +9,7 @@ test('runUninstallCommand deletes the Windows task before stopping the daemon pr
     unregisterAutostart: async () => {
       events.push('task-delete');
     },
-    getDaemonStatus: async () => ({ running: true, pid: 4321 }),
+    getDaemonStatus: async () => ({ running: true, pid: 4321, instanceId: null, ready: true }),
     kill: () => {
       events.push('kill');
       return true;
@@ -30,7 +30,7 @@ test('runUninstallCommand preserves non-Windows stop-before-unregister order', a
     unregisterAutostart: async () => {
       events.push('unregister');
     },
-    getDaemonStatus: async () => ({ running: true, pid: 99 }),
+    getDaemonStatus: async () => ({ running: true, pid: 99, instanceId: null, ready: true }),
     kill: () => {
       events.push('kill');
       return true;
