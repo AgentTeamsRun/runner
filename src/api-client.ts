@@ -94,11 +94,39 @@ export class DaemonApiClient {
       const timeoutHandle = setTimeout(() => {
         timeoutController.abort(timeoutError);
       }, DAEMON_API_TRANSPORT_TIMEOUT_MS);
+      let stage: 'headers' | 'body' = 'headers';
 
       try {
-        return await fetch(url, { ...options, signal: timeoutController.signal });
-      } catch (error) {
+        const response = await fetch(url, { ...options, signal: timeoutController.signal });
+        stage = 'body';
+        if (options.method !== 'GET' || !response.ok) {
+          // 상태만 쓰는 응답도 deadline 안에서 소비하여 keep-alive 연결을 재사용한다.
+          // 본문 실패는 이미 받은 상태를 바꾸거나 완료된 mutation을 재전송하지 않는다.
+          try {
+            await response.arrayBuffer();
+          } catch {
+            timeoutController.abort();
+          }
+          return response;
+        }
+        // fetch resolves on headers. Buffer read responses under the same
+        // deadline; callers still own JSON parsing (invalid JSON is not retried).
+        const body = await response.arrayBuffer();
+        return new Response(response.status === 204 || response.status === 205 ? null : body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      } catch (caught) {
+        const error = timeoutController.signal.aborted ? timeoutError : caught;
+        clearTimeout(timeoutHandle);
+        timeoutController.abort();
         if (!isNetworkError(error) || attempt >= MAX_NETWORK_RETRIES) {
+          logger.warn('Daemon API request failed', {
+            path,
+            stage,
+            ...(error instanceof DaemonApiTimeoutError ? { timeoutMs: error.timeoutMs } : {}),
+          });
           throw error;
         }
 
@@ -108,6 +136,7 @@ export class DaemonApiClient {
           path,
           retryNumber,
           delayMs,
+          stage,
           ...(error instanceof DaemonApiTimeoutError ? { timeoutMs: error.timeoutMs } : {}),
           error: error instanceof Error ? error.message : String(error),
         });
