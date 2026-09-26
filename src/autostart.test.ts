@@ -6,6 +6,7 @@ import {
   buildWindowsPowerShellWrapper,
   buildWindowsTaskXmlContent,
   getAutostartStatus,
+  getWindowsTaskMigrationReason,
   launchWindowsHiddenDaemon,
   migrateWindowsAutostartOnBoot,
   registerWindowsTask,
@@ -39,7 +40,9 @@ test('buildWindowsTaskXmlContent configures supervised hidden logon startup', ()
   assert.doesNotMatch(content, /<Command>powershell\.exe<\/Command>/u);
   // The launcher's own argv[0] is separated with an explicit delimiter so a
   // profile path containing a space cannot truncate the child command line.
-  assert.match(content, /<Arguments>--exec /u);
+  // Only the scheduled-task action opts into the launcher kill-tree mode so
+  // `schtasks /End` cleans up the runner tree.
+  assert.match(content, /<Arguments>--kill-tree-on-exit --exec /u);
   // The first child of the integrity-verified launcher must be an absolute path,
   // not a name resolved through the executable search order.
   assert.match(content, /--exec &quot;C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe&quot; /u);
@@ -292,10 +295,22 @@ test('windowsTaskNeedsMigration detects a legacy action and stays quiet when unr
       execSync: () =>
         Buffer.from(
           '<Task><Settings><Priority>5</Priority></Settings>' +
-            '<Actions><Exec><Command>C:\\x\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe</Command></Exec></Actions></Task>',
+            '<Actions><Exec><Command>C:\\x\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe</Command><Arguments>--kill-tree-on-exit --exec "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -File "C:\\x\\agentrunner-start.ps1"</Arguments></Exec></Actions></Task>',
         ),
     }),
     false,
+  );
+  // A native action with a normal priority but without the kill-tree option
+  // still leaks the runner tree on `schtasks /End`, so it must be re-registered.
+  assert.equal(
+    windowsTaskNeedsMigration({
+      execSync: () =>
+        Buffer.from(
+          '<Task><Settings><Priority>5</Priority></Settings>' +
+            '<Actions><Exec><Command>C:\\x\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe</Command></Exec></Actions></Task>',
+        ),
+    }),
+    true,
   );
   // A native action registered before the priority fix still runs at the
   // starving Task Scheduler default, so it must be re-registered.
@@ -316,6 +331,15 @@ test('windowsTaskNeedsMigration detects a legacy action and stays quiet when unr
     }),
     false,
   );
+});
+
+test('getWindowsTaskMigrationReason ignores kill-tree text outside launcher arguments', () => {
+  const taskXml =
+    '<Task><Settings><Priority>5</Priority></Settings><Actions><Exec>' +
+    '<Command>C:\\x\\agentrunner-launcher-0.0.107-a1b2c3d4e5f6.exe</Command>' +
+    '<Arguments>--exec "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -File "C:\\x\\--kill-tree-on-exit.ps1"</Arguments>' +
+    '</Exec></Actions></Task>';
+  assert.equal(getWindowsTaskMigrationReason({ execSync: () => Buffer.from(taskXml) }), 'missing-kill-tree-option');
 });
 
 test('migrateWindowsAutostartOnBoot skips non-Windows platforms before probing registration', async () => {
@@ -613,6 +637,9 @@ test('scheduleWindowsTaskRestart creates the out-of-job restart helper and verif
   // Same launcher contract as the scheduled task: explicit `--exec` delimiter and
   // an absolute powershell.exe so the verified chain does not depend on PATH.
   assert.match(command, /agentrunner-launcher-[^ ]+\.exe" --exec "[A-Za-z]:\\/u);
+  // The web restart helper must never opt into the kill-tree mode: its direct
+  // fallback runner has to outlive the helper itself.
+  assert.doesNotMatch(command, /--kill-tree-on-exit/u);
   assert.match(command, /WindowsPowerShell\\v1\.0\\powershell\.exe" -NoProfile/u);
   const encodedCommand = command.match(/-EncodedCommand ([A-Za-z0-9+/=]+)/u)?.[1];
   assert.ok(encodedCommand);

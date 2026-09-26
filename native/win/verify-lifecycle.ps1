@@ -156,6 +156,47 @@ try {
     throw "the fake API observed only $pollCount scheduled polls after the restart; expected at least $requiredPollCount"
   }
 
+  # `schtasks /End` must leave no runner behind. Capture the live record, end
+  # the task, then assert the recorded PID (when it still belongs to a node
+  # runner) and every node descendant are gone. A surviving runner keeps
+  # holding `agentrunner.log`, so the next replacement dies with exit 1.
+  $preEndInstance = Wait-DaemonInstance -Description 'pre-End live instance' -Path $pidFile
+  Invoke-NativeCommand -Description 'scheduled task end' -Command {
+    & schtasks.exe /End /TN 'AgentRunner'
+  } | Out-Null
+  $endDeadline = (Get-Date).AddSeconds(30)
+  $residualPid = [int]$preEndInstance.pid
+  $residualProcess = $null
+  $residualDescendants = @()
+  while ((Get-Date) -lt $endDeadline) {
+    $candidate = Get-Process -Id $residualPid -ErrorAction SilentlyContinue
+    $residualProcess = if ($candidate -and $candidate.ProcessName -eq 'node') { $candidate } else { $null }
+    $residualDescendants = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue | Where-Object {
+        $ancestorId = $_.ParentProcessId
+        $depth = 0
+        while ($ancestorId -and $ancestorId -ne $residualPid -and $depth -lt 32) {
+          $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $ancestorId" -ErrorAction SilentlyContinue
+          if (-not $parent) { break }
+          $ancestorId = $parent.ParentProcessId
+          $depth++
+        }
+        $ancestorId -eq $residualPid
+      })
+    if (-not $residualProcess -and $residualDescendants.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 500
+  }
+  if ($residualProcess -or $residualDescendants.Count -gt 0) {
+    $descList = ($residualDescendants | ForEach-Object { "$($_.ProcessId) (parent $($_.ParentProcessId))" }) -join ', '
+    throw "schtasks /End left a residual runner behind: recorded pid $residualPid alive=$($null -ne $residualProcess); descendant node processes: $descList"
+  }
+
+  # Bring the task back so the remaining lifecycle commands exercise a live runner.
+  Invoke-NativeCommand -Description 'scheduled task re-run after /End check' -Command {
+    & schtasks.exe /Run /TN 'AgentRunner'
+  } | Out-Null
+  Wait-DaemonInstance `
+    -Description 'post-End replacement' -Path $pidFile -NotInstanceId $preEndInstance.instanceId | Out-Null
+
   foreach ($lifecycleCommand in @('status', 'stop', 'uninstall')) {
     Invoke-NativeCommand -Description "agentrunner $lifecycleCommand" -Command {
       & agentrunner.cmd $lifecycleCommand

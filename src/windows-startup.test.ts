@@ -24,7 +24,7 @@ import { runRestartCommand } from './commands/restart.js';
  *   동일한 액션을 우선순위만 바꿔 실행한 결과 5는 0.4초, 6은 0.7초에 끝났고,
  *   7은 150초 제한 안에 시작조차 하지 못했다.
  *
- * 두 결함 모두 아래 테스트로 고정한다.
+ * 세 결함 모두 아래 테스트로 고정한다.
  */
 
 const LAUNCHER_PATH = 'C:\\Users\\runner\\.agentteams\\bin\\agentrunner-launcher-0.0.133-1854bd81b217.exe';
@@ -33,11 +33,11 @@ const USER_ID = 'DOMAIN\\runner';
 
 const buildTaskXml = (): string => buildWindowsTaskXmlContent(USER_ID, LAUNCHER_PATH, WRAPPER_PATH);
 
-const buildInstalledTaskXml = (settings: string): string =>
+const buildInstalledTaskXml = (settings: string, actionArguments = ''): string =>
   [
     '<Task>',
     `<Settings>${settings}</Settings>`,
-    `<Actions><Exec><Command>${LAUNCHER_PATH}</Command></Exec></Actions>`,
+    `<Actions><Exec><Command>${LAUNCHER_PATH}</Command>${actionArguments}</Exec></Actions>`,
     '</Task>',
   ].join('');
 
@@ -270,6 +270,8 @@ test('the Windows task action runs at a normal scheduling priority', () => {
   // CPU 포화 상태에서 무기한 기아 상태에 빠지는 것이 실측으로 확인됐다.
   assert.ok(WINDOWS_TASK_PRIORITY <= 6, 'the task must not run below the NORMAL priority class');
   assert.match(xml, new RegExp(`<Priority>${WINDOWS_TASK_PRIORITY}</Priority>`, 'u'));
+  // 예약 작업 액션은 런처 kill-tree 모드로 뜨므로 `/End`가 러너 트리를 정리한다.
+  assert.match(xml, /<Arguments>--kill-tree-on-exit --exec /u);
   assert.equal(parseWindowsTaskPriority(xml), WINDOWS_TASK_PRIORITY);
 });
 
@@ -292,12 +294,15 @@ test('an installed task without a priority element is migrated', () => {
 });
 
 test('an installed task that already carries a normal priority is left alone', () => {
-  const currentXml = buildInstalledTaskXml(`<Hidden>true</Hidden><Priority>${WINDOWS_TASK_PRIORITY}</Priority>`);
+  const currentXml = buildInstalledTaskXml(
+    `<Hidden>true</Hidden><Priority>${WINDOWS_TASK_PRIORITY}</Priority>`,
+    '<Arguments>--kill-tree-on-exit --exec "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -File "C:\\agentrunner-start.ps1"</Arguments>',
+  );
 
   assert.equal(windowsTaskNeedsMigration({ execSync: () => currentXml }), false);
 });
 
-test('the migration verdict names which of the two defects it found', () => {
+test('the migration verdict names which of the three defects it found', () => {
   assert.equal(
     getWindowsTaskMigrationReason({ execSync: () => buildInstalledTaskXml('<Hidden>true</Hidden>') }),
     'below-normal-priority',
@@ -307,6 +312,12 @@ test('the migration verdict names which of the two defects it found', () => {
       execSync: () => '<Task><Actions><Exec><Command>powershell.exe</Command></Exec></Actions></Task>',
     }),
     'console-bound-action',
+  );
+  assert.equal(
+    getWindowsTaskMigrationReason({
+      execSync: () => buildInstalledTaskXml(`<Hidden>true</Hidden><Priority>${WINDOWS_TASK_PRIORITY}</Priority>`),
+    }),
+    'missing-kill-tree-option',
   );
 });
 

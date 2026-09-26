@@ -33,6 +33,12 @@ const WINDOWS_LOG_MAX_BYTES = 10 * 1024 * 1024;
 // parsing cut the child command in the middle of the path.
 const LAUNCHER_EXEC_DELIMITER = '--exec';
 
+// Opt-in launcher flag that puts the child tree into the launcher's own Job
+// Object (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) so `schtasks /End` cleans up
+// the runner node processes. Only the scheduled-task action carries it: the
+// web restart helper's direct fallback runner must outlive the helper.
+const LAUNCHER_KILL_TREE_OPTION = '--kill-tree-on-exit';
+
 /**
  * Task Scheduler priority for the runner action.
  *
@@ -258,7 +264,12 @@ export const buildWindowsTaskXmlContent = (
 ): string => {
   const escapedUserId = escapeForXml(userId);
   const escapedLauncherPath = escapeForXml(launcherPath);
-  const argumentsValue = escapeForXml(buildWindowsChildPowerShellCommand(`-File "${wrapperPath}"`, powerShellPath));
+  // The scheduled-task action — and only this path — opts into the launcher
+  // kill-tree mode. The web restart helper builds its command separately and
+  // must stay without the flag.
+  const argumentsValue = escapeForXml(
+    `${LAUNCHER_KILL_TREE_OPTION} ${buildWindowsChildPowerShellCommand(`-File "${wrapperPath}"`, powerShellPath)}`,
+  );
   const workingDirectory = escapeForXml(winPath.dirname(powerShellPath));
 
   return `<?xml version="1.0" encoding="UTF-16"?>
@@ -600,11 +611,13 @@ type WindowsTaskMigrationDeps = {
  * Two distinct defects need migration and they fail differently, so the reason
  * travels with the verdict instead of collapsing into a single message.
  */
-export type WindowsTaskMigrationReason = 'console-bound-action' | 'below-normal-priority';
+export type WindowsTaskMigrationReason = 'console-bound-action' | 'below-normal-priority' | 'missing-kill-tree-option';
 
 export const WINDOWS_TASK_MIGRATION_DESCRIPTIONS: Record<WindowsTaskMigrationReason, string> = {
   'console-bound-action': 'uses a console-bound action',
   'below-normal-priority': `runs at scheduling priority ${WINDOWS_TASK_DEFAULT_PRIORITY} (below-normal), which can starve the runner before it finishes loading`,
+  'missing-kill-tree-option':
+    'runs without the launcher kill-tree option, so schtasks /End can leave the runner tree behind',
 };
 
 // A reason only when the live task definition is readable AND demonstrably still
@@ -628,7 +641,17 @@ export const getWindowsTaskMigrationReason = (
   }
   // Every install registered before the priority fix carries no `<Priority>`,
   // and a web restart / auto-update is the only path most of them ever take.
-  return parseWindowsTaskPriority(liveTaskXml) > WINDOWS_TASK_MAX_NORMAL_PRIORITY ? 'below-normal-priority' : null;
+  // The priority verdict comes first so pre-priority-fix installs keep
+  // reporting the older defect; one re-registration fixes both.
+  if (parseWindowsTaskPriority(liveTaskXml) > WINDOWS_TASK_MAX_NORMAL_PRIORITY) {
+    return 'below-normal-priority';
+  }
+  // Installs registered after the priority fix but before the kill-tree mode
+  // still leak the runner tree on `schtasks /End`.
+  const actionArguments = liveTaskXml.match(/<Arguments>([^<]*)<\/Arguments>/u)?.[1]?.trimStart();
+  return actionArguments?.startsWith(`${LAUNCHER_KILL_TREE_OPTION} ${LAUNCHER_EXEC_DELIMITER} `)
+    ? null
+    : 'missing-kill-tree-option';
 };
 
 export const windowsTaskNeedsMigration = (deps: WindowsTaskMigrationDeps = {}): boolean =>
