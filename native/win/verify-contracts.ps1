@@ -70,4 +70,15 @@ try {
 }
 if (-not $versionMismatchRejected) { throw 'VERSIONINFO mismatch fixture was not rejected' }
 
+$flagOnlyStartInfo = [Diagnostics.ProcessStartInfo]::new()
+$flagOnlyStartInfo.FileName = $LauncherPath
+$flagOnlyStartInfo.Arguments = '--kill-tree-on-exit'
+$flagOnlyStartInfo.UseShellExecute = $false
+$flagOnlyStartInfo.CreateNoWindow = $true
+$flagOnlyProcess = [Diagnostics.Process]::Start($flagOnlyStartInfo)
+$flagOnlyProcess.WaitForExit()
+if ($flagOnlyProcess.ExitCode -eq 0) {
+  throw 'kill-tree flag without a child unexpectedly returned success'
+}
+
 Write-Host "PowerShell contract fixtures passed on $($PSVersionTable.PSVersion)."
