@@ -378,6 +378,40 @@ describe('enumerateModels', () => {
     assert.equal(result.status, 'COMMAND_FAILED');
   });
 
+  test('checks Kiro authentication before listing models', async () => {
+    const calls: string[][] = [];
+    const result = await enumerateModels(
+      'KIRO_CLI',
+      dependencies(async (_executable, args) => {
+        calls.push(args);
+        if (args[0] === 'whoami') return { stdout: '{"accountType":"ApiKey","email":null}' };
+        return { stdout: await fixture('kiro-models.json') };
+      }),
+    );
+
+    assert.deepEqual(calls, [
+      ['whoami', '--format', 'json'],
+      ['chat', '--list-models', '--format', 'json'],
+    ]);
+    assert.equal(result.status, 'SUCCESS');
+  });
+
+  // 미로그인 상태의 `kiro-cli chat`은 브라우저 로그인 흐름을 띄운다. 주기 열거가 그 경로를 타면 안 된다.
+  test('skips Kiro model listing without running chat when kiro-cli is not logged in', async () => {
+    const calls: string[][] = [];
+    const result = await enumerateModels(
+      'KIRO_CLI',
+      dependencies(async (_executable, args) => {
+        calls.push(args);
+        throw new Error('Command failed (exit code 1): /bin/kiro-cli whoami --format json');
+      }),
+    );
+
+    assert.deepEqual(calls, [['whoami', '--format', 'json']]);
+    assert.equal(result.status, 'COMMAND_FAILED');
+    assert.match(result.status === 'COMMAND_FAILED' ? (result.message ?? '') : '', /not authenticated/);
+  });
+
   test('does not enumerate unsupported runners', async () => {
     let called = false;
     const result = await enumerateModels(

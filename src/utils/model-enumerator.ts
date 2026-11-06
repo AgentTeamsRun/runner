@@ -657,6 +657,20 @@ export const enumerateModels = async (
       }
       case 'KIRO_CLI': {
         const executable = resolveEngineExecutable(runnerType);
+        // `chat`은 미로그인 상태에서 브라우저 로그인 흐름을 띄우고 콜백을 기다리다 타임아웃된다.
+        // 열거가 주기적으로 돌기 때문에 매번 사용자 브라우저에 Kiro 로그인 페이지가 열린다.
+        // `whoami`는 브라우저를 열지 않고 미로그인이면 exit 1(`{"account":null}`),
+        // 로그인·KIRO_API_KEY 인증이면 exit 0이다(2026-11-06 실측, kiro-cli 2.37.0).
+        try {
+          await deps.execute(executable, ['whoami', '--format', 'json']);
+        } catch (error) {
+          return {
+            status: 'COMMAND_FAILED',
+            message: `kiro-cli is not authenticated; skipped model listing so that no browser login opens (${
+              error instanceof Error ? error.message : String(error)
+            })`,
+          };
+        }
         return parseKiroModels((await deps.execute(executable, ['chat', '--list-models', '--format', 'json'])).stdout);
       }
       case 'KIMI_CLI': {
