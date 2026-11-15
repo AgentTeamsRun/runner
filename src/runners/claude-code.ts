@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { createTokenUsageCollector } from './token-usage.js';
 import { createWriteStream } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -6,6 +7,7 @@ import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
+import { removeWindowsPromptFile, toPowerShellPromptFileRead, writeWindowsPromptFile } from './windows-prompt-file.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
@@ -90,9 +92,9 @@ export const extractResultTextFromStreamJson = (outputText: string): string => {
   return trimmedOutput;
 };
 
-const toPowerShellEncodedCommand = (
+export const toPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
-  prompt: string,
+  promptFilePath: string,
   model?: string | null,
   fastMode = false,
   effort?: string | null,
@@ -107,9 +109,7 @@ const toPowerShellEncodedCommand = (
     '[Console]::OutputEncoding = $utf8NoBom',
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
-    `$promptText = @'`,
-    `${prompt.replaceAll("'@", "'@")}`,
-    `'@`,
+    toPowerShellPromptFileRead(promptFilePath),
     `$promptText | & '${resolvedExecutablePath.replaceAll("'", "''")}'${argSegment}`,
   ].join('\r\n');
 
@@ -152,8 +152,15 @@ export class ClaudeCodeRunner implements Runner {
       : resolveExecutablePathWithPreference('claude', ['claude']);
     const normalizedEffort = typeof opts.effort === 'string' ? opts.effort.trim() : '';
     const effortRequested = normalizedEffort.length > 0;
-    const windowsEncodedCommand = isWindows
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, opts.fastMode === true, opts.effort)
+    const windowsPromptFilePath = isWindows ? await writeWindowsPromptFile(cwd, opts.triggerId, opts.prompt) : null;
+    const windowsEncodedCommand = windowsPromptFilePath
+      ? toPowerShellEncodedCommand(
+          resolvedExecutablePath,
+          windowsPromptFilePath,
+          opts.model,
+          opts.fastMode === true,
+          opts.effort,
+        )
       : null;
     const claudeArgs = buildClaudeCodeArgs(opts.model, opts.fastMode === true, opts.effort);
     const childEnv = buildClaudeCodeEnv(process.env, buildAgentTeamsSessionEnv(opts), { effortRequested });
@@ -237,8 +244,11 @@ export class ClaudeCodeRunner implements Runner {
       },
       { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       appendOutputText(rawOutput);
       resultLineCapturer.push(rawOutput);
       streamParser.push(rawOutput);
@@ -254,7 +264,7 @@ export class ClaudeCodeRunner implements Runner {
       }
     });
     child.stderr?.on('data', (chunk) => {
-      const output = toOutputPreview(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
+      const output = toOutputPreview(Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : chunk);
       if (output.length > 0) {
         lastOutput = output;
         lastErrorOutput = output;
@@ -317,6 +327,7 @@ export class ClaudeCodeRunner implements Runner {
 
         idleTimer.reset = () => {};
         logStream.end();
+        void removeWindowsPromptFile(windowsPromptFilePath, opts.triggerId);
         if (opts.signal) {
           opts.signal.removeEventListener('abort', handleAbort);
         }

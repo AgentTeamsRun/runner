@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -290,8 +291,11 @@ export class OmpRunner implements Runner {
       { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
 
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       const text = stdoutStripper.push(rawOutput);
       if (text.length === 0) {
         return;
@@ -303,7 +307,7 @@ export class OmpRunner implements Runner {
       logger.info('Runner stdout', { triggerId: opts.triggerId, pid: child.pid, output: toOutputPreview(text) });
     });
     child.stderr?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : String(chunk);
       const output = toOutputPreview(stderrStripper.push(rawOutput));
       if (output.length > 0) {
         lastErrorOutput = output;

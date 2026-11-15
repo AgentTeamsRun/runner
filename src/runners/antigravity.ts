@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { createWriteStream } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { mkdir, open, stat } from 'node:fs/promises';
@@ -5,6 +6,7 @@ import { platform } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
+import { removeWindowsPromptFile, toPowerShellPromptFileRead, writeWindowsPromptFile } from './windows-prompt-file.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { TriggerLogCategory } from '../types.js';
@@ -52,7 +54,7 @@ const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'",
 
 export const toPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
-  prompt: string,
+  promptFilePath: string,
   agentteamsDir: string,
   internalLogPath: string,
   timeoutMs?: number,
@@ -68,9 +70,7 @@ export const toPowerShellEncodedCommand = (
     '[Console]::OutputEncoding = $utf8NoBom',
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
-    `$promptText = @'`,
-    `${prompt.replaceAll("'@", "'@")}`,
-    `'@`,
+    toPowerShellPromptFileRead(promptFilePath),
     `& ${toPowerShellLiteral(resolvedExecutablePath)} '--dangerously-skip-permissions' '--add-dir' ${toPowerShellLiteral(agentteamsDir)} '--log-file' ${toPowerShellLiteral(internalLogPath)} '--print-timeout' ${toPowerShellLiteral(toPrintTimeout(timeoutMs))}${modelSegment}${effortSegment} '--print' $promptText`,
     'exit $LASTEXITCODE',
   ].join('\r\n');
@@ -196,6 +196,7 @@ export const createAntigravityInternalLogForwarder = ({
 }: InternalLogForwarderOptions) => {
   let offset = 0;
   let pendingText = '';
+  let logDecoder = new StringDecoder('utf8');
   let forwardedBytes = 0;
   let intervalId: ReturnType<typeof setInterval> | null = null;
   let activeRead: Promise<void> | null = null;
@@ -281,6 +282,7 @@ export const createAntigravityInternalLogForwarder = ({
       if (fileStat.size < offset) {
         offset = 0;
         pendingText = '';
+        logDecoder = new StringDecoder('utf8');
       }
 
       if (fileStat.size > offset) {
@@ -290,7 +292,8 @@ export const createAntigravityInternalLogForwarder = ({
         try {
           const result = await file.read(buffer, 0, length, offset);
           offset += result.bytesRead;
-          forwardLines(buffer.subarray(0, result.bytesRead).toString('utf8'), flush);
+          // 쓰기 도중의 파일을 읽으면 마지막 문자가 잘릴 수 있어 읽기 사이에 디코더를 유지한다.
+          forwardLines(logDecoder.write(buffer.subarray(0, result.bytesRead)), flush);
         } finally {
           await file.close();
         }
@@ -379,10 +382,11 @@ export class AntigravityRunner implements Runner {
     const resolvedExecutablePath = isWindows
       ? resolveExecutablePathWithPreference('agy', ['agy.cmd', 'agy'])
       : resolveExecutablePathWithPreference('agy', ['agy']);
-    const windowsEncodedCommand = isWindows
+    const windowsPromptFilePath = isWindows ? await writeWindowsPromptFile(cwd, opts.triggerId, opts.prompt) : null;
+    const windowsEncodedCommand = windowsPromptFilePath
       ? toPowerShellEncodedCommand(
           resolvedExecutablePath,
-          opts.prompt,
+          windowsPromptFilePath,
           agentteamsDir,
           internalLogPath,
           opts.timeoutMs,
@@ -470,8 +474,11 @@ export class AntigravityRunner implements Runner {
     };
 
     const idleTimer = { reset: (): void => {} };
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       appendOutputText(rawOutput);
       const output = toOutputPreview(rawOutput);
       if (output.length > 0) {
@@ -486,7 +493,7 @@ export class AntigravityRunner implements Runner {
       }
     });
     child.stderr?.on('data', (chunk) => {
-      const output = toOutputPreview(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
+      const output = toOutputPreview(Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : chunk);
       if (output.length > 0) {
         lastOutput = output;
         lastErrorOutput = output;
@@ -553,6 +560,7 @@ export class AntigravityRunner implements Runner {
 
         idleTimer.reset = () => {};
         logStream.end();
+        await removeWindowsPromptFile(windowsPromptFilePath, opts.triggerId);
         if (opts.signal) {
           opts.signal.removeEventListener('abort', handleAbort);
         }

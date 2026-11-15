@@ -1,13 +1,10 @@
+import { StringDecoder } from 'node:string_decoder';
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
-import {
-  describeExecutableResolution,
-  resolveExecutablePathsWithPreferenceAsync,
-  runProbeCommand,
-} from '../executable.js';
+import { resolveExecutablePathsWithPreferenceAsync, runProbeCommand } from '../executable.js';
 import { logger } from '../logger.js';
 import { extractResultTextFromStreamJson } from './claude-code.js';
 import { findCursorCliExecutable, isCursorCliExecutable } from './cursor-cli-identity.js';
@@ -65,7 +62,6 @@ type CursorCliRunnerDependencies = {
   platform: typeof platform;
   resolveExecutablePathsWithPreferenceAsync: typeof resolveExecutablePathsWithPreferenceAsync;
   runProbeCommand: typeof runProbeCommand;
-  describeExecutableResolution: typeof describeExecutableResolution;
   spawn: typeof spawn;
   createWriteStream: typeof createWriteStream;
   mkdir: typeof mkdir;
@@ -79,7 +75,6 @@ const defaultDependencies: CursorCliRunnerDependencies = {
   platform,
   resolveExecutablePathsWithPreferenceAsync,
   runProbeCommand,
-  describeExecutableResolution,
   spawn,
   createWriteStream,
   mkdir,
@@ -144,15 +139,14 @@ export class CursorCliRunner implements Runner {
     };
 
     const args = buildCursorCliArgs(opts.prompt, opts.model);
-    const executableInfo = this.deps.describeExecutableResolution('agent', {
-      platform: () => (isWindows ? 'win32' : this.deps.platform()),
-    });
     logger.info('Runner prompt prepared', {
       triggerId: opts.triggerId,
       promptLength: opts.prompt.length,
-      requestedCommand: executableInfo.requestedCommand,
+      // 위에서 신원 확인까지 마친 경로를 그대로 기록한다. 'agent'로 다시 조회하면
+      // `cursor-agent`만 설치된 환경에서 로깅이 throw해 실행 자체가 실패한다.
+      requestedCommand: getCursorExecutablePreference(isWindows).join('|'),
       resolvedExecutablePath,
-      platform: executableInfo.platform,
+      platform: isWindows ? 'win32' : this.deps.platform(),
       shell: false,
       detached: !isWindows,
       windowsWrapper: isWindows ? 'powershell.exe -EncodedCommand' : null,
@@ -228,8 +222,11 @@ export class CursorCliRunner implements Runner {
       { cwd },
     );
 
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       appendOutputText(rawOutput);
       resultLineCapturer.push(rawOutput);
       streamParser.push(rawOutput);
@@ -241,7 +238,7 @@ export class CursorCliRunner implements Runner {
       }
     });
     child.stderr?.on('data', (chunk) => {
-      const output = toOutputPreview(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
+      const output = toOutputPreview(Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : chunk);
       if (output.length > 0) {
         lastOutput = output;
         lastErrorOutput = output;

@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { createWriteStream } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
@@ -5,6 +6,7 @@ import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
+import { removeWindowsPromptFile, toPowerShellPromptFileRead, writeWindowsPromptFile } from './windows-prompt-file.js';
 import { extractResultTextFromStreamJson } from './claude-code.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
@@ -29,7 +31,7 @@ export const buildAmpExecArgs = (prompt: string, model?: string | null): string[
 // 위 buildAmpExecArgs와 동일하게, Windows PowerShell 경로에서도 AmpCode만 `model`을 `--mode`로 전달한다.
 export const toPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
-  prompt: string,
+  promptFilePath: string,
   model?: string | null,
 ): string => {
   const modelSegment = model ? ` '--mode' '${model.replaceAll("'", "''")}'` : '';
@@ -40,9 +42,7 @@ export const toPowerShellEncodedCommand = (
     '[Console]::OutputEncoding = $utf8NoBom',
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
-    `$promptText = @'`,
-    `${prompt.replaceAll("'@", "'@")}`,
-    `'@`,
+    toPowerShellPromptFileRead(promptFilePath),
     `& '${resolvedExecutablePath.replaceAll("'", "''")}' '--execute' $promptText '--dangerously-allow-all' '--stream-json-thinking'${modelSegment}`,
   ].join('\r\n');
 
@@ -83,8 +83,9 @@ export class AmpCodeRunner implements Runner {
     const resolvedExecutablePath = isWindows
       ? resolveExecutablePathWithPreference('amp', ['amp.cmd', 'amp'])
       : resolveExecutablePathWithPreference('amp', ['amp']);
-    const windowsEncodedCommand = isWindows
-      ? toPowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model)
+    const windowsPromptFilePath = isWindows ? await writeWindowsPromptFile(cwd, opts.triggerId, opts.prompt) : null;
+    const windowsEncodedCommand = windowsPromptFilePath
+      ? toPowerShellEncodedCommand(resolvedExecutablePath, windowsPromptFilePath, opts.model)
       : null;
     const executableInfo = describeExecutableResolution('amp', {
       platform: () => (isWindows ? 'win32' : platform()),
@@ -165,8 +166,11 @@ export class AmpCodeRunner implements Runner {
       },
       { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       appendOutputText(rawOutput);
       resultLineCapturer.push(rawOutput);
       streamParser.push(rawOutput);
@@ -182,7 +186,7 @@ export class AmpCodeRunner implements Runner {
       }
     });
     child.stderr?.on('data', (chunk) => {
-      const output = toOutputPreview(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
+      const output = toOutputPreview(Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : chunk);
       if (output.length > 0) {
         lastOutput = output;
         lastErrorOutput = output;
@@ -245,6 +249,7 @@ export class AmpCodeRunner implements Runner {
 
         idleTimer.reset = () => {};
         logStream.end();
+        void removeWindowsPromptFile(windowsPromptFilePath, opts.triggerId);
         if (opts.signal) {
           opts.signal.removeEventListener('abort', handleAbort);
         }

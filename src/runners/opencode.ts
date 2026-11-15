@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { createTokenUsageCollector } from './token-usage.js';
 import { createWriteStream } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -6,6 +7,7 @@ import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
+import { removeWindowsPromptFile, toPowerShellPromptFileRead, writeWindowsPromptFile } from './windows-prompt-file.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { createOpenCodeFinalTextCapturer, createOpenCodeJsonLineParser } from './opencode-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
@@ -26,7 +28,7 @@ export const buildOpenCodeRunArgs = (model?: string | null, effort?: string | nu
 
 export const toOpenCodePowerShellEncodedCommand = (
   resolvedExecutablePath: string,
-  prompt: string,
+  promptFilePath: string,
   model?: string | null,
   effort?: string | null,
 ): string => {
@@ -40,9 +42,7 @@ export const toOpenCodePowerShellEncodedCommand = (
     '[Console]::OutputEncoding = $utf8NoBom',
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
-    `$promptText = @'`,
-    `${prompt.replaceAll("'@", "'@")}`,
-    `'@`,
+    toPowerShellPromptFileRead(promptFilePath),
     `$promptText | & '${resolvedExecutablePath.replaceAll("'", "''")}' ${argSegment}`,
     'exit $LASTEXITCODE',
   ].join('\r\n');
@@ -185,8 +185,9 @@ export class OpenCodeRunner implements Runner {
     const resolvedExecutablePath = isWindows
       ? resolveExecutablePathWithPreference(this.runnerCmd, [`${this.runnerCmd}.cmd`, this.runnerCmd])
       : resolveExecutablePathWithPreference(this.runnerCmd, [this.runnerCmd]);
-    const windowsEncodedCommand = isWindows
-      ? toOpenCodePowerShellEncodedCommand(resolvedExecutablePath, opts.prompt, opts.model, opts.effort)
+    const windowsPromptFilePath = isWindows ? await writeWindowsPromptFile(cwd, opts.triggerId, opts.prompt) : null;
+    const windowsEncodedCommand = windowsPromptFilePath
+      ? toOpenCodePowerShellEncodedCommand(resolvedExecutablePath, windowsPromptFilePath, opts.model, opts.effort)
       : null;
     const executableInfo = describeExecutableResolution(this.runnerCmd, {
       platform: () => (isWindows ? 'win32' : platform()),
@@ -264,8 +265,11 @@ export class OpenCodeRunner implements Runner {
       return finalTextCapturer.get() ?? outputCapture.toResultOutputText();
     };
 
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       if (rawOutput.length === 0) {
         return;
       }
@@ -279,7 +283,7 @@ export class OpenCodeRunner implements Runner {
       });
     });
     child.stderr?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : String(chunk);
       outputCapture.appendStderr(rawOutput);
       const output = toOutputPreview(rawOutput);
       if (output.length > 0) {
@@ -344,6 +348,7 @@ export class OpenCodeRunner implements Runner {
 
         idleTimer.reset = () => {};
         logStream.end();
+        void removeWindowsPromptFile(windowsPromptFilePath, opts.triggerId);
         if (opts.signal) {
           opts.signal.removeEventListener('abort', handleAbort);
         }

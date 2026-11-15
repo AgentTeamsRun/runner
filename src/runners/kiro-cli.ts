@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -277,8 +278,11 @@ export class KiroCliRunner implements Runner {
     const stderrStripper = createAnsiStripper();
     const idleTimer = { reset: (): void => {} };
 
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       // Kiro는 구조화 출력이 없으므로 stdout은 최종 답변 본문 그대로다. ANSI만 벗겨 담는다.
       const text = stdoutStripper.push(rawOutput);
       appendOutputText(text);
@@ -291,7 +295,7 @@ export class KiroCliRunner implements Runner {
       }
     });
     child.stderr?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : String(chunk);
       const output = toOutputPreview(stderrStripper.push(rawOutput));
       if (output.length > 0) {
         lastErrorOutput = output;
