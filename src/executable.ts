@@ -5,6 +5,7 @@ import { posix, win32 } from 'node:path';
 import { promisify } from 'node:util';
 
 const DEFAULT_WINDOWS_EXTENSIONS = ['.com', '.exe', '.bat', '.cmd'];
+const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
 
 const joinPath = (os: NodeJS.Platform, ...segments: string[]): string =>
   os === 'win32' ? win32.join(...segments) : posix.join(...segments);
@@ -22,6 +23,8 @@ export type ExecutableDeps = {
 type SpawnExecutableOptions = SpawnOptions & ExecutableDeps;
 type RunExecutableSyncOptions = ExecutableDeps & {
   cwd?: string;
+  timeout?: number;
+  killSignal?: NodeJS.Signals;
 };
 
 type KnownInstallBinResolver = (env: NodeJS.ProcessEnv, os: NodeJS.Platform) => string[];
@@ -102,7 +105,12 @@ export const getNpmGlobalPrefix = (deps: ExecutableDeps = {}): string | null => 
   const run = deps.execFileSync ?? execFileSync;
 
   try {
-    const output = run('npm', ['prefix', '-g'], { encoding: 'utf8', windowsHide: true }).trim();
+    const output = run('npm', ['prefix', '-g'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: EXECUTABLE_PROBE_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    }).trim();
     return output.length > 0 ? output : null;
   } catch {
     return null;
@@ -138,7 +146,12 @@ const resolveFromPathLookup = (name: string, deps: ExecutableDeps): string | nul
   const lookupCommand = os === 'win32' ? 'where' : 'which';
 
   try {
-    const output = run(lookupCommand, [name], { encoding: 'utf8', windowsHide: true });
+    const output = run(lookupCommand, [name], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: EXECUTABLE_PROBE_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    });
     return selectPathLookupResult(name, output, os);
   } catch {
     return null;
@@ -556,6 +569,8 @@ export const runExecutableSync = (name: string, args: string[], options: RunExec
           env: options.env,
           encoding: 'utf8',
           windowsHide: true,
+          timeout: options.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS,
+          killSignal: options.killSignal ?? 'SIGKILL',
         },
       ),
     );
@@ -566,6 +581,9 @@ export const runExecutableSync = (name: string, args: string[], options: RunExec
       cwd: options.cwd,
       env: options.env,
       encoding: 'utf8',
+      windowsHide: true,
+      timeout: options.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS,
+      killSignal: options.killSignal ?? 'SIGKILL',
     }),
   );
 };

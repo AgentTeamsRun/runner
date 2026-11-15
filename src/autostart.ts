@@ -1205,9 +1205,15 @@ if (-not $isAcknowledged) {
   Remove-HandoffIfOwned
   exit 2
 }
-$parentDeadline = (Get-Date).AddSeconds(5)
+$parentDeadline = (Get-Date).AddSeconds(${Math.floor(restartHandoffAcknowledgementTimeoutMs / 1_000)})
 while ((Get-Process -Id $parentPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $parentDeadline)) {
+  if (-not (Test-HandoffAcknowledged)) { exit 2 }
   Start-Sleep -Milliseconds 100
+}
+if (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {
+  Write-RestartLog "parent did not exit after local commit; abandoning restart"
+  Remove-HandoffIfOwned
+  exit 2
 }
 $service = New-Object -ComObject 'Schedule.Service'
 $service.Connect()
@@ -1321,7 +1327,7 @@ type LaunchWindowsHiddenDeps = {
   env?: NodeJS.ProcessEnv;
 };
 
-export const launchWindowsHiddenDaemon = (deps: LaunchWindowsHiddenDeps = {}): void => {
+export const launchWindowsHiddenDaemon = async (deps: LaunchWindowsHiddenDeps = {}): Promise<void> => {
   const resolvedSpawn = deps.spawn ?? spawn;
   const daemonPath = (deps.resolveExecutablePath ?? resolveExecutablePath)('agentrunner');
   const command = `& '${escapeForPowerShellString(daemonPath)}' start`;
@@ -1340,5 +1346,11 @@ export const launchWindowsHiddenDaemon = (deps: LaunchWindowsHiddenDeps = {}): v
       env: deps.env ?? process.env,
     },
   );
-  child.unref();
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
 };

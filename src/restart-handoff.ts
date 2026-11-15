@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isProcessRunning } from './pid.js';
+import { readProcessStartTime } from './process-identity.js';
 
 export const restartHandoffIdEnv = 'AGENTTEAMS_RESTART_HANDOFF_ID';
 export const restartHandoffParentPidEnv = 'AGENTTEAMS_RESTART_PARENT_PID';
@@ -68,6 +69,7 @@ type WaitForPreparedHandoffDeps = {
 };
 
 type ActivateRestartHandoffDeps = {
+  readProcessStartTime?: typeof readProcessStartTime;
   env?: NodeJS.ProcessEnv;
   mkdir?: (path: string, options: { recursive: boolean }) => Promise<unknown>;
   readFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
@@ -232,6 +234,16 @@ export const acknowledgePreparedRestartHandoff = async (
   }
 };
 
+export const cancelPreparedRestartHandoff = async (preparation: RestartHandoffPrepared): Promise<void> => {
+  await removeMarkerIfOwned(
+    preparation.markerPath,
+    preparation.handoffId,
+    preparation.replacementPid,
+    fs.readFile,
+    fs.unlink,
+  );
+};
+
 export const activatePreparedRestartHandoff = async (deps: ActivateRestartHandoffDeps = {}): Promise<boolean> => {
   const launch = parseRestartHandoffLaunch(deps.env ?? process.env);
   if (!launch) {
@@ -247,6 +259,8 @@ export const activatePreparedRestartHandoff = async (deps: ActivateRestartHandof
   const now = deps.now ?? (() => Date.now());
   const processIsRunning = deps.isProcessRunning ?? isProcessRunning;
   const replacementPid = deps.processPid ?? process.pid;
+  const processStartTime = deps.readProcessStartTime ?? readProcessStartTime;
+  const parentStartedAt = processStartTime(launch.parentPid)?.getTime();
   const acknowledgementDeadline = now() + (deps.timeoutMs ?? restartHandoffAcknowledgementTimeoutMs);
 
   await mkdir(dirname(launch.markerPath), { recursive: true });
@@ -286,8 +300,24 @@ export const activatePreparedRestartHandoff = async (deps: ActivateRestartHandof
     throw new Error(`Restart handoff ${launch.handoffId} timed out waiting for acknowledgement.`);
   }
 
-  const parentExitGraceDeadline = now() + parentExitGraceTimeoutMs;
-  while (processIsRunning(launch.parentPid) && now() < parentExitGraceDeadline) {
+  // 로컬 commit은 서버 ACK보다 먼저 도착한다. ACK 실패·지연 중 기존 러너와 함께 기동하지 않는다.
+  const parentExitDeadline = now() + (deps.timeoutMs ?? restartHandoffAcknowledgementTimeoutMs);
+  let nextIdentityCheckAt = now() + parentExitGraceTimeoutMs;
+  while (processIsRunning(launch.parentPid)) {
+    const currentTime = now();
+    const marker = parseMarker(await readFile(launch.markerPath, 'utf8').catch(() => ''));
+    if (!markerBelongsToHandoff(marker, launch.handoffId, replacementPid) || marker.state !== 'acknowledged') {
+      throw new Error(`Restart handoff ${launch.handoffId} was revoked before parent exit.`);
+    }
+    if (currentTime >= nextIdentityCheckAt && parentStartedAt !== undefined) {
+      const observedStart = processStartTime(launch.parentPid)?.getTime();
+      if (observedStart !== undefined && observedStart !== parentStartedAt) break;
+      nextIdentityCheckAt = currentTime + 1_000;
+    }
+    if (currentTime >= parentExitDeadline) {
+      await removeMarkerIfOwned(launch.markerPath, launch.handoffId, replacementPid, readFile, unlink);
+      throw new Error(`Restart handoff ${launch.handoffId} timed out waiting for parent exit.`);
+    }
     await sleep(handoffPollIntervalMs);
   }
 

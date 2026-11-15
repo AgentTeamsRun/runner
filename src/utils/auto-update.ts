@@ -15,6 +15,7 @@ const packageJson = require('../../package.json') as { version?: string };
 
 const CLI_PACKAGE = '@agentteams/cli';
 const RUNNER_PACKAGE = '@agentteams/runner';
+const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 
 const COOLDOWN_MS = 60 * 60 * 1000; // 1시간
 /**
@@ -48,6 +49,7 @@ export type UpdateSuccessInput = {
 };
 
 type AutoUpdateDeps = {
+  installTimeoutMs?: number;
   runExecutableSync?: typeof runExecutableSync;
   logger?: Pick<typeof logger, 'info' | 'warn' | 'error'>;
   now?: () => number;
@@ -103,8 +105,12 @@ const installPackage = (
   packageName: string,
   version: string,
   deps: Pick<Required<AutoUpdateDeps>, 'runExecutableSync'>,
+  timeoutMs: number,
 ): void => {
-  deps.runExecutableSync('npm', ['install', '-g', `${packageName}@${version}`]);
+  deps.runExecutableSync('npm', ['install', '-g', `${packageName}@${version}`], {
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
+  });
 };
 
 /** 사용자 조치 대기로 백오프 중인지 판정한다. 대상 버전이 바뀌었으면 백오프를 해제한다. */
@@ -253,7 +259,12 @@ export const maybeAutoUpdate = async (
     }
 
     try {
-      installPackage(packageName, version, { runExecutableSync: resolvedRunExecutableSync });
+      installPackage(
+        packageName,
+        version,
+        { runExecutableSync: resolvedRunExecutableSync },
+        deps.installTimeoutMs ?? INSTALL_TIMEOUT_MS,
+      );
       recordSuccess(pkg, version);
       return true;
     } catch (error) {

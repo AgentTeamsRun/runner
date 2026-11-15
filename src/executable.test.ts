@@ -6,6 +6,7 @@ import {
   resolveExecutablePathsWithPreferenceAsync,
   resolveExecutablePathWithPreference,
   runProbeCommand,
+  runExecutableSync,
 } from './executable.js';
 
 test('resolveExecutablePath falls back to npm global bin on Windows', () => {
@@ -612,4 +613,13 @@ test('runProbeCommand executes command directly on non-Windows', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.file, '/usr/local/bin/agent');
   assert.deepEqual(calls[0]?.args, ['--help']);
+});
+test('runExecutableSync bounds a process that does not finish before the execution deadline', () => {
+  const started = Date.now();
+  assert.throws(
+    () =>
+      runExecutableSync(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], { timeout: 30, killSignal: 'SIGKILL' }),
+    { code: 'ETIMEDOUT' },
+  );
+  assert.ok(Date.now() - started < 800);
 });
