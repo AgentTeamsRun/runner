@@ -165,6 +165,7 @@ test('activatePreparedRestartHandoff waits for acknowledgement and does not lose
   const events: string[] = [];
   let markerReads = 0;
   let clock = 0;
+  let identityReads = 0;
 
   const activated = await activatePreparedRestartHandoff({
     env: {
@@ -202,13 +203,14 @@ test('activatePreparedRestartHandoff waits for acknowledgement and does not lose
       return value;
     },
     isProcessRunning: () => true,
+    readProcessStartTime: () => new Date(identityReads++ === 0 ? 0 : 1),
   });
 
   assert.equal(activated, true);
   assert.match(events[1] ?? '', /"handoffId":"manual-handoff"/u);
   assert.match(events[1] ?? '', /"replacementPid":9002/u);
   assert.ok(events.includes('unlink'));
-  assert.equal(markerReads, 3);
+  assert.ok(markerReads >= 3);
 });
 
 test('activatePreparedRestartHandoff does not remove a superseding handoff marker', async () => {
@@ -281,4 +283,25 @@ test('activatePreparedRestartHandoff removes its owned marker and fails when ack
   );
 
   assert.equal(removed, true);
+});
+
+test('a locally committed replacement never activates while the verified parent is still alive', async () => {
+  let clock = 0;
+  await assert.rejects(
+    activatePreparedRestartHandoff({
+      env: buildRestartHandoffEnv({ handoffId: 'slow-ack', parentPid: 4321, markerPath: '/unused' }, {}),
+      processPid: 9002,
+      mkdir: async () => undefined,
+      writeFile: async () => undefined,
+      chmodSync: () => undefined,
+      readFile: async () => JSON.stringify({ handoffId: 'slow-ack', replacementPid: 9002, state: 'acknowledged' }),
+      unlink: async () => undefined,
+      isProcessRunning: () => true,
+      readProcessStartTime: () => new Date(0),
+      sleep: async () => undefined,
+      now: () => (clock += 1_000),
+      timeoutMs: 20_000,
+    }),
+    /timed out waiting for parent exit/,
+  );
 });

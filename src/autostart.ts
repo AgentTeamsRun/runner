@@ -8,6 +8,7 @@ import { dirname, join, win32 as winPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { resolveExecutablePath } from './executable.js';
 import { readDaemonConfigFile } from './config.js';
+import { stopWindowsDaemonInstance } from './daemon-stop.js';
 import { logger } from './logger.js';
 import {
   getDaemonStatus,
@@ -962,6 +963,7 @@ type RestartWindowsTaskDeps = {
   isProcessRunning?: (pid: number) => boolean;
   verifyRecordedDaemonInstance?: (pid: number) => Promise<RecordedInstanceVerification>;
   removePidFile?: () => Promise<void>;
+  stopWindowsDaemonInstance?: typeof stopWindowsDaemonInstance;
 };
 
 export const restartWindowsTask = async (
@@ -981,6 +983,43 @@ export const restartWindowsTask = async (
       startImmediately: false,
     });
     logger.info('Migrated and verified the Windows task before restart');
+  }
+
+  const resolvedStopInstance = deps.stopWindowsDaemonInstance ?? stopWindowsDaemonInstance;
+  const injectedKill = deps.kill;
+  const stopInstanceDeps = {
+    isProcessRunning: deps.isProcessRunning,
+    removePidFile: deps.removePidFile,
+    sleep: resolvedSleep,
+    now: resolvedNow,
+    killProcessTree: injectedKill ? (pid: number) => void injectedKill(pid, 'SIGTERM') : undefined,
+  };
+
+  // `schtasks /End` kills the task's process tree outright: the runner gets no
+  // chance to cancel the run it is executing or to report it, so the server
+  // keeps showing that run as active. Ask the runner to shut down on its own
+  // first. It exits 0, so the task instance simply completes and
+  // RestartOnFailure does not fire. Best effort — whatever is left, `/End` and
+  // the identity-based stop below still clean up.
+  const beforeEnd = await (deps.getDaemonStatus ?? getDaemonStatus)();
+  if (beforeEnd.running && beforeEnd.pid !== null) {
+    try {
+      const outcome = await resolvedStopInstance(beforeEnd.pid, {
+        ...stopInstanceDeps,
+        verifyRecordedDaemonInstance: deps.verifyRecordedDaemonInstance,
+        force: false,
+      });
+      if (outcome.status === 'graceful') {
+        logger.info('AgentRunner finished its active work and exited before the task restart', {
+          pid: beforeEnd.pid,
+        });
+      }
+    } catch (error) {
+      logger.warn('Graceful stop before the task restart failed; continuing with schtasks /End', {
+        pid: beforeEnd.pid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   try {
@@ -1039,20 +1078,19 @@ export const restartWindowsTask = async (
     logger.info('The pre-restart AgentRunner instance outlived the task; stopping it before the replacement starts', {
       pid: recordedPid,
     });
-    const stillRunning = deps.isProcessRunning ?? isProcessRunning;
     try {
-      (deps.kill ?? process.kill.bind(process))(recordedPid, 'SIGTERM');
-    } catch {
-      // Already gone between the observation and the signal — nothing to stop.
-    }
-    const instanceDeadline = resolvedNow() + taskStopDeadlineMs;
-    while (stillRunning(recordedPid) && resolvedNow() < instanceDeadline) {
-      await resolvedSleep(taskStopPollIntervalMs);
-    }
-    if (stillRunning(recordedPid)) {
+      // Graceful first, so a run the survivor still owns is cancelled and
+      // reported rather than cut off; forced only for a confirmed runner.
+      await resolvedStopInstance(recordedPid, {
+        ...stopInstanceDeps,
+        verifyRecordedDaemonInstance: async () => verification ?? 'unverifiable',
+        forceTimeoutMs: taskStopDeadlineMs,
+      });
+    } catch (error) {
       throw new Error(
         `The pre-restart AgentRunner instance (pid ${recordedPid}) did not stop before the restart; ` +
-          'aborting /Run so the replacement never has to coexist with it.',
+          'aborting /Run so the replacement never has to coexist with it. ' +
+          `(${error instanceof Error ? error.message : String(error)})`,
       );
     }
   }
@@ -1205,9 +1243,15 @@ if (-not $isAcknowledged) {
   Remove-HandoffIfOwned
   exit 2
 }
-$parentDeadline = (Get-Date).AddSeconds(5)
+$parentDeadline = (Get-Date).AddSeconds(${Math.floor(restartHandoffAcknowledgementTimeoutMs / 1_000)})
 while ((Get-Process -Id $parentPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $parentDeadline)) {
+  if (-not (Test-HandoffAcknowledged)) { exit 2 }
   Start-Sleep -Milliseconds 100
+}
+if (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {
+  Write-RestartLog "parent did not exit after local commit; abandoning restart"
+  Remove-HandoffIfOwned
+  exit 2
 }
 $service = New-Object -ComObject 'Schedule.Service'
 $service.Connect()
@@ -1321,7 +1365,7 @@ type LaunchWindowsHiddenDeps = {
   env?: NodeJS.ProcessEnv;
 };
 
-export const launchWindowsHiddenDaemon = (deps: LaunchWindowsHiddenDeps = {}): void => {
+export const launchWindowsHiddenDaemon = async (deps: LaunchWindowsHiddenDeps = {}): Promise<void> => {
   const resolvedSpawn = deps.spawn ?? spawn;
   const daemonPath = (deps.resolveExecutablePath ?? resolveExecutablePath)('agentrunner');
   const command = `& '${escapeForPowerShellString(daemonPath)}' start`;
@@ -1340,5 +1384,11 @@ export const launchWindowsHiddenDaemon = (deps: LaunchWindowsHiddenDeps = {}): v
       env: deps.env ?? process.env,
     },
   );
-  child.unref();
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
 };

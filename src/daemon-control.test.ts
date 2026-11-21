@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   executeRestartRequest,
   prepareDetachedRestartHandoff,
@@ -13,6 +16,8 @@ test('restartDaemon stops running daemon and restarts via autostart when registe
   let restarted = false;
 
   await restartDaemon({
+    platform: () => 'linux',
+    verifyRecordedDaemonInstance: async () => 'verified',
     getDaemonStatus: async () => {
       statusChecks += 1;
       if (statusChecks === 1) {
@@ -259,7 +264,7 @@ test('executeRestartRequest acks and exits only after a manual replacement is pr
     logger: { info: () => undefined },
   });
 
-  assert.deepEqual(events, ['prepared', 'ack', 'commit', 'exit:0']);
+  assert.deepEqual(events, ['prepared', 'commit', 'ack', 'exit:0']);
 });
 
 test('executeRestartRequest keeps the daemon alive when the prepared standby disappears during acknowledgement', async () => {
@@ -290,9 +295,151 @@ test('executeRestartRequest keeps the daemon alive when the prepared standby dis
     logger: { info: () => undefined },
   });
 
-  assert.deepEqual(events, ['ack', 'commit-failed']);
+  assert.deepEqual(events, ['commit-failed']);
   assert.equal(result.status, 'retryable-failure');
 });
+
+test('restartDaemon never signals a recorded PID that now belongs to an unrelated process', async () => {
+  const events: string[] = [];
+  await restartDaemon({
+    getDaemonStatus: async () => ({ running: true, pid: 4321, instanceId: 'old', ready: true }),
+    getAutostartStatus: () => ({ registered: false, platform: 'manual' }),
+    verifyRecordedDaemonInstance: async () => 'mismatch',
+    removePidFile: async () => {
+      events.push('discard');
+    },
+    kill: () => {
+      assert.fail('must not signal a mismatched PID');
+    },
+    spawnDetachedDaemon: () => {
+      events.push('spawn');
+    },
+  });
+  assert.deepEqual(events, ['discard', 'spawn']);
+});
+
+// 구버전 러너의 PID 기록에는 startedAt이 없어 `unverifiable`이 된다. 이를 stale로 버리면
+// 기존 러너를 끄지 않은 채 새 러너를 띄워 두 러너가 동시에 폴링한다.
+test('restartDaemon still stops an unverifiable (legacy) recorded instance before spawning', async () => {
+  const events: string[] = [];
+  let running = true;
+  await restartDaemon({
+    getDaemonStatus: async () =>
+      running
+        ? { running: true, pid: 4321, instanceId: null, ready: true }
+        : { running: false, pid: null, instanceId: null, ready: false },
+    platform: () => 'linux',
+    getAutostartStatus: () => ({ registered: false, platform: 'manual' }),
+    verifyRecordedDaemonInstance: async () => 'unverifiable',
+    removePidFile: async () => {
+      events.push('discard');
+    },
+    kill: (pid, signal) => {
+      events.push(`kill:${pid}:${String(signal)}`);
+      running = false;
+      return true;
+    },
+    sleep: async () => undefined,
+    spawnDetachedDaemon: () => {
+      events.push('spawn');
+    },
+  });
+  assert.deepEqual(events, ['kill:4321:SIGTERM', 'spawn']);
+});
+
+test(
+  'prepareDetachedRestartHandoff handles an executable with a missing shebang interpreter',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'daemon-restart-spawn-'));
+    const originalPath = process.env.PATH;
+    try {
+      const executable = join(directory, 'agentrunner');
+      await writeFile(executable, '#!/missing-agentteams-test-interpreter\n');
+      await chmod(executable, 0o755);
+      process.env.PATH = `${directory}:${originalPath}`;
+      const result = await prepareDetachedRestartHandoff({ markerPath: join(directory, 'handoff.json') });
+      assert.equal(result.status, 'retryable-failure');
+      if (result.status === 'retryable-failure') assert.match(result.error, /ENOENT/);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      process.env.PATH = originalPath;
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+for (const platform of ['darwin', 'win32'] as const) {
+  test(`a failed server ACK revokes the local ${platform} handoff without exiting`, async () => {
+    const events: string[] = [];
+    const prepare = async () => ({
+      status: 'prepared' as const,
+      handoffId: 'revoke',
+      markerPath: '/unused',
+      replacementPid: 9002,
+      replacementReady: true as const,
+      acknowledged: false as const,
+      retryableFailure: false as const,
+    });
+    const result = await executeRestartRequest({
+      platform: () => platform,
+      getAutostartStatus: () => ({ registered: platform === 'win32', platform: 'manual' }),
+      getWindowsTaskMigrationReason: () => null,
+      prepareDetachedDaemon: prepare,
+      scheduleWindowsTaskRestart: prepare,
+      acknowledgePreparedHandoff: async () => {
+        events.push('commit');
+        return true;
+      },
+      acknowledgeRestart: async () => {
+        events.push('ack');
+        throw new Error('offline');
+      },
+      cancelPreparedHandoff: async () => {
+        events.push('revoke');
+      },
+      processExit: () => assert.fail('parent must remain alive'),
+    });
+    assert.equal(result.status, 'retryable-failure');
+    assert.deepEqual(events, ['commit', 'ack', 'revoke']);
+  });
+
+  test(`local handoff failure preserves the restart request for the next ${platform} poll`, async () => {
+    let requested = true;
+    let preparations = 0;
+    const preparation = async () => {
+      preparations++;
+      return {
+        status: 'prepared' as const,
+        handoffId: 'retry',
+        markerPath: '/unused',
+        replacementPid: 9002,
+        replacementReady: true as const,
+        acknowledged: false as const,
+        retryableFailure: false as const,
+      };
+    };
+    const deps = {
+      platform: () => platform,
+      getAutostartStatus: () => ({
+        registered: platform === 'win32',
+        platform: platform === 'win32' ? 'task-scheduler' : 'manual',
+      }),
+      getWindowsTaskMigrationReason: () => null,
+      prepareDetachedDaemon: preparation,
+      scheduleWindowsTaskRestart: preparation,
+      acknowledgePreparedHandoff: async () => false,
+      acknowledgeRestart: async () => {
+        requested = false;
+      },
+      processExit: () => assert.fail('must keep current daemon alive'),
+    };
+    await executeRestartRequest(deps);
+    if (requested) await executeRestartRequest(deps);
+    assert.equal(requested, true);
+    assert.equal(preparations, 2);
+  });
+}
 
 test('prepareDetachedRestartHandoff reports spawn failure without waiting for readiness', async () => {
   let waited = false;

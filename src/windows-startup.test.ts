@@ -161,6 +161,7 @@ test('terminateDaemonInstance stops the recorded PID and watches that PID only',
   await terminateDaemonInstance(
     { pid: 12600, instanceId: 'instance-before-restart' },
     {
+      platform: () => 'linux',
       verifyRecordedDaemonInstance: async () => 'verified',
       kill: (pid, signal) => {
         signals.push({ pid, signal });
@@ -182,6 +183,7 @@ test('terminateDaemonInstance reports a timeout instead of pretending the instan
     terminateDaemonInstance(
       { pid: 12600, instanceId: 'instance-before-restart' },
       {
+        platform: () => 'linux',
         verifyRecordedDaemonInstance: async () => 'verified',
         kill: () => true,
         isProcessRunning: () => true,
@@ -232,6 +234,63 @@ test('restartWindowsTask stops a recorded instance that outlived the task before
   assert.deepEqual(schtasks, ['schtasks /End /TN "AgentRunner" 2>nul', 'schtasks /Run /TN "AgentRunner"']);
   // 종료 신호는 /Run 앞에서 일어나야 한다.
   assert.equal(signalled.length, 1);
+});
+
+// `schtasks /End`는 작업의 프로세스 트리를 그대로 끝내므로 러너가 진행 중인 실행을 취소·보고할 기회가 없다.
+// /End 전에 러너에 정상 종료를 요청해야 서버에 그 실행이 "활성"으로 남지 않는다.
+test('restartWindowsTask asks the runner to stop gracefully before schtasks /End, without forcing', async () => {
+  const events: string[] = [];
+  let alive = true;
+
+  await restartWindowsTask(null, {
+    execSync: (command) => {
+      if (command.startsWith('schtasks')) events.push(command.split(' ').slice(0, 2).join(' '));
+      return Buffer.from(/-EncodedCommand/u.test(command) ? '3' : '');
+    },
+    getDaemonStatus: async () =>
+      alive
+        ? { running: true, pid: 13300, instanceId: 'before', ready: true }
+        : { running: false, pid: null, instanceId: null, ready: false },
+    verifyRecordedDaemonInstance: async () => 'verified',
+    stopWindowsDaemonInstance: async (pid, deps) => {
+      events.push(`stop:${pid}:force=${String(deps?.force)}`);
+      alive = false;
+      return { status: 'graceful', pid };
+    },
+    kill: () => assert.fail('a runner that stopped gracefully must not be signalled'),
+    sleep: async () => undefined,
+    now: () => 0,
+  });
+
+  // 강제 종료는 /End와 그 뒤의 신원 기반 정리가 맡는다. 여기서는 정상 종료만 시도한다.
+  assert.deepEqual(events, ['stop:13300:force=false', 'schtasks /End', 'schtasks /Run']);
+});
+
+test('restartWindowsTask still restarts when the graceful stop before /End fails', async () => {
+  const events: string[] = [];
+  let stopCalls = 0;
+
+  await restartWindowsTask(null, {
+    execSync: (command) => {
+      if (command.startsWith('schtasks')) events.push(command.split(' ').slice(0, 2).join(' '));
+      return Buffer.from(/-EncodedCommand/u.test(command) ? '3' : '');
+    },
+    // 첫 조회(정상 종료 시도)에서만 살아 있고, /End가 트리를 정리한 뒤에는 없다.
+    getDaemonStatus: async () =>
+      stopCalls === 0
+        ? { running: true, pid: 13300, instanceId: 'before', ready: true }
+        : { running: false, pid: null, instanceId: null, ready: false },
+    verifyRecordedDaemonInstance: async () => 'verified',
+    stopWindowsDaemonInstance: async () => {
+      stopCalls += 1;
+      throw new Error('pipe broke');
+    },
+    sleep: async () => undefined,
+    now: () => 0,
+  });
+
+  assert.equal(stopCalls, 1);
+  assert.deepEqual(events, ['schtasks /End', 'schtasks /Run']);
 });
 
 test('restartWindowsTask aborts /Run when the recorded instance refuses to stop', async () => {

@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -10,6 +11,11 @@ import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
 import { createTokenUsageCollector } from './token-usage.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import {
+  POWERSHELL_RUNNER_PREAMBLE,
+  toPowerShellCallTarget,
+  toPowerShellNativeArgLiteral,
+} from './windows-prompt-file.js';
 import { buildRunnerChildEnv } from './session-env.js';
 import { findGrokBuildExecutable, isGrokBuildExecutable } from './grok-build-identity.js';
 
@@ -73,8 +79,6 @@ export const buildGrokBuildArgs = (
 export const getGrokExecutablePreference = (isWindows: boolean): string[] =>
   isWindows ? ['grok.exe', 'grok'] : ['grok'];
 
-const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
 export const toGrokBuildPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
   promptFilePath: string,
@@ -85,16 +89,11 @@ export const toGrokBuildPowerShellEncodedCommand = (
   // The Windows path must carry the same structured-output flags as the POSIX argv, or the
   // runner would silently fall back to plain text there.
   const argSegment = buildGrokBuildArgs(promptFilePath, cwd, model, effort)
-    .map((arg) => ` ${toPowerShellLiteral(arg)}`)
+    .map((arg) => ` ${toPowerShellNativeArgLiteral(arg)}`)
     .join('');
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
-    `& ${toPowerShellLiteral(resolvedExecutablePath)}${argSegment}`,
+    ...POWERSHELL_RUNNER_PREAMBLE,
+    `& ${toPowerShellCallTarget(resolvedExecutablePath)}${argSegment}`,
     'exit $LASTEXITCODE',
   ].join('\r\n');
 
@@ -312,8 +311,11 @@ export class GrokBuildRunner implements Runner {
       { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
 
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       appendOutputText(rawOutput);
       resultLineCapturer.push(rawOutput);
       streamParser.push(rawOutput);
@@ -325,7 +327,7 @@ export class GrokBuildRunner implements Runner {
       }
     });
     child.stderr?.on('data', (chunk) => {
-      const output = toOutputPreview(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
+      const output = toOutputPreview(Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : chunk);
       if (output.length > 0) {
         lastErrorOutput = output;
         idleTimer.reset();

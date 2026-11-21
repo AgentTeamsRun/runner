@@ -1,10 +1,111 @@
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runExecutableSync } from '../executable.js';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { maybeAutoUpdate, resetAutoUpdateState } from './auto-update.js';
 
 const require = createRequire(import.meta.url);
 const installedRunnerVersion = (require('../../package.json') as { version: string }).version;
+
+test(
+  'a truly endless temporary npm process is killed and reported without touching global packages',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'daemon-endless-npm-'));
+    const npm = join(directory, 'fake-npm');
+    const script = join(directory, 'update.mts');
+    await writeFile(npm, `#!${process.execPath}\nsetInterval(()=>{},1000);\n`);
+    await chmod(npm, 0o755);
+    await writeFile(
+      script,
+      `
+import {maybeAutoUpdate} from ${JSON.stringify(fileURLToPath(new URL('./auto-update.ts', import.meta.url)))};
+import {runExecutableSync} from ${JSON.stringify(fileURLToPath(new URL('../executable.ts', import.meta.url)))};
+let failures=0;
+const result=await maybeAutoUpdate({cliLatestVersion:null,runnerLatestVersion:'99.9.9'},{
+installTimeoutMs:100,canWriteGlobalNpmRoot:()=>true,logger:{info(){},warn(){},error(){}},
+runExecutableSync:(_name,args,options)=>runExecutableSync(${JSON.stringify(npm)},args,options),
+onUpdateFailed:async()=>{failures++;}});
+if(result.runnerUpdated||failures!==1) process.exitCode=2;
+`,
+    );
+    // 테스트 자체의 데드라인도 별도 프로세스가 소유하므로 동기 호출 회귀가 테스트 러너를 멈추지 않는다.
+    const child = spawn(
+      process.execPath,
+      ['--import', fileURLToPath(new URL('../../node_modules/tsx/dist/loader.mjs', import.meta.url)), script],
+      {
+        detached: true,
+        windowsHide: true,
+        stdio: ['ignore', 'ignore', 'pipe'],
+      },
+    );
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      if (child.pid) process.kill(-child.pid, 'SIGKILL');
+    }, 3_000);
+    try {
+      const [code] = await once(child, 'close');
+      assert.equal(timedOut, false, 'auto-update must respect its own deadline');
+      assert.equal(code, 0, stderr);
+    } finally {
+      clearTimeout(deadline);
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {}
+      }
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'automatic install timeout is reported as failure and obeys the existing cooldown',
+  { skip: process.platform === 'win32' },
+  async () => {
+    resetAutoUpdateState();
+    const directory = await mkdtemp(join(tmpdir(), 'daemon-npm-timeout-'));
+    const npm = join(directory, 'npm');
+    let attempts = 0;
+    const failures: unknown[] = [];
+    await writeFile(npm, `#!${process.execPath}\nsetTimeout(()=>{},1000);\n`);
+    await chmod(npm, 0o755);
+    try {
+      const deps = {
+        installTimeoutMs: 30,
+        now: () => 1_000,
+        canWriteGlobalNpmRoot: () => true,
+        runExecutableSync: (_name: string, args: string[], options?: Parameters<typeof runExecutableSync>[2]) => {
+          attempts++;
+          return runExecutableSync(npm, args, options);
+        },
+        onUpdateFailed: async (failure: unknown) => {
+          failures.push(failure);
+        },
+        logger: { info() {}, warn() {}, error() {} },
+      };
+      const meta = { cliLatestVersion: null, runnerLatestVersion: '99.9.9' };
+      assert.deepEqual(await maybeAutoUpdate(meta, deps), { cliUpdated: false, runnerUpdated: false });
+      await maybeAutoUpdate(meta, deps);
+      assert.equal(attempts, 1);
+      assert.equal(failures.length, 1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+      resetAutoUpdateState();
+    }
+  },
+);
 
 test('maybeAutoUpdate calls onUpdateSucceeded after successful install', async () => {
   resetAutoUpdateState();

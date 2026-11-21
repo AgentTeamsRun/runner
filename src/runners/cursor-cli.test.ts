@@ -111,12 +111,6 @@ const createHarness = ({ os, executablePath, helpText = 'Start the Cursor Agent'
       executablePath ?? (os === 'win32' ? 'C:/Cursor/agent.exe' : '/usr/local/bin/agent'),
     ]) as never,
     runProbeCommand: (async () => helpText) as never,
-    describeExecutableResolution: (() => ({
-      requestedCommand: 'agent',
-      resolvedExecutablePath: executablePath ?? '/usr/local/bin/agent',
-      platform: os,
-      shell: false,
-    })) as never,
     mkdir: (async () => undefined) as never,
     writeFile: (async (path: string, content: string, options?: { encoding?: string }) => {
       calls.writes.push({ path, content, encoding: options?.encoding });
@@ -221,6 +215,17 @@ test('Unix runner launches the resolved agent directly with shell=false and a de
   assert.equal(calls.spawned[0]?.options.detached, true);
   assert.equal(calls.writes.length, 0);
   assert.equal(calls.removed.length, 0);
+});
+
+test('Unix runner launches a cursor-agent-only install even when no `agent` executable exists', async () => {
+  const { calls, runner } = createHarness({
+    os: 'linux',
+    executablePath: '/usr/local/bin/cursor-agent',
+    onSpawn: (child) => child.emit('close', 0),
+  });
+  const result = await runner.run(baseOptions({ prompt: 'hello' }));
+  assert.equal(result.exitCode, 0);
+  assert.equal(calls.spawned[0]?.command, '/usr/local/bin/cursor-agent');
 });
 
 test('spawns the child with the execution snapshot session variables', async () => {

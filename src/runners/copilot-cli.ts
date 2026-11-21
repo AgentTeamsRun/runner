@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -6,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
 import { createCopilotFinalTextCapturer, createCopilotJsonLineParser } from './copilot-json-parser.js';
+import { POWERSHELL_RUNNER_PREAMBLE, toPowerShellNativeInvocation } from './windows-prompt-file.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { createTokenUsageCollector } from './token-usage.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
@@ -41,15 +43,12 @@ export const toPowerShellEncodedCommand = (
   const modelSegment = model && model !== 'default' ? ` '--model' ${toPowerShellLiteral(model)}` : '';
   const effortSegment = effort?.trim() ? ` '--effort' ${toPowerShellLiteral(effort)}` : '';
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
+    ...POWERSHELL_RUNNER_PREAMBLE,
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '-p' $promptText '--allow-all' '--no-ask-user' '--output-format' 'json'${modelSegment}${effortSegment}`,
-    'exit $LASTEXITCODE',
+    toPowerShellNativeInvocation(
+      resolvedExecutablePath,
+      ` '-p' $promptText '--allow-all' '--no-ask-user' '--output-format' 'json'${modelSegment}${effortSegment}`,
+    ),
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -147,8 +146,11 @@ export class CopilotCliRunner implements Runner {
       return finalTextCapturer.get() ?? (lastOutput || outputText.trim() || undefined);
     };
 
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       appendOutputText(rawOutput);
       if (rawOutput.length > 0) {
         finalTextCapturer.push(rawOutput);
@@ -158,7 +160,7 @@ export class CopilotCliRunner implements Runner {
       }
     });
     child.stderr?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : String(chunk);
       appendOutputText(rawOutput);
       const output = toOutputPreview(rawOutput);
       if (output.length > 0) {

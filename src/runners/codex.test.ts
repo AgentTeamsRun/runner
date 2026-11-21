@@ -137,7 +137,9 @@ test('toPowerShellEncodedCommand preserves model, sandbox, and fast mode args', 
   assert.ok(decoded.includes("'-s' 'workspace-write'"));
   assert.ok(decoded.includes("'-c' 'sandbox_workspace_write.network_access=true'"));
   assert.ok(decoded.includes('features.fast_mode=true'));
-  assert.ok(decoded.includes('service_tier="fast"'));
+  // PowerShell 5.1이 내장 `"`를 그대로 붙여 소실시키므로 `\"`로 미리 이스케이프한다.
+  assert.ok(decoded.includes(String.raw`'service_tier=\"fast\"'`));
+  assert.ok(decoded.endsWith('exit $LASTEXITCODE'));
 });
 
 test('toPowerShellEncodedCommand uses bypass flag and omits model when sandbox off', () => {
@@ -221,7 +223,7 @@ test('toPowerShellEncodedCommand includes model_reasoning_effort override when e
     'high',
   );
   const decoded = decodeEncodedCommand(encoded);
-  assert.ok(decoded.includes('model_reasoning_effort="high"'));
+  assert.ok(decoded.includes(String.raw`'model_reasoning_effort=\"high\"'`));
   assert.ok(decoded.includes('features.fast_mode=true'));
   assert.ok(decoded.includes("'--model' 'gpt-5.5'"));
 });

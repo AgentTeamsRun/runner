@@ -6,6 +6,7 @@ import {
   resolveExecutablePathsWithPreferenceAsync,
   resolveExecutablePathWithPreference,
   runProbeCommand,
+  runExecutableSync,
 } from './executable.js';
 
 test('resolveExecutablePath falls back to npm global bin on Windows', () => {
@@ -152,6 +153,91 @@ test('resolveExecutablePath reports known install paths when claude is absent', 
       }),
     /Checked PATH, npm global bin, and known app install paths/u,
   );
+});
+
+test('resolveExecutablePath falls back to the Claude Code native install bin on Windows', () => {
+  // 네이티브 설치기는 %USERPROFILE%\.local\bin에 claude.exe를 두지만 PATH를 넓혀 주지 않는다.
+  const resolved = resolveExecutablePath('claude', {
+    env: {
+      PATHEXT: '.COM;.EXE;.BAT;.CMD',
+      USERPROFILE: 'C:\\Users\\justin',
+    },
+    platform: () => 'win32',
+    execFileSync: (() => {
+      throw new Error('not found');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      /^C:[/\\]Users[/\\]justin[/\\]\.local[/\\]bin[/\\]claude\.exe$/u.test(
+        path,
+      )) as typeof import('node:fs').existsSync,
+  });
+
+  assert.match(resolved, /^C:[/\\]Users[/\\]justin[/\\]\.local[/\\]bin[/\\]claude\.exe$/u);
+});
+
+test('resolveExecutablePath accepts an explicit executable path on Windows without asking where', () => {
+  // `where`는 디렉터리가 포함된 이름을 패턴 오류로 거부하므로 경로 지정은 파일 존재로 판정해야 한다.
+  const deps = {
+    env: { PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+    platform: () => 'win32' as const,
+    execFileSync: (() => {
+      throw new Error('where must not be needed for an explicit path');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      ['C:\\tools\\opencode.exe', 'C:\\tools\\shim', 'C:\\tools\\shim.cmd'].includes(
+        path,
+      )) as typeof import('node:fs').existsSync,
+  };
+
+  assert.equal(resolveExecutablePath('C:\\tools\\opencode.exe', deps), 'C:\\tools\\opencode.exe');
+  assert.equal(resolveExecutablePath('C:\\tools\\opencode', deps), 'C:\\tools\\opencode.exe');
+  // 확장자 없는 POSIX shim보다 실행 가능한 .cmd를 고른다.
+  assert.equal(resolveExecutablePath('C:\\tools\\shim', deps), 'C:\\tools\\shim.cmd');
+});
+
+test('resolveExecutablePath rejects an explicit Windows path that only has an extensionless file', () => {
+  // PowerShell `&`는 확장자 없는 파일을 실행하지 않고 0으로 끝나므로, 해석 단계에서 명확히 실패해야 한다.
+  assert.throws(
+    () =>
+      resolveExecutablePath('C:\\tools\\posix-shim', {
+        env: { PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+        platform: () => 'win32',
+        execFileSync: (() => {
+          throw new Error('not found');
+        }) as unknown as typeof import('node:child_process').execFileSync,
+        existsSync: ((path: string) => path === 'C:\\tools\\posix-shim') as typeof import('node:fs').existsSync,
+        npmGlobalPrefix: null,
+      }),
+    /Cannot find 'C:\\tools\\posix-shim' executable/u,
+  );
+});
+
+test('resolveExecutablePathsWithPreferenceAsync accepts the same explicit Windows path as the sync resolver', async () => {
+  const candidates = await resolveExecutablePathsWithPreferenceAsync('C:\\tools\\opencode.exe', [], {
+    env: { PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+    platform: () => 'win32',
+    execFileAsync: (async () => {
+      throw new Error('where must not be needed for an explicit path');
+    }) as unknown as NonNullable<Parameters<typeof resolveExecutablePathsWithPreferenceAsync>[2]>['execFileAsync'],
+    existsSync: ((path: string) => path === 'C:\\tools\\opencode.exe') as typeof import('node:fs').existsSync,
+    npmGlobalPrefix: null,
+  });
+
+  assert.deepEqual(candidates, ['C:\\tools\\opencode.exe']);
+});
+
+test('resolveExecutablePath prefers claude.exe over an extensionless claude in the Windows install bin', () => {
+  const resolved = resolveExecutablePath('claude', {
+    env: { PATHEXT: '.COM;.EXE;.BAT;.CMD', USERPROFILE: 'C:\\Users\\justin' },
+    platform: () => 'win32',
+    execFileSync: (() => {
+      throw new Error('not found');
+    }) as unknown as typeof import('node:child_process').execFileSync,
+    existsSync: ((path: string) =>
+      /[/\\]\.local[/\\]bin[/\\]claude(?:\.exe)?$/u.test(path)) as typeof import('node:fs').existsSync,
+  });
+
+  assert.match(resolved, /[/\\]\.local[/\\]bin[/\\]claude\.exe$/u);
 });
 
 test('resolveExecutablePath falls back to the Kimi install bin on Windows', () => {
@@ -458,6 +544,13 @@ test('buildPowerShellCommand preserves multiline arguments and escapes single qu
   assert.equal(command, "& 'C:\\Users\\rlaru\\AppData\\Roaming\\npm\\opencode.cmd' 'run' 'line 1\nline ''2'''");
 });
 
+test('buildPowerShellCommand pre-escapes embedded double quotes so PowerShell 5.1 does not drop them', () => {
+  assert.equal(
+    buildPowerShellCommand('C:\\bin\\tool.exe', ['--json', '{"k":true}']),
+    String.raw`& 'C:\bin\tool.exe' '--json' '{\"k\":true}'`,
+  );
+});
+
 // `grok`은 무관한 npm 패키지(@vibe-kit/grok-cli)도 설치하는 이름이다. 기본 해석 순서
 // (PATH → npm global bin → 알려진 설치 경로)를 그대로 두면 서드파티가 이기고, 그 CLI에는
 // --output-format/--permission-mode가 없어 러너가 조용히 오작동한다.
@@ -612,4 +705,13 @@ test('runProbeCommand executes command directly on non-Windows', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.file, '/usr/local/bin/agent');
   assert.deepEqual(calls[0]?.args, ['--help']);
+});
+test('runExecutableSync bounds a process that does not finish before the execution deadline', () => {
+  const started = Date.now();
+  assert.throws(
+    () =>
+      runExecutableSync(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], { timeout: 30, killSignal: 'SIGKILL' }),
+    { code: 'ETIMEDOUT' },
+  );
+  assert.ok(Date.now() - started < 800);
 });

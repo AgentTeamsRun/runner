@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -12,6 +13,11 @@ import { createOmpStreamConsumer } from './omp-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import { createTokenUsageCollector } from './token-usage.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import {
+  POWERSHELL_RUNNER_PREAMBLE,
+  toPowerShellCallTarget,
+  toPowerShellNativeArgLiteral,
+} from './windows-prompt-file.js';
 import { buildRunnerChildEnv } from './session-env.js';
 
 const OUTPUT_PREVIEW_MAX = 400;
@@ -69,8 +75,6 @@ export const buildOmpArgs = (
 
 export const getOmpExecutablePreference = (isWindows: boolean): string[] => (isWindows ? ['omp.exe', 'omp'] : ['omp']);
 
-const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
 export const toOmpPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
   promptFilePath: string,
@@ -79,16 +83,11 @@ export const toOmpPowerShellEncodedCommand = (
   effort?: string | null,
 ): string => {
   const argSegment = buildOmpArgs(promptFilePath, cwd, model, effort)
-    .map((arg) => ` ${toPowerShellLiteral(arg)}`)
+    .map((arg) => ` ${toPowerShellNativeArgLiteral(arg)}`)
     .join('');
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
-    `& ${toPowerShellLiteral(resolvedExecutablePath)}${argSegment}`,
+    ...POWERSHELL_RUNNER_PREAMBLE,
+    `& ${toPowerShellCallTarget(resolvedExecutablePath)}${argSegment}`,
     'exit $LASTEXITCODE',
   ].join('\r\n');
 
@@ -290,8 +289,11 @@ export class OmpRunner implements Runner {
       { cwd, onEvent: usageCollector.acceptEvent, onDropped: usageCollector.markDropped },
     );
 
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       const text = stdoutStripper.push(rawOutput);
       if (text.length === 0) {
         return;
@@ -303,7 +305,7 @@ export class OmpRunner implements Runner {
       logger.info('Runner stdout', { triggerId: opts.triggerId, pid: child.pid, output: toOutputPreview(text) });
     });
     child.stderr?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : String(chunk);
       const output = toOutputPreview(stderrStripper.push(rawOutput));
       if (output.length > 0) {
         lastErrorOutput = output;

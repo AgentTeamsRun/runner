@@ -32,6 +32,38 @@ const parseDate = (value: string): Date | null => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+// A globally installed runner is `node …\node_modules\@agentteams\runner\dist\index.js start`
+// behind the `agentrunner` shim; a source checkout runs `daemon\dist\index.js`.
+const AGENT_RUNNER_COMMAND_LINE = /agentrunner|@agentteams[\\/]runner[\\/]|[\\/]daemon[\\/]dist[\\/]index\.js/iu;
+
+/**
+ * Whether a live Windows process is an AgentRunner, judged by its command line.
+ * This is the fallback identity check for a PID record that carries no start
+ * time to compare (a runner that predates instance identity): without it, a
+ * forced stop would have to trust a bare PID that Windows may have reused.
+ * False whenever the command line cannot be read — unknown is not confirmed.
+ */
+export const isAgentRunnerProcess = (pid: number, deps: ProcessStartTimeDeps = {}): boolean => {
+  const run = (deps.execFileSync ?? execFileSync) as ExecFileSyncFn;
+
+  try {
+    const output = run(
+      getWindowsPowerShellPath(),
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue; ` +
+          `if ($p) { $p.CommandLine }`,
+      ],
+      { encoding: 'utf8', windowsHide: true, timeout: startTimeProbeTimeoutMs, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return AGENT_RUNNER_COMMAND_LINE.test(String(output));
+  } catch {
+    return false;
+  }
+};
+
 /**
  * The OS-reported creation time of a live process, or null when it cannot be
  * read. Callers must treat null as "unverifiable" rather than "mismatch": a

@@ -17,7 +17,7 @@ import type { RunnerType } from '@agentteams/core-constants';
 
 type TriggerHandlerFactory = (
   onAuthPathDiscovered: (authPath: string) => void,
-) => (trigger: DaemonTrigger) => Promise<void>;
+) => (trigger: DaemonTrigger, signal?: AbortSignal) => Promise<void>;
 
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CONVENTION_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -79,6 +79,12 @@ type PollingDependencies = {
   powerSaveBlocker?: PowerSaveBlocker;
   probeInstalledEngines?: typeof probeInstalledEngines;
   enumerateModels?: typeof enumerateModels;
+  shutdownTimeoutMs?: number;
+  /**
+   * 정상 종료 루틴이 준비되면 한 번 호출된다. 신호로 종료 핸들러를 깨울 수 없는 Windows에서
+   * 종료 채널이 SIGTERM과 같은 루틴을 실행할 수 있게 한다.
+   */
+  onShutdownAvailable?: (shutdown: () => Promise<void>) => void;
 };
 
 export const startPolling = async (
@@ -113,6 +119,9 @@ export const startPolling = async (
   const powerSaveBlocker =
     dependencies.powerSaveBlocker ?? createPowerSaveBlocker({ enabled: config.preventSleepWhileBusy });
   let isPolling = false;
+  let stopped = false;
+  const shutdownController = new AbortController();
+  const activeExecutions = new Set<Promise<void>>();
 
   const knownAuthPaths = new Set<string>(loadPersistedAuthPaths());
   let lastCleanupAt = 0;
@@ -390,6 +399,7 @@ export const startPolling = async (
       // snapshot 1회 조회로 가져온다. 실패 시 아래 catch에서 polling cycle 전체가 실패
       // 처리되어 명확한 로그를 남긴다(조용히 pending 확인만 생략하지 않는다).
       const pollState = await client.fetchPollState();
+      if (stopped) return 'IDLE';
 
       hadWork =
         pollState.data.orphanedCancelRequestedTriggerIds.length > 0 ||
@@ -407,7 +417,9 @@ export const startPolling = async (
       // 현재 러너가 살아 있는 상태에서 다음 폴링이 빠르게 재시도한다.
       if (pollState.meta?.restartRequested) {
         const restartResult = await performRestart({
-          processExit: exitProcess,
+          processExit: (code) => {
+            void shutdown(code);
+          },
           acknowledgeRestart: () => client.ackRestartRequest(),
           config,
         });
@@ -439,6 +451,7 @@ export const startPolling = async (
       }
 
       const claim = await client.claimTrigger(trigger.id);
+      if (stopped) return 'ACTIVE';
       if (claim.conflict) {
         logger.info('Trigger already claimed by another daemon', { triggerId: trigger.id });
         return 'ACTIVE';
@@ -449,12 +462,18 @@ export const startPolling = async (
         return 'ACTIVE';
       }
 
-      void onTrigger(trigger).catch((error) => {
-        logger.error('Trigger handler execution failed', {
-          triggerId: trigger.id,
-          error: error instanceof Error ? error.message : String(error),
+      const execution = Promise.resolve()
+        .then(() => onTrigger(trigger, shutdownController.signal))
+        .catch((error) => {
+          logger.error('Trigger handler execution failed', {
+            triggerId: trigger.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(() => {
+          activeExecutions.delete(execution);
         });
-      });
+      activeExecutions.add(execution);
       return 'ACTIVE';
     } catch (error) {
       logger.error('Polling cycle failed', {
@@ -468,7 +487,6 @@ export const startPolling = async (
 
   // idle 적응형 백오프: 연속 idle cycle마다 다음 폴 간격을 선형 증가시키고
   // (base × (1 + idleStreak × 0.5), 상한 clamp), 활동이 감지되면 즉시 base로 리셋한다.
-  let stopped = false;
   let idleStreak = 0;
   let pendingPollTimer: NodeJS.Timeout | null = null;
 
@@ -511,22 +529,56 @@ export const startPolling = async (
     runnerCmd: config.runnerCmd,
   });
 
-  // 부트스트랩: 즉시 1회 폴 후 자기예약 루프가 다음 폴을 이어간다.
-  await runPollCycle();
-
-  const shutdown = () => {
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdown = (code = 0): Promise<void> => {
+    if (stopped) return shutdownPromise ?? Promise.resolve();
     stopped = true;
     if (pendingPollTimer !== null) {
       unregisterTimeout(pendingPollTimer);
       pendingPollTimer = null;
     }
-    releasePowerSaveBlocker();
-    logger.info('Daemon stopped');
-    exitProcess(0);
+    shutdownController.abort(new Error('Daemon is shutting down'));
+    const finish = () => {
+      releasePowerSaveBlocker();
+      logger.info('Daemon stopped');
+      exitProcess(code);
+    };
+    if (activeExecutions.size === 0) {
+      finish();
+      return Promise.resolve();
+    }
+    // 엔진의 SIGKILL 유예(10초)와 stdio 종료 감시(5초)를 포함하되, 보고 실패로 영원히 기다리지 않는다.
+    shutdownPromise = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled([...activeExecutions]),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(() => {
+              logger.warn('Daemon shutdown deadline reached', { activeExecutions: activeExecutions.size });
+              resolve();
+            }, dependencies.shutdownTimeoutMs ?? 20_000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+      finish();
+    })();
+    return shutdownPromise;
   };
 
-  registerSignal('SIGINT', shutdown);
-  registerSignal('SIGTERM', shutdown);
+  dependencies.onShutdownAvailable?.(() => shutdown());
+
+  registerSignal('SIGINT', () => {
+    void shutdown();
+  });
+  registerSignal('SIGTERM', () => {
+    void shutdown();
+  });
+
+  // 첫 네트워크 요청 중에도 종료 신호를 처리할 수 있어야 한다.
+  await runPollCycle();
 
   await keepAlive();
   // keepAlive가 resolve되는 정상 종료 경로(주로 테스트)에서도 release를 보장한다. release는 idempotent하다.

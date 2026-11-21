@@ -20,6 +20,52 @@ $requestLog = Join-Path $workDir 'api-requests.log'
 $api = $null
 $previousPollingInterval = $null
 $pollingIntervalOverridden = $false
+$previousRunnerCmd = $null
+$runnerCmdOverridden = $false
+
+# A stop or restart is only proven correct while a run is active: the runner has
+# to cancel it, report CANCELLED and leave no engine behind. The fake engine
+# below stands in for a real CLI and records its own PID so its survival can be
+# checked independently of anything the runner says.
+$runWorkDir = Join-Path $workDir 'run'
+$enginePrefix = Join-Path $workDir 'engine'
+$enginePidFile = Join-Path $workDir 'engine.pid'
+$shutdownReason = 'Runner stopped because AgentRunner shut down or restarted'
+
+function Start-ActiveRun {
+  param([string]$TriggerId)
+
+  Remove-Item -LiteralPath $enginePidFile -Force -ErrorAction SilentlyContinue
+  Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/__test/offer-trigger/$TriggerId" | Out-Null
+  $deadline = (Get-Date).AddSeconds(90)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-Path -LiteralPath $enginePidFile) {
+      $enginePid = [int](Get-Content -LiteralPath $enginePidFile -Raw).Trim()
+      if (Get-Process -Id $enginePid -ErrorAction SilentlyContinue) { return $enginePid }
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  throw "the fake engine for $TriggerId did not start within 90s"
+}
+
+function Assert-RunCancelled {
+  param([string]$Description, [string]$TriggerId, [int]$EnginePid)
+
+  $deadline = (Get-Date).AddSeconds(30)
+  $engineAlive = $true
+  $reported = $false
+  while ((Get-Date) -lt $deadline) {
+    $engineAlive = $null -ne (Get-Process -Id $EnginePid -ErrorAction SilentlyContinue)
+    $reported = @(
+      Select-String -Path $requestLog -SimpleMatch "STATUS $TriggerId CANCELLED $shutdownReason" -ErrorAction SilentlyContinue
+    ).Count -gt 0
+    if (-not $engineAlive -and $reported) { return }
+    Start-Sleep -Milliseconds 500
+  }
+  $statusLines = (@(Select-String -Path $requestLog -SimpleMatch "STATUS $TriggerId" -ErrorAction SilentlyContinue) |
+      ForEach-Object { $_.Line }) -join '; '
+  throw "$Description : engine pid $EnginePid alive=$engineAlive; CANCELLED reported=$reported; status journal: [$statusLines]"
+}
 
 # The scheduled task inherits the user's registry environment, not this shell's,
 # so the poll interval has to be set at user scope to reach the task's runner.
@@ -82,11 +128,53 @@ try {
     & npm.cmd install --global --prefix $prefix $tarball
   } | Out-Null
 
+  # The runner refuses to start a run outside a git repository or an AgentTeams project.
+  New-Item -ItemType Directory -Path (Join-Path $runWorkDir '.agentteams') -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $runWorkDir '.agentteams\config.json') -Value '{}' -Encoding ascii
+
+  # Installed the way npm installs a CLI (a `.cmd` shim in front of a node script),
+  # because that is the shape the runner has to launch and tear down in the field.
+  $enginePackage = Join-Path $enginePrefix 'node_modules\fake-engine'
+  New-Item -ItemType Directory -Path $enginePackage -Force | Out-Null
+  $enginePidFileLiteral = $enginePidFile | ConvertTo-Json
+  Set-Content -LiteralPath (Join-Path $enginePackage 'main.js') -Encoding utf8 -Value @"
+if (process.argv[2] !== 'run') { console.log('fake-engine 1.0.0'); process.exit(0); }
+require('node:fs').writeFileSync($enginePidFileLiteral, String(process.pid));
+console.log(JSON.stringify({ type: 'text', text: 'working' }));
+setInterval(() => {}, 1000);
+"@
+  $engineShim = Join-Path $enginePrefix 'fake-engine.cmd'
+  Set-Content -LiteralPath $engineShim -Encoding ascii -Value @'
+@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST "%dp0%\node.exe" (
+  SET "_prog=%dp0%\node.exe"
+) ELSE (
+  SET "_prog=node"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_modules\fake-engine\main.js" %*
+'@
+
   $api = Start-Process node -ArgumentList @(
     (Join-Path $repositoryRoot 'daemon/native/win/fake-api.mjs'),
     "$ApiPort",
-    $requestLog
+    $requestLog,
+    $runWorkDir
   ) -PassThru -WindowStyle Hidden
+  # Same reason as the poll interval below: the task's runner reads the user's
+  # registry environment, so the engine override has to live there too.
+  $previousRunnerCmd = [Environment]::GetEnvironmentVariable('RUNNER_CMD', 'User')
+  $runnerCmdOverridden = $true
+  [Environment]::SetEnvironmentVariable('RUNNER_CMD', $engineShim, 'User')
   $env:PATH = "$(Join-Path $prefix 'bin');$prefix;$env:PATH"
   # User scope is a persistent registry value, so a developer running this
   # locally must get their own setting back — not silently lose it.
@@ -132,6 +220,10 @@ try {
     Select-String -Path $requestLog -Pattern '/api/daemon-triggers/poll-state' -ErrorAction SilentlyContinue
   ).Count
 
+  # Restart through the registered task while a run is active. `schtasks /End`
+  # alone kills the tree without giving the runner a chance to report, so the
+  # run would stay "active" on the server forever.
+  $restartEnginePid = Start-ActiveRun -TriggerId 'run-before-restart'
   Invoke-NativeCommand -Description 'agentrunner restart' -Command {
     & agentrunner.cmd restart
   } | Out-Null
@@ -139,6 +231,11 @@ try {
   # Wait-DaemonInstance throws unless a *different* ready instance shows up.
   Wait-DaemonInstance `
     -Description 'restart replacement' -Path $pidFile -NotInstanceId $firstInstance.instanceId | Out-Null
+  Assert-RunCancelled `
+    -Description 'restart through the registered task' -TriggerId 'run-before-restart' -EnginePid $restartEnginePid
+  if (Get-Process -Id ([int]$firstInstance.pid) -ErrorAction SilentlyContinue | Where-Object ProcessName -eq 'node') {
+    throw "the pre-restart runner (pid $($firstInstance.pid)) is still alive after the restart"
+  }
 
   # Independent evidence that the server kept receiving scheduled polls *after*
   # the restart, read from the fake API's own journal rather than from the runner.
@@ -194,18 +291,37 @@ try {
   Invoke-NativeCommand -Description 'scheduled task re-run after /End check' -Command {
     & schtasks.exe /Run /TN 'AgentRunner'
   } | Out-Null
-  Wait-DaemonInstance `
-    -Description 'post-End replacement' -Path $pidFile -NotInstanceId $preEndInstance.instanceId | Out-Null
+  $preStopInstance = Wait-DaemonInstance `
+    -Description 'post-End replacement' -Path $pidFile -NotInstanceId $preEndInstance.instanceId
 
-  foreach ($lifecycleCommand in @('status', 'stop', 'uninstall')) {
+  # `agentrunner stop` on a task-owned runner, again with a run in flight.
+  $stopEnginePid = Start-ActiveRun -TriggerId 'run-before-stop'
+  foreach ($lifecycleCommand in @('status', 'stop')) {
     Invoke-NativeCommand -Description "agentrunner $lifecycleCommand" -Command {
       & agentrunner.cmd $lifecycleCommand
     } | Out-Null
   }
+  Assert-RunCancelled -Description 'agentrunner stop' -TriggerId 'run-before-stop' -EnginePid $stopEnginePid
+  if (Get-Process -Id ([int]$preStopInstance.pid) -ErrorAction SilentlyContinue | Where-Object ProcessName -eq 'node') {
+    throw "agentrunner stop returned while the runner (pid $($preStopInstance.pid)) was still alive"
+  }
+  # A graceful stop exits 0, so the task's RestartOnFailure must not bring the
+  # runner back. A killed runner exits 1 and would be restarted within a minute.
+  Start-Sleep -Seconds 75
+  if (Test-Path -LiteralPath $pidFile) {
+    throw "a runner came back after agentrunner stop: $(Get-Content -LiteralPath $pidFile -Raw)"
+  }
+
+  Invoke-NativeCommand -Description 'agentrunner uninstall' -Command {
+    & agentrunner.cmd uninstall
+  } | Out-Null
   Write-Host "Windows package and scheduled-task lifecycle verification passed (task priority $taskPriority, $pollCount polls observed after the restart)."
 } finally {
   if ($pollingIntervalOverridden) {
     [Environment]::SetEnvironmentVariable('POLLING_INTERVAL_MS', $previousPollingInterval, 'User')
+  }
+  if ($runnerCmdOverridden) {
+    [Environment]::SetEnvironmentVariable('RUNNER_CMD', $previousRunnerCmd, 'User')
   }
   if ($api) { Stop-Process -Id $api.Id -Force -ErrorAction SilentlyContinue }
   Invoke-NativeCommand -Description 'scheduled task cleanup' -AllowedExitCodes @(0, 1) -Command {

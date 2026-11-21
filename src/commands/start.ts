@@ -1,8 +1,11 @@
+import { randomUUID } from 'node:crypto';
+import { platform as getPlatform } from 'node:os';
 import { resolveRuntimeConfig } from '../config.js';
 import { startPolling } from '../poller.js';
 import { DaemonApiClient } from '../api-client.js';
 import { createTriggerHandler } from '../handlers/trigger-handler.js';
-import { writePidFile, removePidFile, markDaemonReady } from '../pid.js';
+import { writePidFile, removePidFile, removeOwnPidFileSync, markDaemonReady } from '../pid.js';
+import { listenForShutdownRequests } from '../shutdown-channel.js';
 import { logger } from '../logger.js';
 import { refreshWindowsPathFromRegistry } from '../windows-path.js';
 import { activatePreparedRestartHandoff } from '../restart-handoff.js';
@@ -47,7 +50,12 @@ type StartCommandDeps = {
   processOn?: (event: 'SIGINT' | 'SIGTERM' | 'exit', listener: () => void) => void;
   resolveRuntimeConfig?: typeof resolveRuntimeConfig;
   startPolling?: typeof startPolling;
-  logger?: Pick<typeof logger, 'info'>;
+  platform?: () => NodeJS.Platform;
+  listenForShutdownRequests?: typeof listenForShutdownRequests;
+  removeOwnPidFileSync?: typeof removeOwnPidFileSync;
+  processExit?: (code: number) => void;
+  processPid?: number;
+  logger?: Pick<typeof logger, 'info' | 'warn'>;
 };
 
 export const runStartCommand = async (deps: StartCommandDeps = {}): Promise<void> => {
@@ -58,7 +66,38 @@ export const runStartCommand = async (deps: StartCommandDeps = {}): Promise<void
   if (activatedHandoff) {
     resolvedLogger.info('Replacement runner activated after restart handoff');
   }
-  await (deps.writePidFile ?? writePidFile)();
+
+  // Windows에는 다른 프로세스의 종료 핸들러를 깨우는 신호가 없으므로, 인스턴스 전용 종료 채널을 연다.
+  // PID 기록보다 먼저 열어야 한다: 기록을 읽은 `stop`이 아직 없는 수신부에 요청하는 틈이 생기지 않는다.
+  const isWindows = (deps.platform ?? getPlatform)() === 'win32';
+  const instanceId = randomUUID();
+  let controlToken: string | null = null;
+  let shutdownPoller: (() => Promise<void>) | null = null;
+  if (isWindows) {
+    const token = randomUUID();
+    try {
+      await (deps.listenForShutdownRequests ?? listenForShutdownRequests)(
+        { pid: deps.processPid ?? process.pid, instanceId, controlToken: token },
+        () => {
+          resolvedLogger.info('Shutdown requested through the control channel');
+          if (shutdownPoller) {
+            void shutdownPoller();
+            return;
+          }
+          // 아직 폴링을 시작하지 않았다: 취소할 실행이 없으므로 바로 끝낸다.
+          (deps.processExit ?? ((code: number) => process.exit(code)))(0);
+        },
+      );
+      controlToken = token;
+    } catch (error) {
+      // 채널 없이도 러너는 동작한다. 기록에 토큰을 남기지 않아 `stop`이 채널 없는 러너로 다루게 한다.
+      resolvedLogger.warn('Could not open the shutdown control channel; stop will fall back to termination', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  await (deps.writePidFile ?? writePidFile)(isWindows ? { instanceId, controlToken } : undefined);
 
   const cleanup = async () => {
     await (deps.removePidFile ?? removePidFile)();
@@ -69,6 +108,10 @@ export const runStartCommand = async (deps: StartCommandDeps = {}): Promise<void
   processOn('SIGTERM', () => void cleanup());
   processOn('exit', () => {
     // Synchronous best-effort — PID file may already be removed by signal handler.
+    // Windows에서는 신호 핸들러가 돌지 않으므로 여기서 자기 기록만 지운다(교체 러너의 기록은 건드리지 않는다).
+    if (isWindows) {
+      (deps.removeOwnPidFileSync ?? removeOwnPidFileSync)(instanceId);
+    }
   });
 
   const config = await (deps.resolveRuntimeConfig ?? resolveRuntimeConfig)();
@@ -87,7 +130,15 @@ export const runStartCommand = async (deps: StartCommandDeps = {}): Promise<void
   // are slowest under exactly the CPU pressure the restart timeout budgets for.
   await (deps.migrateWindowsAutostartOnBoot ?? migrateWindowsAutostartOnBoot)();
 
-  await (deps.startPolling ?? startPolling)(config, (onAuthPathDiscovered) =>
-    createTriggerHandler({ config, client, onAuthPathDiscovered }),
+  await (deps.startPolling ?? startPolling)(
+    config,
+    (onAuthPathDiscovered) => createTriggerHandler({ config, client, onAuthPathDiscovered }),
+    isWindows
+      ? {
+          onShutdownAvailable: (shutdown) => {
+            shutdownPoller = shutdown;
+          },
+        }
+      : undefined,
   );
 };

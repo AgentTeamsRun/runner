@@ -10,6 +10,7 @@ import {
   scheduleWindowsTaskRestart,
   WINDOWS_TASK_MIGRATION_DESCRIPTIONS,
 } from './autostart.js';
+import { stopWindowsDaemonInstance } from './daemon-stop.js';
 import { logger } from './logger.js';
 import {
   getDaemonStatus,
@@ -24,6 +25,7 @@ import {
 import { spawnExecutable } from './executable.js';
 import {
   acknowledgePreparedRestartHandoff,
+  cancelPreparedRestartHandoff,
   buildRestartHandoffEnv,
   getRestartHandoffPath,
   waitForPreparedRestartHandoff,
@@ -59,14 +61,21 @@ type DetachedChildProcess = {
   pid?: number;
   unref: () => void;
 };
+type DetachedDaemonSpawner = (
+  launch?: RestartHandoffLaunch,
+) => DetachedChildProcess | void | Promise<DetachedChildProcess | void>;
 
 type RestartDeps = {
   getDaemonStatus?: () => Promise<RunningDaemonStatus>;
   getAutostartStatus?: typeof getAutostartStatus;
   restartAutostartService?: typeof restartAutostartService;
-  spawnDetachedDaemon?: (launch?: RestartHandoffLaunch) => DetachedChildProcess | void;
+  spawnDetachedDaemon?: DetachedDaemonSpawner;
+  verifyRecordedDaemonInstance?: typeof verifyRecordedDaemonInstance;
+  removePidFile?: () => Promise<void>;
   kill?: typeof process.kill;
   sleep?: (milliseconds: number) => Promise<void>;
+  platform?: typeof getPlatform;
+  stopWindowsDaemonInstance?: typeof stopWindowsDaemonInstance;
   logger?: Pick<typeof logger, 'info'>;
 };
 
@@ -76,9 +85,10 @@ type ExecuteRestartDeps = {
   registerWindowsTask?: typeof registerWindowsTask;
   getWindowsTaskMigrationReason?: typeof getWindowsTaskMigrationReason;
   prepareDetachedDaemon?: () => Promise<RestartHandoffPreparation>;
-  spawnDetachedDaemon?: (launch?: RestartHandoffLaunch) => DetachedChildProcess | void;
+  spawnDetachedDaemon?: DetachedDaemonSpawner;
   acknowledgeRestart?: () => Promise<void>;
   acknowledgePreparedHandoff?: typeof acknowledgePreparedRestartHandoff;
+  cancelPreparedHandoff?: typeof cancelPreparedRestartHandoff;
   config?: { daemonToken: string; apiUrl: string };
   platform?: typeof getPlatform;
   processExit?: (code: number) => void;
@@ -174,6 +184,8 @@ type TerminateInstanceDeps = {
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
   timeoutMs?: number;
+  platform?: typeof getPlatform;
+  stopWindowsDaemonInstance?: typeof stopWindowsDaemonInstance;
   logger?: Pick<typeof logger, 'warn'>;
 };
 
@@ -196,6 +208,20 @@ export const terminateDaemonInstance = async (
   const resolvedVerify = deps.verifyRecordedDaemonInstance ?? ((pid: number) => verifyRecordedDaemonInstance(pid));
   const resolvedRemovePidFile = deps.removePidFile ?? (() => removePidFile());
   const resolvedLogger = deps.logger ?? logger;
+
+  if ((deps.platform ?? getPlatform)() === 'win32') {
+    // 신원 확인(mismatch 폐기 포함)과 정상 종료 → 강제 종료 순서는 Windows 공용 경로가 맡는다.
+    await (deps.stopWindowsDaemonInstance ?? stopWindowsDaemonInstance)(instance.pid, {
+      verifyRecordedDaemonInstance: resolvedVerify,
+      removePidFile: resolvedRemovePidFile,
+      isProcessRunning: deps.isProcessRunning,
+      sleep: deps.sleep,
+      now: deps.now,
+      forceTimeoutMs: deps.timeoutMs,
+      logger: resolvedLogger,
+    });
+    return;
+  }
 
   if ((await resolvedVerify(instance.pid)) === 'mismatch') {
     resolvedLogger.warn(
@@ -226,12 +252,12 @@ export const terminateDaemonInstance = async (
   throw new Error(`Timed out waiting for AgentRunner process ${instance.pid} to stop.`);
 };
 
-export const spawnDetachedDaemon = (launch?: RestartHandoffLaunch): DetachedChildProcess | void => {
+export const spawnDetachedDaemon = async (launch?: RestartHandoffLaunch): Promise<DetachedChildProcess | void> => {
   const env = launch ? buildRestartHandoffEnv(launch) : process.env;
   // On Windows, use the dedicated hidden PowerShell launcher so the `.cmd`
   // shim never creates a visible console host.
   if (getPlatform() === 'win32') {
-    launchWindowsHiddenDaemon({ env });
+    await launchWindowsHiddenDaemon({ env });
     return;
   }
 
@@ -240,13 +266,21 @@ export const spawnDetachedDaemon = (launch?: RestartHandoffLaunch): DetachedChil
     stdio: 'ignore',
     env,
     cwd: process.cwd(),
+    windowsHide: true,
   });
-  child.unref();
+  // spawn 실패는 비동기 error 이벤트이므로 호출자가 준비 실패로 처리할 때까지 관찰한다.
+  await new Promise<void>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
   return child;
 };
 
 type PrepareDetachedRestartDeps = {
-  spawnDetachedDaemon?: (launch: RestartHandoffLaunch) => DetachedChildProcess | void;
+  spawnDetachedDaemon?: DetachedDaemonSpawner;
   waitForPreparedRestartHandoff?: typeof waitForPreparedRestartHandoff;
   unlink?: (path: string) => Promise<void>;
   handoffId?: string;
@@ -270,7 +304,7 @@ export const prepareDetachedRestartHandoff = async (
 
   let child: DetachedChildProcess | void;
   try {
-    child = (deps.spawnDetachedDaemon ?? spawnDetachedDaemon)(launch);
+    child = await (deps.spawnDetachedDaemon ?? spawnDetachedDaemon)(launch);
   } catch (error) {
     return {
       status: 'retryable-failure',
@@ -310,6 +344,7 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
   const resolvedSpawnDetachedDaemon = deps.spawnDetachedDaemon ?? spawnDetachedDaemon;
   const acknowledgeRestart = deps.acknowledgeRestart ?? (async () => undefined);
   const acknowledgePreparedHandoff = deps.acknowledgePreparedHandoff ?? acknowledgePreparedRestartHandoff;
+  const cancelPreparedHandoff = deps.cancelPreparedHandoff ?? cancelPreparedRestartHandoff;
   const resolvedPlatform = (deps.platform ?? getPlatform)();
   const exitProcess = deps.processExit ?? ((code: number) => process.exit(code));
   const resolvedLogger = deps.logger ?? logger;
@@ -385,20 +420,6 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
       return preparation;
     }
 
-    try {
-      await acknowledgeRestart();
-    } catch (error) {
-      return {
-        status: 'retryable-failure',
-        handoffId: preparation.handoffId,
-        replacementReady: false,
-        acknowledged: false,
-        retryableFailure: true,
-        reason: 'acknowledgement-failed',
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-
     if (!(await acknowledgePreparedHandoff(preparation))) {
       return {
         status: 'retryable-failure',
@@ -407,7 +428,21 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
         acknowledged: false,
         retryableFailure: true,
         reason: 'replacement-confirmation-failed',
-        error: 'The prepared Windows restart helper was no longer available after acknowledgement.',
+        error: 'The prepared Windows restart helper was no longer available before server acknowledgement.',
+      };
+    }
+    try {
+      await acknowledgeRestart();
+    } catch (error) {
+      await cancelPreparedHandoff(preparation);
+      return {
+        status: 'retryable-failure',
+        handoffId: preparation.handoffId,
+        replacementReady: false,
+        acknowledged: false,
+        retryableFailure: true,
+        reason: 'acknowledgement-failed',
+        error: error instanceof Error ? error.message : String(error),
       };
     }
 
@@ -464,19 +499,6 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
     return preparation;
   }
 
-  try {
-    await acknowledgeRestart();
-  } catch (error) {
-    return {
-      status: 'retryable-failure',
-      handoffId: preparation.handoffId,
-      replacementReady: false,
-      acknowledged: false,
-      retryableFailure: true,
-      reason: 'acknowledgement-failed',
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
   if (!(await acknowledgePreparedHandoff(preparation))) {
     return {
       status: 'retryable-failure',
@@ -485,7 +507,22 @@ export const executeRestartRequest = async (deps: ExecuteRestartDeps = {}): Prom
       acknowledged: false,
       retryableFailure: true,
       reason: 'replacement-confirmation-failed',
-      error: 'The prepared replacement runner was no longer available after acknowledgement.',
+      error: 'The prepared replacement runner was no longer available before server acknowledgement.',
+    };
+  }
+
+  try {
+    await acknowledgeRestart();
+  } catch (error) {
+    await cancelPreparedHandoff(preparation);
+    return {
+      status: 'retryable-failure',
+      handoffId: preparation.handoffId,
+      replacementReady: false,
+      acknowledged: false,
+      retryableFailure: true,
+      reason: 'acknowledgement-failed',
+      error: error instanceof Error ? error.message : String(error),
     };
   }
   exitProcess(0);
@@ -512,7 +549,7 @@ export const restartDaemon = async (deps: RestartDeps = {}): Promise<RestartOutc
   // restart cannot tell a genuine replacement from the previous runner that
   // simply never died — which is exactly how a failed restart reported success.
   const daemonStatus = await resolvedGetDaemonStatus();
-  const previousInstance = toInstanceRef(daemonStatus);
+  let previousInstance = toInstanceRef(daemonStatus);
 
   if (autostartStatus.registered && autostartStatus.platform === 'task-scheduler') {
     // `schtasks /End` owns termination here; signalling the runner ourselves would
@@ -526,6 +563,35 @@ export const restartDaemon = async (deps: RestartDeps = {}): Promise<RestartOutc
   }
 
   if (previousInstance) {
+    const verification = await (deps.verifyRecordedDaemonInstance ?? verifyRecordedDaemonInstance)(
+      previousInstance.pid,
+    );
+    // `unverifiable`(startedAt 없는 구버전 기록, OS 시작 시각 조회 실패)은 살아 있는 러너일 수 있다.
+    // 그때 신호 없이 새 러너를 띄우면 두 러너가 동시에 폴링하므로, `mismatch`만 stale로 본다(pid.ts 계약).
+    if (verification === 'mismatch') {
+      resolvedLogger.info('Discarding a PID record that now belongs to an unrelated process without signalling it', {
+        pid: previousInstance.pid,
+        verification,
+      });
+      await (deps.removePidFile ?? removePidFile)();
+      previousInstance = null;
+    }
+  }
+
+  if (previousInstance && (deps.platform ?? getPlatform)() === 'win32') {
+    // Windows의 SIGTERM은 실행을 취소·보고할 기회를 주지 않는다. 종료 채널로 이전 실행을 마무리하게 한 뒤 교체한다.
+    resolvedLogger.info('Stopping AgentRunner before restart', { pid: previousInstance.pid });
+    await (deps.stopWindowsDaemonInstance ?? stopWindowsDaemonInstance)(previousInstance.pid, {
+      verifyRecordedDaemonInstance: deps.verifyRecordedDaemonInstance
+        ? (pid) => deps.verifyRecordedDaemonInstance!(pid)
+        : undefined,
+      removePidFile: deps.removePidFile,
+    });
+    // 러너는 끝나면서 자기 기록을 지우지만, 강제 종료된 러너는 지우지 못한다. 교체 러너가 쓰기 전에 비운다.
+    if ((await resolvedGetDaemonStatus()).pid === previousInstance.pid) {
+      await (deps.removePidFile ?? removePidFile)();
+    }
+  } else if (previousInstance) {
     resolvedLogger.info('Stopping AgentRunner before restart', { pid: previousInstance.pid });
     await waitForDaemonToStop(previousInstance.pid, {
       getDaemonStatus: resolvedGetDaemonStatus,
@@ -543,6 +609,6 @@ export const restartDaemon = async (deps: RestartDeps = {}): Promise<RestartOutc
   }
 
   resolvedLogger.info('Starting AgentRunner in background without autostart registration');
-  resolvedSpawnDetachedDaemon();
+  await resolvedSpawnDetachedDaemon();
   return { previousInstance };
 };

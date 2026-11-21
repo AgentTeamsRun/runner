@@ -1,4 +1,4 @@
-import { chmodSync, promises as fs } from 'node:fs';
+import { chmodSync, promises as fs, readFileSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -36,6 +36,12 @@ export type DaemonPidRecord = {
   instanceId: string | null;
   startedAt: string | null;
   readyAt: string | null;
+  /**
+   * Secret a stop request must present to this instance's shutdown channel
+   * (Windows only). Null when the instance has no channel: POSIX, a runner that
+   * predates the channel, or one whose channel failed to open.
+   */
+  controlToken: string | null;
 };
 
 type PidFileDeps = {
@@ -49,6 +55,7 @@ type PidFileDeps = {
   processPid?: number;
   now?: () => Date;
   instanceId?: string;
+  controlToken?: string | null;
 };
 
 let currentInstanceId: string | null = null;
@@ -81,11 +88,14 @@ export const parseDaemonPidRecord = (content: string): DaemonPidRecord | null =>
       instanceId: typeof parsed.instanceId === 'string' ? parsed.instanceId : null,
       startedAt: typeof parsed.startedAt === 'string' ? parsed.startedAt : null,
       readyAt: typeof parsed.readyAt === 'string' ? parsed.readyAt : null,
+      controlToken: typeof parsed.controlToken === 'string' ? parsed.controlToken : null,
     };
   }
 
   const pid = Number(trimmed);
-  return Number.isFinite(pid) && pid > 0 ? { pid, instanceId: null, startedAt: null, readyAt: null } : null;
+  return Number.isFinite(pid) && pid > 0
+    ? { pid, instanceId: null, startedAt: null, readyAt: null, controlToken: null }
+    : null;
 };
 
 const readRecord = async (deps: PidFileDeps): Promise<DaemonPidRecord | null> => {
@@ -112,6 +122,7 @@ export const writePidFile = async (deps: PidFileDeps = {}): Promise<void> => {
       instanceId,
       startedAt: (deps.now?.() ?? new Date()).toISOString(),
       readyAt: null,
+      controlToken: deps.controlToken ?? null,
     },
     deps,
   );
@@ -136,10 +147,14 @@ export const markDaemonReady = async (deps: PidFileDeps = {}): Promise<void> => 
       instanceId,
       startedAt: record.startedAt ?? (deps.now?.() ?? new Date()).toISOString(),
       readyAt: (deps.now?.() ?? new Date()).toISOString(),
+      controlToken: record.controlToken,
     },
     deps,
   );
 };
+
+/** The full record, for callers that need more than liveness (the shutdown channel address). */
+export const readDaemonPidRecord = async (deps: PidFileDeps = {}): Promise<DaemonPidRecord | null> => readRecord(deps);
 
 export const readPidFile = async (deps: PidFileDeps = {}): Promise<number | null> => {
   return (await readRecord(deps))?.pid ?? null;
@@ -150,6 +165,21 @@ export const removePidFile = async (deps: PidFileDeps = {}): Promise<void> => {
     await (deps.unlink ?? fs.unlink)(deps.pidFilePath ?? PID_FILE_PATH);
   } catch {
     // File may not exist — that's fine.
+  }
+};
+
+/**
+ * Synchronous, identity-checked removal for the process `exit` handler, where
+ * nothing asynchronous runs. Only the record this instance wrote is removed: a
+ * replacement may already own the file by the time the old runner exits.
+ */
+export const removeOwnPidFileSync = (instanceId: string, pidFilePath: string = PID_FILE_PATH): void => {
+  try {
+    if (parseDaemonPidRecord(readFileSync(pidFilePath, 'utf8'))?.instanceId === instanceId) {
+      unlinkSync(pidFilePath);
+    }
+  } catch {
+    // Already gone, or unreadable — nothing this handler can do about it.
   }
 };
 

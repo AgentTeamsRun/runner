@@ -51,6 +51,7 @@ test('parseDaemonPidRecord accepts the legacy bare PID file', () => {
     instanceId: null,
     startedAt: null,
     readyAt: null,
+    controlToken: null,
   });
 });
 
@@ -72,6 +73,7 @@ test('writePidFile records an instance identity and restricts the file mode', as
     instanceId: 'instance-a',
     startedAt: '1970-01-01T00:00:00.000Z',
     readyAt: null,
+    controlToken: null,
   });
   assert.deepEqual(file.chmodCalls, [0o600]);
   assert.equal(await readPidFile(file.deps), 4321);
@@ -202,5 +204,22 @@ test('verifyRecordedDaemonInstance stays unverifiable when it cannot prove a mis
   assert.equal(
     await verifyRecordedDaemonInstance(12600, { ...legacy.deps, readProcessStartTime: () => new Date(0) }),
     'unverifiable',
+  );
+});
+
+test('the control token survives the readiness stamp and is absent from records that never had one', async () => {
+  const file = createFakePidFile();
+  await writePidFile({ ...file.deps, processPid: 4321, instanceId: 'instance-a', controlToken: 'token-a' });
+  await markDaemonReady({ ...file.deps, processPid: 4321 });
+
+  // 준비 표시가 토큰을 지우면 준비된 러너일수록 정상 종료 요청을 받지 못한다.
+  const ready = parseDaemonPidRecord(file.content!);
+  assert.equal(ready?.controlToken, 'token-a');
+  assert.notEqual(ready?.readyAt, null);
+
+  // 채널을 지원하지 않는 러너가 쓴 기록.
+  assert.equal(
+    parseDaemonPidRecord(JSON.stringify({ pid: 1, instanceId: 'old', startedAt: 'x', readyAt: 'y' }))?.controlToken,
+    null,
   );
 });

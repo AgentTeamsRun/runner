@@ -3,7 +3,8 @@ import { findCursorCliExecutable } from '../runners/cursor-cli-identity.js';
 import { findGrokBuildExecutable } from '../runners/grok-build-identity.js';
 import { findMuseCodeExecutable } from '../runners/muse-code-identity.js';
 import { findOmpExecutable } from '../runners/omp-identity.js';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { platform } from 'node:os';
 import type { RunnerType } from '@agentteams/core-constants';
 import { buildPowerShellCommand, resolveExecutablePathWithPreference } from '../executable.js';
@@ -53,6 +54,8 @@ export type ExecuteModelEnumerationOptions = {
   maxBufferBytes?: number;
   platform?: () => NodeJS.Platform;
   spawn?: typeof spawn;
+  kill?: typeof process.kill;
+  execFileSync?: typeof execFileSync;
 };
 
 export const executeModelEnumerationCommand = (
@@ -84,6 +87,7 @@ export const executeModelEnumerationCommand = (
             },
           )
         : spawnFn(executablePath, args, {
+            detached: true,
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
           });
@@ -91,56 +95,73 @@ export const executeModelEnumerationCommand = (
     let stdout = '';
     let stderr = '';
     let stdoutBytes = 0;
-    let timedOut = false;
-    let killed = false;
+    let settled = false;
+    const decoder = new StringDecoder('utf8');
 
+    const killTree = () => {
+      try {
+        if (os === 'win32' && child.pid) {
+          (options.execFileSync ?? execFileSync)('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
+            stdio: 'ignore',
+            windowsHide: true,
+            timeout: 5_000,
+            killSignal: 'SIGKILL',
+          });
+        } else if (child.pid) {
+          (options.kill ?? process.kill.bind(process))(-child.pid, 'SIGKILL');
+        } else child.kill('SIGKILL');
+      } catch {
+        // 이미 종료됐거나 그룹이 없더라도 직접 자식의 종료를 한 번 더 시도한다.
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // 상속된 pipe의 close는 신뢰할 수 없다. 정착과 stdio 정리를 트리 종료에 함께 묶는다.
+      reject(error);
+      killTree();
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
     const timer = setTimeout(() => {
-      timedOut = true;
-      killed = true;
-      child.kill('SIGKILL');
+      fail(new Error(`Command timed out after ${timeoutMs}ms: ${executablePath} ${args.join(' ')}`));
     }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer | string) => {
-      const str = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-      stdoutBytes += Buffer.byteLength(str);
-      if (stdoutBytes > maxBuffer && !killed) {
-        killed = true;
-        child.kill('SIGKILL');
-        clearTimeout(timer);
-        reject(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
+      if (settled) return;
+      stdoutBytes += Buffer.byteLength(chunk);
+      if (stdoutBytes > maxBuffer) {
+        fail(new Error(`stdout maxBuffer exceeded (${maxBuffer} bytes)`));
         return;
       }
-      stdout += str;
+      stdout += typeof chunk === 'string' ? chunk : decoder.write(chunk);
     });
-
     child.stderr.on('data', (chunk: Buffer | string) => {
+      if (settled) return;
       const str = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-      if (stderr.length < 64 * 1024) {
-        stderr += str.slice(0, 64 * 1024 - stderr.length);
-      }
+      if (stderr.length < 64 * 1024) stderr += str.slice(0, 64 * 1024 - stderr.length);
     });
-
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-
+    child.on('error', fail);
     child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      if (timedOut) {
-        reject(new Error(`Command timed out after ${timeoutMs}ms: ${executablePath} ${args.join(' ')}`));
-        return;
-      }
+      if (settled) return;
       if (code !== 0) {
         const exitInfo = signal ? `signal ${signal}` : `exit code ${code}`;
         const trimmedStderr = stderr.trim();
         const rawMessage = trimmedStderr
           ? `Command failed (${exitInfo}): ${executablePath} ${args.join(' ')}\n${trimmedStderr}`
           : `Command failed (${exitInfo}): ${executablePath} ${args.join(' ')}`;
-        reject(new Error(sanitizeErrorOutput(rawMessage)));
+        fail(new Error(sanitizeErrorOutput(rawMessage)));
         return;
       }
-      resolve({ stdout });
+      settled = true;
+      clearTimeout(timer);
+      resolve({ stdout: stdout + decoder.end() });
     });
   });
 };

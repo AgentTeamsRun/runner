@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test, { mock } from 'node:test';
 import {
   buildPlistContent,
@@ -750,19 +751,21 @@ test('buildSystemdContent injects CODEX_SANDBOX_LEVEL=off', () => {
   assert.match(content, /Environment="CODEX_SANDBOX_LEVEL=off"/u);
 });
 
-test('launchWindowsHiddenDaemon starts a hidden PowerShell process without detaching it', () => {
+test('launchWindowsHiddenDaemon starts a hidden PowerShell process without detaching it', async () => {
   const calls: Array<{ command: string; args: readonly string[]; options: Record<string, unknown> }> = [];
   let unrefCalled = false;
 
-  launchWindowsHiddenDaemon({
+  await launchWindowsHiddenDaemon({
     resolveExecutablePath: () => 'C:\\Tools\\agentrunner.cmd',
     spawn: ((command: string, args: readonly string[], options: Record<string, unknown>) => {
       calls.push({ command, args, options });
-      return {
+      const child = Object.assign(new EventEmitter(), {
         unref: () => {
           unrefCalled = true;
         },
-      };
+      });
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
     }) as typeof import('node:child_process').spawn,
   });
 

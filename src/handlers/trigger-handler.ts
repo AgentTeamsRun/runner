@@ -83,10 +83,11 @@ type TriggerHandlerOptions = {
 type ReporterLike = Pick<TriggerLogReporter, 'start' | 'append' | 'stop'>;
 type ReadHistoryFile = (path: string, encoding: BufferEncoding) => Promise<string>;
 type WriteHistoryFile = (path: string, content: string) => Promise<void>;
-type FetchAttachmentFile = (downloadUrl: string) => Promise<Uint8Array>;
+type FetchAttachmentFile = (downloadUrl: string, signal?: AbortSignal) => Promise<Uint8Array>;
 type RemoveAttachmentDirectory = (path: string) => Promise<void>;
 
 type TriggerHandlerDependencies = {
+  attachmentTimeoutMs?: number;
   createRunnerFactory?: typeof createRunnerFactory;
   createLogReporter?: (client: DaemonApiClient, triggerId: string) => ReporterLike;
   isGitRepo?: typeof isGitRepo;
@@ -156,8 +157,8 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     });
   const fetchAttachmentFile: FetchAttachmentFile =
     dependencies.fetchAttachmentFile ??
-    (async (downloadUrl) => {
-      const response = await fetch(downloadUrl);
+    (async (downloadUrl, signal) => {
+      const response = await fetch(downloadUrl, { signal });
       if (!response.ok) {
         throw new Error(`Attachment download failed (${response.status})`);
       }
@@ -218,6 +219,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     attachments: TriggerRuntimeAttachment[] | undefined,
     workspaceRoot: string | null,
     triggerId: string,
+    cancelSignal: AbortSignal,
   ): Promise<Array<TriggerRuntimeAttachment & { localPath: string }>> => {
     if (!attachments || attachments.length === 0) {
       return [];
@@ -229,20 +231,34 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
     const attachmentDir = join(workspaceRoot, '.agentteams', 'runner', 'attachments', triggerId);
     assertInsideWorkspace(workspaceRoot, attachmentDir);
-    await mkdir(attachmentDir, { recursive: true });
-
-    const downloaded: Array<TriggerRuntimeAttachment & { localPath: string }> = [];
-    for (const [index, attachment] of attachments.entries()) {
-      const fileName = `${String(index + 1).padStart(2, '0')}-${attachment.id.slice(0, 8)}-${sanitizeAttachmentFileName(attachment.originalName)}`;
-      const localPath = join(attachmentDir, fileName);
-      assertInsideWorkspace(workspaceRoot, localPath);
-      const bytes = await fetchAttachmentFile(attachment.downloadUrl);
-      await writeFile(localPath, bytes);
-      await access(localPath);
-      downloaded.push({ ...attachment, localPath });
+    const controller = new AbortController();
+    const abortDownload = () => controller.abort(cancelSignal.reason);
+    if (cancelSignal.aborted) abortDownload();
+    else cancelSignal.addEventListener('abort', abortDownload, { once: true });
+    const timeoutMs = Math.min(dependencies.attachmentTimeoutMs ?? 300_000, config.timeoutMs);
+    const timeout = setTimeout(() => {
+      controller.abort(new Error(`Attachment download timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    try {
+      controller.signal.throwIfAborted();
+      await mkdir(attachmentDir, { recursive: true });
+      const downloaded: Array<TriggerRuntimeAttachment & { localPath: string }> = [];
+      for (const [index, attachment] of attachments.entries()) {
+        controller.signal.throwIfAborted();
+        const fileName = `${String(index + 1).padStart(2, '0')}-${attachment.id.slice(0, 8)}-${sanitizeAttachmentFileName(attachment.originalName)}`;
+        const localPath = join(attachmentDir, fileName);
+        assertInsideWorkspace(workspaceRoot, localPath);
+        const bytes = await fetchAttachmentFile(attachment.downloadUrl, controller.signal);
+        controller.signal.throwIfAborted();
+        await writeFile(localPath, bytes);
+        await access(localPath);
+        downloaded.push({ ...attachment, localPath });
+      }
+      return downloaded;
+    } finally {
+      clearTimeout(timeout);
+      cancelSignal.removeEventListener('abort', abortDownload);
     }
-
-    return downloaded;
   };
 
   const formatBytes = (size: number): string => `${size} bytes`;
@@ -405,15 +421,22 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
     }
   };
 
-  return async (trigger: DaemonTrigger): Promise<void> => {
+  return async (trigger: DaemonTrigger, signal?: AbortSignal): Promise<void> => {
     let logReporter: ReporterLike | null = null;
     let currentHistoryPath: string | null = null;
     let cancelInterval: NodeJS.Timeout | null = null;
     let attachmentDir: string | null = null;
     let collectedUsage: TokenUsage | undefined;
     const cancelController = new AbortController();
+    // 데몬 종료·재시작으로 멈춘 실행을 사용자 취소처럼 보고하지 않는다.
+    const cancelledMessage = (): string =>
+      signal?.aborted ? 'Runner stopped because AgentRunner shut down or restarted' : 'Runner cancelled by user';
+    const onShutdown = () => cancelController.abort(signal?.reason);
+    if (signal?.aborted) onShutdown();
+    else signal?.addEventListener('abort', onShutdown, { once: true });
 
     try {
+      cancelController.signal.throwIfAborted();
       if (trigger.parentTriggerId && /[\/\\]|\.\./.test(trigger.parentTriggerId)) {
         throw new Error('Invalid parentTriggerId: path traversal characters detected');
       }
@@ -424,6 +447,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       });
 
       const runtime = await client.fetchTriggerRuntime(trigger.id);
+      cancelController.signal.throwIfAborted();
       logReporter = createLogReporter(client, trigger.id);
       const activeLogReporter = logReporter;
       activeLogReporter.start();
@@ -485,12 +509,14 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       let effectiveAuthPath = runtime.authPath;
       const shouldPreflightGitState = runtime.planType != null && Array.isArray(runtime.expectedCommits);
-      const assertGitStateAvailable = async (repoPath: string) => {
+      // workspaceRoot: 멀티 저장소 작업 공간에서 다른 멤버 저장소의 커밋을 찾을 루트.
+      const assertGitStateAvailable = async (repoPath: string, workspaceRoot?: string) => {
         if (!shouldPreflightGitState) return;
         await startCancelPolling();
         cancelController.signal.throwIfAborted();
         const { missing, baseCommit } = await runPreflightGitState({
           repoPath,
+          ...(workspaceRoot ? { workspaceRoot } : {}),
           baseBranch: runtime.baseBranch,
           expectedCommits: runtime.expectedCommits,
           signal: cancelController.signal,
@@ -599,7 +625,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           });
         }
 
-        const baseCommit = await assertGitStateAvailable(worktreeRepoPath);
+        const baseCommit = await assertGitStateAvailable(worktreeRepoPath, runtime.authPath);
 
         try {
           const worktreePath = createRunnerWorktree(worktreeRepoPath, {
@@ -649,12 +675,15 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       currentHistoryPath = historyPaths.currentHistoryPath;
       await restoreParentHistoryFromServer(historyPaths.parentHistoryPath, runtime.parentHistoryMarkdown);
       if (effectiveAuthPath && runtime.attachments && runtime.attachments.length > 0) {
+        await startCancelPolling();
+        cancelController.signal.throwIfAborted();
         attachmentDir = join(effectiveAuthPath, '.agentteams', 'runner', 'attachments', trigger.id);
       }
       const downloadedAttachments = await downloadRuntimeAttachments(
         runtime.attachments,
         effectiveAuthPath,
         trigger.id,
+        cancelController.signal,
       );
       if (downloadedAttachments.length > 0) {
         activeLogReporter.append('INFO', `Downloaded ${downloadedAttachments.length} attachment(s) for runner access.`);
@@ -670,6 +699,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
       // 사유로는 이쪽 원문을 우선한다.
       let lastCauseBearingResultMessage: string | undefined;
       await startCancelPolling();
+      cancelController.signal.throwIfAborted();
       const runnerFastMode = runnerSupportsFastMode(trigger.runnerType) ? trigger.fastMode : false;
       const runnerEffort = runnerSupportsEffort(trigger.runnerType) ? trigger.effort : null;
       const idleTimeout = selectIdleTimeoutMs({
@@ -794,7 +824,9 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
               timedOut: runResult.timedOut,
             })
           : status === 'CANCELLED'
-            ? runResult.errorMessage || 'Runner cancelled by user'
+            ? signal?.aborted
+              ? cancelledMessage()
+              : runResult.errorMessage || cancelledMessage()
             : undefined;
       await client.updateTriggerStatus(
         trigger.id,
@@ -826,7 +858,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         await client.updateTriggerStatus(
           trigger.id,
           cancelController.signal.aborted ? 'CANCELLED' : 'FAILED',
-          cancelController.signal.aborted ? 'Runner cancelled by user' : sanitizeErrorMessage(rawErrorMsg),
+          cancelController.signal.aborted ? cancelledMessage() : sanitizeErrorMessage(rawErrorMsg),
           collectedUsage ?? emptyTokenUsage(trigger.runnerType),
         );
       } catch (statusError) {
@@ -836,6 +868,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
         });
       }
     } finally {
+      signal?.removeEventListener('abort', onShutdown);
       if (attachmentDir) {
         try {
           await removeAttachmentDirectory(attachmentDir);

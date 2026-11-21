@@ -218,3 +218,50 @@ test('returns the last Kimi stderr preview when the process exits unsuccessfully
 
   assert.equal(result.errorMessage, 'No model configured');
 });
+
+test('KimiCliRunner keeps a multi-byte character split across stdout chunks intact', async () => {
+  const child = createFakeChild();
+  const line = Buffer.from(`${JSON.stringify({ role: 'assistant', content: '한글 결과' })}\n`);
+  const cut = line.indexOf(Buffer.from('한')) + 1;
+  const messages: string[] = [];
+  const runner = new KimiCliRunner({
+    platform: () => 'linux',
+    resolveExecutablePathWithPreference: (() => '/usr/local/bin/kimi') as never,
+    describeExecutableResolution: (() => ({
+      requestedCommand: 'kimi',
+      resolvedExecutablePath: '/usr/local/bin/kimi',
+      platform: 'linux',
+      shell: false,
+    })) as never,
+    mkdir: (async () => undefined) as never,
+    createWriteStream: (() => new PassThrough()) as never,
+    setupCloseWatchdog: (() => ({ cancel: () => {} })) as never,
+    spawn: (() => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', line.subarray(0, cut));
+        child.stdout.emit('data', line.subarray(cut));
+        child.emit('close', 0);
+      });
+      return child;
+    }) as never,
+  });
+
+  const result = await runner.run({
+    triggerId: 'trigger-kimi-utf8',
+    prompt: 'hello',
+    authPath: '/repo',
+    apiKey: 'key',
+    apiUrl: 'https://api.example.com',
+    teamId: 'team',
+    projectId: 'project',
+    timeoutMs: 1_000,
+    idleTimeoutMs: 1_000,
+    agentConfigId: 'agent',
+    runnerType: 'KIMI_CLI',
+    onStdoutChunk: (message) => messages.push(message),
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.outputText, '한글 결과');
+  assert.ok(messages.every((message) => !message.includes('�')));
+});

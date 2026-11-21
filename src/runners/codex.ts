@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { createWriteStream } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { mkdir, realpath, rm, writeFile } from 'node:fs/promises';
@@ -10,6 +11,11 @@ import { selectRunnerFailureMessage } from './failure-message.js';
 import { createTokenUsageCollector } from './token-usage.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import {
+  POWERSHELL_RUNNER_PREAMBLE,
+  toPowerShellCallTarget,
+  toPowerShellNativeArgLiteral,
+} from './windows-prompt-file.js';
 import { buildRunnerChildEnv } from './session-env.js';
 
 const PROMPT_PREVIEW_MAX = 500;
@@ -78,20 +84,20 @@ export const toPowerShellEncodedCommand = (
     sandboxLevel === 'off'
       ? "'--dangerously-bypass-approvals-and-sandbox'"
       : "'-s' 'workspace-write' '-c' 'sandbox_workspace_write.network_access=true'";
-  const modelSegment = model ? ` '--model' ${toPowerShellLiteral(model)}` : '';
-  const fastModeSegment = fastMode ? " '-c' 'features.fast_mode=true' '-c' 'service_tier=\"fast\"'" : '';
+  const modelSegment = model ? ` '--model' ${toPowerShellNativeArgLiteral(model)}` : '';
+  const fastModeSegment = fastMode
+    ? ` '-c' 'features.fast_mode=true' '-c' ${toPowerShellNativeArgLiteral('service_tier="fast"')}`
+    : '';
   const normalizedEffort = typeof effort === 'string' ? effort.trim() : '';
   const effortSegment =
-    normalizedEffort.length > 0 ? ` '-c' ${toPowerShellLiteral(`model_reasoning_effort="${normalizedEffort}"`)}` : '';
+    normalizedEffort.length > 0
+      ? ` '-c' ${toPowerShellNativeArgLiteral(`model_reasoning_effort="${normalizedEffort}"`)}`
+      : '';
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
+    ...POWERSHELL_RUNNER_PREAMBLE,
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `$promptText | & ${toPowerShellLiteral(resolvedExecutablePath)} '-a' 'never' 'exec' '--json' ${sandboxSegment}${fastModeSegment}${effortSegment}${modelSegment}`,
+    `$promptText | & ${toPowerShellCallTarget(resolvedExecutablePath)} '-a' 'never' 'exec' '--json' ${sandboxSegment}${fastModeSegment}${effortSegment}${modelSegment}`,
+    'exit $LASTEXITCODE',
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');
@@ -237,8 +243,11 @@ export class CodexRunner implements Runner {
       return finalTextCapturer.get() ?? (lastOutput || outputText.trim() || undefined);
     };
 
+    // 청크 경계에서 나뉜 멀티바이트 문자를 복원하도록 스트림별 디코더를 유지한다.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     child.stdout?.on('data', (chunk) => {
-      const rawOutput = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const rawOutput = Buffer.isBuffer(chunk) ? stdoutDecoder.write(chunk) : String(chunk);
       appendOutputText(rawOutput);
       if (rawOutput.length > 0) {
         finalTextCapturer.push(rawOutput);
@@ -252,7 +261,7 @@ export class CodexRunner implements Runner {
       }
     });
     child.stderr?.on('data', (chunk) => {
-      const output = toOutputPreview(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk);
+      const output = toOutputPreview(Buffer.isBuffer(chunk) ? stderrDecoder.write(chunk) : chunk);
       if (output.length > 0) {
         lastOutput = output;
         lastErrorOutput = output;

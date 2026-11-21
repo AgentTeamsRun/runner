@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -105,6 +106,157 @@ const runtime: TriggerRuntime = {
 
 test.afterEach(() => {
   mock.restoreAll();
+});
+
+for (const reason of ['timeout', 'cancel'] as const) {
+  test(`attachment ${reason} settles an endless HTTP body before starting the runner`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'daemon-attachment-deadline-'));
+    let opened!: () => void;
+    const downloading = new Promise<void>((resolve) => {
+      opened = resolve;
+    });
+    let streaming: ReturnType<typeof setInterval> | undefined;
+    const server = createServer((_request, response) => {
+      response.writeHead(200);
+      response.write('x');
+      opened();
+      streaming = setInterval(() => response.write('x'), 10);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    let requested = false;
+    let runnerCalls = 0;
+    let settled = false;
+    const statuses: string[] = [];
+    const handler = createTriggerHandler(
+      {
+        config: {
+          daemonToken: 'test',
+          apiUrl: 'http://unused',
+          pollingIntervalMs: 1000,
+          maxPollingIntervalMs: 1000,
+          timeoutMs: 1000,
+          idleTimeoutMs: 1000,
+          runnerCmd: 'opencode',
+          preventSleepWhileBusy: false,
+        },
+        client: {
+          fetchTriggerRuntime: async () => ({
+            ...runtime,
+            authPath: directory,
+            attachments: [
+              {
+                id: 'attachment',
+                originalName: 'test.txt',
+                mimeType: 'text/plain',
+                size: 1,
+                downloadUrl: `http://127.0.0.1:${address.port}/file`,
+              },
+            ],
+          }),
+          isTriggerCancelRequested: async () => requested,
+          updateTriggerHistory: async () => {},
+          updateTriggerStatus: async (_id: string, status: string) => {
+            statuses.push(status);
+          },
+        } as never,
+      },
+      {
+        attachmentTimeoutMs: reason === 'timeout' ? 40 : 1000,
+        cancelPollIntervalMs: 5,
+        pathExists: () => true,
+        isGitRepo: () => true,
+        readHistoryFile: async () => '',
+        createLogReporter: () => ({ start() {}, append() {}, stop: async () => {} }),
+        createRunnerFactory: () => () => ({
+          run: async () => {
+            runnerCalls++;
+            return { exitCode: 0 };
+          },
+        }),
+      },
+    );
+    const pending = handler(trigger).then(() => {
+      settled = true;
+    });
+    try {
+      await downloading;
+      if (reason === 'cancel') requested = true;
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      assert.equal(settled, true);
+      assert.equal(runnerCalls, 0);
+      assert.equal(statuses.at(-1), reason === 'cancel' ? 'CANCELLED' : 'FAILED');
+    } finally {
+      clearInterval(streaming);
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await pending;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test('daemon shutdown reaches the runner through the existing cancellation signal', async () => {
+  let runnerSignal: AbortSignal | undefined;
+  let started!: () => void;
+  let finish!: (result: RunResult) => void;
+  const running = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const controller = new AbortController();
+  const statuses: Array<{ status: string; message: string | undefined }> = [];
+  const handler = createTriggerHandler(
+    {
+      config: {
+        daemonToken: 'test',
+        apiUrl: 'http://unused',
+        pollingIntervalMs: 1000,
+        maxPollingIntervalMs: 1000,
+        timeoutMs: 1000,
+        idleTimeoutMs: 1000,
+        runnerCmd: 'opencode',
+        preventSleepWhileBusy: false,
+      },
+      client: {
+        fetchTriggerRuntime: async () => runtime,
+        isTriggerCancelRequested: async () => false,
+        updateTriggerHistory: async () => {},
+        updateTriggerStatus: async (_id: string, status: string, message?: string) => {
+          statuses.push({ status, message });
+        },
+      } as never,
+    },
+    {
+      pathExists: () => true,
+      isGitRepo: () => true,
+      createLogReporter: () => ({ start() {}, append() {}, stop: async () => {} }),
+      readHistoryFile: async () => '### Summary\nDone',
+      createRunnerFactory: () => () => ({
+        run: async (opts) => {
+          runnerSignal = opts.signal;
+          started();
+          return new Promise<RunResult>((resolve) => {
+            finish = resolve;
+          });
+        },
+      }),
+    },
+  );
+  const pending = handler(trigger, controller.signal);
+  await running;
+  controller.abort();
+  try {
+    assert.equal(runnerSignal?.aborted, true);
+  } finally {
+    finish({ exitCode: 1, cancelled: true });
+    await pending;
+  }
+  // 종료로 멈춘 실행은 사용자 취소로 보고하지 않는다.
+  assert.deepEqual(statuses.at(-1), {
+    status: 'CANCELLED',
+    message: 'Runner stopped because AgentRunner shut down or restarted',
+  });
 });
 
 // 트리거 값이 없고 엔진별 기본값도 없는 기존 시나리오는 config 값을 그대로 쓰던 동작을 유지해야 한다.
@@ -3058,6 +3210,84 @@ test('createTriggerHandler fails before starting the runner when expected commit
     logEntries.some((entry) => entry.level === 'ERROR' && entry.message.startsWith('GIT_STATE_UNAVAILABLE:')),
     true,
   );
+});
+
+test('createTriggerHandler는 RunnerBox 끈 멀티 저장소 루트에서 멤버 저장소 커밋으로 이어쓰기를 시작한다', async () => {
+  await withTempDir(async (root) => {
+    const commits: Record<string, string> = {};
+    for (const name of ['member-ui', 'member-api']) {
+      const memberPath = join(root, name);
+      await mkdir(memberPath);
+      execFileSync('git', ['init', memberPath], { stdio: 'pipe' });
+      execFileSync('git', ['-C', memberPath, 'config', 'user.email', 'test@test.com'], { stdio: 'pipe' });
+      execFileSync('git', ['-C', memberPath, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
+      execFileSync('git', ['-C', memberPath, 'commit', '--allow-empty', '-m', name], { stdio: 'pipe' });
+      execFileSync('git', ['-C', memberPath, 'remote', 'add', 'origin', `https://127.0.0.1:1/team/${name}.git`], {
+        stdio: 'pipe',
+      });
+      commits[name] = execFileSync('git', ['-C', memberPath, 'rev-parse', 'HEAD'], {
+        stdio: 'pipe',
+        encoding: 'utf8',
+      }).trim();
+    }
+
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+    let runnerCalled = false;
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: root,
+        planType: 'BUG_FIX',
+        expectedCommits: [
+          { commit: commits['member-ui'], branch: 'feat/ui', repository: '127.0.0.1:1/team/member-ui' },
+          // 구버전 API·레거시 레코드: repository 없음
+          { commit: commits['member-api'], branch: null },
+        ],
+      }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: 'updateTriggerStatus', args });
+      },
+    };
+
+    const handler = createTriggerHandler(
+      {
+        config: {
+          daemonToken: 'daemon-token',
+          apiUrl: 'https://api.example',
+          pollingIntervalMs: 5000,
+          maxPollingIntervalMs: 120_000,
+          timeoutMs: 1500,
+          idleTimeoutMs: 500,
+          runnerCmd: 'opencode',
+          preventSleepWhileBusy: false,
+        },
+        client: client as never,
+      },
+      {
+        createRunnerFactory: () => () => ({
+          run: async () => {
+            runnerCalled = true;
+            return { exitCode: 0 } satisfies RunResult;
+          },
+        }),
+        createLogReporter: () => ({
+          start: () => undefined,
+          append: () => undefined,
+          stop: async () => undefined,
+        }),
+        readHistoryFile: async () => '### Summary\n- done\n',
+      },
+    );
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    const statusCall = clientCalls.filter((call) => call.method === 'updateTriggerStatus').at(-1);
+    assert.doesNotMatch(String(statusCall?.args[2] ?? ''), /GIT_STATE_UNAVAILABLE/);
+    assert.equal(runnerCalled, true);
+    assert.equal(statusCall?.args[1], 'DONE');
+  });
 });
 
 test('createTriggerHandler does not run Git preflight when expectedCommits is absent', async () => {
