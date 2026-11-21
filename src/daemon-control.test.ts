@@ -16,6 +16,7 @@ test('restartDaemon stops running daemon and restarts via autostart when registe
   let restarted = false;
 
   await restartDaemon({
+    platform: () => 'linux',
     verifyRecordedDaemonInstance: async () => 'verified',
     getDaemonStatus: async () => {
       statusChecks += 1;
@@ -327,6 +328,7 @@ test('restartDaemon still stops an unverifiable (legacy) recorded instance befor
       running
         ? { running: true, pid: 4321, instanceId: null, ready: true }
         : { running: false, pid: null, instanceId: null, ready: false },
+    platform: () => 'linux',
     getAutostartStatus: () => ({ registered: false, platform: 'manual' }),
     verifyRecordedDaemonInstance: async () => 'unverifiable',
     removePidFile: async () => {

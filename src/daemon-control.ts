@@ -10,6 +10,7 @@ import {
   scheduleWindowsTaskRestart,
   WINDOWS_TASK_MIGRATION_DESCRIPTIONS,
 } from './autostart.js';
+import { stopWindowsDaemonInstance } from './daemon-stop.js';
 import { logger } from './logger.js';
 import {
   getDaemonStatus,
@@ -73,6 +74,8 @@ type RestartDeps = {
   removePidFile?: () => Promise<void>;
   kill?: typeof process.kill;
   sleep?: (milliseconds: number) => Promise<void>;
+  platform?: typeof getPlatform;
+  stopWindowsDaemonInstance?: typeof stopWindowsDaemonInstance;
   logger?: Pick<typeof logger, 'info'>;
 };
 
@@ -181,6 +184,8 @@ type TerminateInstanceDeps = {
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
   timeoutMs?: number;
+  platform?: typeof getPlatform;
+  stopWindowsDaemonInstance?: typeof stopWindowsDaemonInstance;
   logger?: Pick<typeof logger, 'warn'>;
 };
 
@@ -203,6 +208,20 @@ export const terminateDaemonInstance = async (
   const resolvedVerify = deps.verifyRecordedDaemonInstance ?? ((pid: number) => verifyRecordedDaemonInstance(pid));
   const resolvedRemovePidFile = deps.removePidFile ?? (() => removePidFile());
   const resolvedLogger = deps.logger ?? logger;
+
+  if ((deps.platform ?? getPlatform)() === 'win32') {
+    // 신원 확인(mismatch 폐기 포함)과 정상 종료 → 강제 종료 순서는 Windows 공용 경로가 맡는다.
+    await (deps.stopWindowsDaemonInstance ?? stopWindowsDaemonInstance)(instance.pid, {
+      verifyRecordedDaemonInstance: resolvedVerify,
+      removePidFile: resolvedRemovePidFile,
+      isProcessRunning: deps.isProcessRunning,
+      sleep: deps.sleep,
+      now: deps.now,
+      forceTimeoutMs: deps.timeoutMs,
+      logger: resolvedLogger,
+    });
+    return;
+  }
 
   if ((await resolvedVerify(instance.pid)) === 'mismatch') {
     resolvedLogger.warn(
@@ -559,7 +578,20 @@ export const restartDaemon = async (deps: RestartDeps = {}): Promise<RestartOutc
     }
   }
 
-  if (previousInstance) {
+  if (previousInstance && (deps.platform ?? getPlatform)() === 'win32') {
+    // Windows의 SIGTERM은 실행을 취소·보고할 기회를 주지 않는다. 종료 채널로 이전 실행을 마무리하게 한 뒤 교체한다.
+    resolvedLogger.info('Stopping AgentRunner before restart', { pid: previousInstance.pid });
+    await (deps.stopWindowsDaemonInstance ?? stopWindowsDaemonInstance)(previousInstance.pid, {
+      verifyRecordedDaemonInstance: deps.verifyRecordedDaemonInstance
+        ? (pid) => deps.verifyRecordedDaemonInstance!(pid)
+        : undefined,
+      removePidFile: deps.removePidFile,
+    });
+    // 러너는 끝나면서 자기 기록을 지우지만, 강제 종료된 러너는 지우지 못한다. 교체 러너가 쓰기 전에 비운다.
+    if ((await resolvedGetDaemonStatus()).pid === previousInstance.pid) {
+      await (deps.removePidFile ?? removePidFile)();
+    }
+  } else if (previousInstance) {
     resolvedLogger.info('Stopping AgentRunner before restart', { pid: previousInstance.pid });
     await waitForDaemonToStop(previousInstance.pid, {
       getDaemonStatus: resolvedGetDaemonStatus,

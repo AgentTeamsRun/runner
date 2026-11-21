@@ -11,6 +11,11 @@ import { selectRunnerFailureMessage } from './failure-message.js';
 import { createTokenUsageCollector } from './token-usage.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import {
+  POWERSHELL_RUNNER_PREAMBLE,
+  toPowerShellCallTarget,
+  toPowerShellNativeArgLiteral,
+} from './windows-prompt-file.js';
 import { buildRunnerChildEnv } from './session-env.js';
 
 const PROMPT_PREVIEW_MAX = 500;
@@ -79,20 +84,20 @@ export const toPowerShellEncodedCommand = (
     sandboxLevel === 'off'
       ? "'--dangerously-bypass-approvals-and-sandbox'"
       : "'-s' 'workspace-write' '-c' 'sandbox_workspace_write.network_access=true'";
-  const modelSegment = model ? ` '--model' ${toPowerShellLiteral(model)}` : '';
-  const fastModeSegment = fastMode ? " '-c' 'features.fast_mode=true' '-c' 'service_tier=\"fast\"'" : '';
+  const modelSegment = model ? ` '--model' ${toPowerShellNativeArgLiteral(model)}` : '';
+  const fastModeSegment = fastMode
+    ? ` '-c' 'features.fast_mode=true' '-c' ${toPowerShellNativeArgLiteral('service_tier="fast"')}`
+    : '';
   const normalizedEffort = typeof effort === 'string' ? effort.trim() : '';
   const effortSegment =
-    normalizedEffort.length > 0 ? ` '-c' ${toPowerShellLiteral(`model_reasoning_effort="${normalizedEffort}"`)}` : '';
+    normalizedEffort.length > 0
+      ? ` '-c' ${toPowerShellNativeArgLiteral(`model_reasoning_effort="${normalizedEffort}"`)}`
+      : '';
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
+    ...POWERSHELL_RUNNER_PREAMBLE,
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `$promptText | & ${toPowerShellLiteral(resolvedExecutablePath)} '-a' 'never' 'exec' '--json' ${sandboxSegment}${fastModeSegment}${effortSegment}${modelSegment}`,
+    `$promptText | & ${toPowerShellCallTarget(resolvedExecutablePath)} '-a' 'never' 'exec' '--json' ${sandboxSegment}${fastModeSegment}${effortSegment}${modelSegment}`,
+    'exit $LASTEXITCODE',
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');

@@ -7,7 +7,14 @@ import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
-import { removeWindowsPromptFile, toPowerShellPromptFileRead, writeWindowsPromptFile } from './windows-prompt-file.js';
+import {
+  POWERSHELL_RUNNER_PREAMBLE,
+  removeWindowsPromptFile,
+  toPowerShellCallTarget,
+  toPowerShellNativeArgLiteral,
+  toPowerShellPromptFileRead,
+  writeWindowsPromptFile,
+} from './windows-prompt-file.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { createOpenCodeFinalTextCapturer, createOpenCodeJsonLineParser } from './opencode-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
@@ -33,17 +40,12 @@ export const toOpenCodePowerShellEncodedCommand = (
   effort?: string | null,
 ): string => {
   const argSegment = buildOpenCodeRunArgs(model, effort)
-    .map((arg) => ` '${arg.replaceAll("'", "''")}'`)
+    .map((arg) => ` ${toPowerShellNativeArgLiteral(arg)}`)
     .join('');
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
+    ...POWERSHELL_RUNNER_PREAMBLE,
     toPowerShellPromptFileRead(promptFilePath),
-    `$promptText | & '${resolvedExecutablePath.replaceAll("'", "''")}' ${argSegment}`,
+    `$promptText | & ${toPowerShellCallTarget(resolvedExecutablePath)}${argSegment}`,
     'exit $LASTEXITCODE',
   ].join('\r\n');
 

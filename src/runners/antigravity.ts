@@ -7,6 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
 import {
+  POWERSHELL_RUNNER_PREAMBLE,
   removeWindowsPromptFile,
   toPowerShellNativeInvocation,
   toPowerShellPromptFileRead,
@@ -69,18 +70,12 @@ export const toPowerShellEncodedCommand = (
   const modelSegment = model ? ` '--model' ${toPowerShellLiteral(model)}` : '';
   const effortSegment = effort?.trim() ? ` '--effort' ${toPowerShellLiteral(effort)}` : '';
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
+    ...POWERSHELL_RUNNER_PREAMBLE,
     toPowerShellPromptFileRead(promptFilePath),
     toPowerShellNativeInvocation(
       resolvedExecutablePath,
       ` '--dangerously-skip-permissions' '--add-dir' ${toPowerShellLiteral(agentteamsDir)} '--log-file' ${toPowerShellLiteral(internalLogPath)} '--print-timeout' ${toPowerShellLiteral(toPrintTimeout(timeoutMs))}${modelSegment}${effortSegment} '--print' $promptText`,
     ),
-    'exit $LASTEXITCODE',
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');

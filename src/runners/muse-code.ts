@@ -12,6 +12,11 @@ import { findMuseCodeExecutable, isMuseCodeExecutable } from './muse-code-identi
 import { createMuseCodeStreamConsumer } from './muse-code-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import {
+  POWERSHELL_RUNNER_PREAMBLE,
+  toPowerShellCallTarget,
+  toPowerShellNativeArgLiteral,
+} from './windows-prompt-file.js';
 import { buildRunnerChildEnv } from './session-env.js';
 
 const OUTPUT_PREVIEW_MAX = 400;
@@ -37,8 +42,6 @@ export const buildMuseCodeArgs = (promptFilePath: string, model?: string | null,
 export const getMuseCodeExecutablePreference = (isWindows: boolean): string[] =>
   isWindows ? ['muse.exe', 'muse'] : ['muse'];
 
-const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
 export const toMuseCodePowerShellEncodedCommand = (
   resolvedExecutablePath: string,
   promptFilePath: string,
@@ -46,16 +49,12 @@ export const toMuseCodePowerShellEncodedCommand = (
   effort?: string | null,
 ): string => {
   const argSegment = buildMuseCodeArgs(promptFilePath, model, effort)
-    .map((arg) => ` ${toPowerShellLiteral(arg)}`)
+    .map((arg) => ` ${toPowerShellNativeArgLiteral(arg)}`)
     .join('');
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
-    `& ${toPowerShellLiteral(resolvedExecutablePath)}${argSegment}`,
+    ...POWERSHELL_RUNNER_PREAMBLE,
+    `& ${toPowerShellCallTarget(resolvedExecutablePath)}${argSegment}`,
+    'exit $LASTEXITCODE',
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');

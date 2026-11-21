@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 import { platform as getPlatform } from 'node:os';
 import { posix, win32 } from 'node:path';
 import { promisify } from 'node:util';
+import { toPowerShellLiteral, toPowerShellNativeArgLiteral } from './windows-powershell.js';
 
 const DEFAULT_WINDOWS_EXTENSIONS = ['.com', '.exe', '.bat', '.cmd'];
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
@@ -96,7 +97,9 @@ const getWindowsExecutableNames = (name: string, env: NodeJS.ProcessEnv): string
     .filter((entry) => entry.length > 0);
   const extensions = pathExt && pathExt.length > 0 ? pathExt : DEFAULT_WINDOWS_EXTENSIONS;
 
-  return [name, ...extensions.map((extension) => `${name}${extension}`)];
+  // 확장자 없는 이름은 마지막에 본다. npm이 .cmd 옆에 두는 POSIX shim이 먼저 잡히면 PowerShell `&`가
+  // 아무것도 실행하지 않고 0으로 끝난다(selectPathLookupResult와 같은 이유).
+  return [...extensions.map((extension) => `${name}${extension}`), name];
 };
 
 /// npm 전역 **prefix**를 돌려준다. bin 디렉터리가 아니다 — 그 둘을 같다고 본 것이
@@ -140,14 +143,39 @@ const isExecutableFile = (path: string, deps: ExecutableDeps): boolean => {
   }
 };
 
+// `where`는 디렉터리가 포함된 이름을 패턴 오류로 거부한다(POSIX `which`는 받는다). 실행 파일을 경로로
+// 지정한 경우(예: OpenCode `runnerCmd`)에도 해석되도록 Windows에서는 파일 존재로 직접 판정한다.
+const resolveFromExplicitWindowsPath = (name: string, deps: ExecutableDeps): string | null => {
+  if (!/[\\/]/u.test(name)) {
+    return null;
+  }
+
+  // 실행 가능한 확장자만 받는다. 확장자 없는 파일을 돌려주면 PowerShell `&`가 조용히 0으로 끝나므로,
+  // 그런 지정은 종전처럼 "Cannot find executable"로 실패하게 둔다.
+  return (
+    getWindowsExecutableNames(name, deps.env ?? process.env).find(
+      (candidate) => WINDOWS_RUNNABLE_EXTENSION.test(candidate) && isExecutableFile(candidate, deps),
+    ) ?? null
+  );
+};
+
 const resolveFromPathLookup = (name: string, deps: ExecutableDeps): string | null => {
   const os = (deps.platform ?? getPlatform)();
+  if (os === 'win32') {
+    const explicitPath = resolveFromExplicitWindowsPath(name, deps);
+    if (explicitPath) {
+      return explicitPath;
+    }
+  }
+
   const run = deps.execFileSync ?? execFileSync;
   const lookupCommand = os === 'win32' ? 'where' : 'which';
 
   try {
     const output = run(lookupCommand, [name], {
       encoding: 'utf8',
+      // `where`는 못 찾을 때마다 stderr에 안내문을 쓴다. 상속하면 데몬 stderr로 그대로 샌다.
+      stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
       timeout: EXECUTABLE_PROBE_TIMEOUT_MS,
       killSignal: 'SIGKILL',
@@ -185,7 +213,15 @@ const knownInstallBinResolvers: Readonly<Record<string, KnownInstallBinResolver>
   // Claude Code와 Codex의 공식 standalone 설치는 macOS/Linux에서 ~/.local/bin에
   // 실행 파일 링크를 만든다. 비대화형 러너는 셸 프로필의 PATH 보강을 읽지 않으므로
   // 설치가 정상이어도 이 사용자 로컬 경로를 놓칠 수 있다.
-  claude: resolveUserLocalBin,
+  // Claude Code의 Windows 네이티브 설치도 `%USERPROFILE%\.local\bin\claude.exe`에 놓이고
+  // (2026-11-21 실측) 설치기가 PATH를 대신 넓혀 주지 않는다.
+  claude: (env, os) => {
+    if (os !== 'win32') {
+      return resolveUserLocalBin(env, os);
+    }
+
+    return env.USERPROFILE ? [joinPath(os, env.USERPROFILE, '.local', 'bin')] : [];
+  },
   codex: resolveUserLocalBin,
   // 공식 install.sh 실측: MUSE_INSTALL_DIR 또는 ~/.local/bin (POSIX 전용).
   muse: (env, os) =>
@@ -305,10 +341,9 @@ const resolveFromKnownInstallBin = (name: string, deps: ExecutableDeps): string 
   return null;
 };
 
-const escapeForPowerShell = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
+// 인자는 PowerShell 5.1이 내장 `"`를 버리지 않도록 사전 이스케이프한다(windows-powershell.ts).
 export const buildPowerShellCommand = (executablePath: string, args: string[]): string => {
-  const serializedArgs = [escapeForPowerShell(executablePath), ...args.map(escapeForPowerShell)];
+  const serializedArgs = [toPowerShellLiteral(executablePath), ...args.map(toPowerShellNativeArgLiteral)];
   return `& ${serializedArgs.join(' ')}`;
 };
 
@@ -356,6 +391,14 @@ const resolveAllFromPathLookupAsync = async (name: string, deps: AsyncExecutable
   const run = deps.execFileAsync ?? execFileAsync;
   const lookupCommand = os === 'win32' ? 'where' : 'which';
   const args = os === 'win32' ? [name] : ['-a', name];
+
+  // 동기 해석(resolveFromPathLookup)과 같은 판정이어야 탐지 결과와 실제 기동 가능 여부가 갈리지 않는다.
+  if (os === 'win32') {
+    const explicitPath = resolveFromExplicitWindowsPath(name, deps);
+    if (explicitPath) {
+      return [explicitPath];
+    }
+  }
 
   try {
     const { stdout } = await run(lookupCommand, args, probeExecOptions);

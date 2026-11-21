@@ -6,6 +6,28 @@ const FORCE_CLOSE_AFTER_EXIT_MS = 5_000;
 
 type ChildProcess = ReturnType<typeof spawn>;
 
+// taskkill /T는 PowerShell 래퍼와 그 아래 엔진 트리를 함께 끝낸다. 실패하면(권한, taskkill 부재, 이미 종료된
+// 래퍼) 최소한 래퍼만이라도 끝내 stdio가 닫히게 한다.
+const killWindowsProcessTree = (child: ChildProcess, triggerId: string): void => {
+  try {
+    execFileSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true });
+  } catch (error) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return;
+    }
+    logger.warn('taskkill could not terminate the runner process tree; killing the wrapper process only', {
+      triggerId,
+      pid: child.pid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    try {
+      child.kill();
+    } catch {
+      // ignore
+    }
+  }
+};
+
 export const terminateRunnerChild = (
   child: ChildProcess,
   isWindows: boolean,
@@ -26,12 +48,24 @@ export const terminateRunnerChild = (
     },
   );
 
+  if (isWindows) {
+    killWindowsProcessTree(child, triggerId);
+    // taskkill은 한 번 실패하면 끝이었다. 트리가 남으면 stdout 파이프가 닫히지 않아 실행이 끝나지 않으므로,
+    // POSIX의 SIGKILL 유예와 같은 시점에 아직 살아 있는지 보고 한 번 더 정리한다.
+    setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        logger.warn('Runner process survived the first termination attempt; retrying', {
+          triggerId,
+          pid: child.pid,
+        });
+        killWindowsProcessTree(child, triggerId);
+      }
+    }, FORCE_KILL_AFTER_MS).unref();
+    return;
+  }
+
   try {
-    if (isWindows) {
-      execFileSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true });
-    } else {
-      process.kill(-child.pid, 'SIGTERM');
-    }
+    process.kill(-child.pid, 'SIGTERM');
   } catch {
     // ignore
   }

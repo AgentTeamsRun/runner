@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
 import {
+  POWERSHELL_RUNNER_PREAMBLE,
   removeWindowsPromptFile,
   toPowerShellNativeInvocation,
   toPowerShellPromptFileRead,
@@ -41,12 +42,7 @@ export const toPowerShellEncodedCommand = (
 ): string => {
   const modelSegment = model ? ` '--mode' '${model.replaceAll("'", "''")}'` : '';
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
+    ...POWERSHELL_RUNNER_PREAMBLE,
     toPowerShellPromptFileRead(promptFilePath),
     toPowerShellNativeInvocation(
       resolvedExecutablePath,

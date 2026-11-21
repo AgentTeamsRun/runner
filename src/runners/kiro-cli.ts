@@ -8,7 +8,7 @@ import { describeExecutableResolution, resolveExecutablePathWithPreference } fro
 import { logger } from '../logger.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
-import { toPowerShellNativeInvocation } from './windows-prompt-file.js';
+import { POWERSHELL_RUNNER_PREAMBLE, toPowerShellNativeInvocation } from './windows-prompt-file.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 import { buildRunnerChildEnv } from './session-env.js';
 
@@ -94,12 +94,7 @@ export const toKiroPowerShellEncodedCommand = (
   const modelSegment =
     selectedModel.length > 0 && selectedModel !== 'default' ? ` '--model' ${toPowerShellLiteral(selectedModel)}` : '';
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
+    ...POWERSHELL_RUNNER_PREAMBLE,
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
     toPowerShellNativeInvocation(
       resolvedExecutablePath,

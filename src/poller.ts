@@ -80,6 +80,11 @@ type PollingDependencies = {
   probeInstalledEngines?: typeof probeInstalledEngines;
   enumerateModels?: typeof enumerateModels;
   shutdownTimeoutMs?: number;
+  /**
+   * 정상 종료 루틴이 준비되면 한 번 호출된다. 신호로 종료 핸들러를 깨울 수 없는 Windows에서
+   * 종료 채널이 SIGTERM과 같은 루틴을 실행할 수 있게 한다.
+   */
+  onShutdownAvailable?: (shutdown: () => Promise<void>) => void;
 };
 
 export const startPolling = async (
@@ -562,6 +567,8 @@ export const startPolling = async (
     })();
     return shutdownPromise;
   };
+
+  dependencies.onShutdownAvailable?.(() => shutdown());
 
   registerSignal('SIGINT', () => {
     void shutdown();

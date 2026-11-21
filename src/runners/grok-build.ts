@@ -11,6 +11,11 @@ import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
 import { createTokenUsageCollector } from './token-usage.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import {
+  POWERSHELL_RUNNER_PREAMBLE,
+  toPowerShellCallTarget,
+  toPowerShellNativeArgLiteral,
+} from './windows-prompt-file.js';
 import { buildRunnerChildEnv } from './session-env.js';
 import { findGrokBuildExecutable, isGrokBuildExecutable } from './grok-build-identity.js';
 
@@ -74,8 +79,6 @@ export const buildGrokBuildArgs = (
 export const getGrokExecutablePreference = (isWindows: boolean): string[] =>
   isWindows ? ['grok.exe', 'grok'] : ['grok'];
 
-const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
 export const toGrokBuildPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
   promptFilePath: string,
@@ -86,16 +89,11 @@ export const toGrokBuildPowerShellEncodedCommand = (
   // The Windows path must carry the same structured-output flags as the POSIX argv, or the
   // runner would silently fall back to plain text there.
   const argSegment = buildGrokBuildArgs(promptFilePath, cwd, model, effort)
-    .map((arg) => ` ${toPowerShellLiteral(arg)}`)
+    .map((arg) => ` ${toPowerShellNativeArgLiteral(arg)}`)
     .join('');
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
-    `& ${toPowerShellLiteral(resolvedExecutablePath)}${argSegment}`,
+    ...POWERSHELL_RUNNER_PREAMBLE,
+    `& ${toPowerShellCallTarget(resolvedExecutablePath)}${argSegment}`,
     'exit $LASTEXITCODE',
   ].join('\r\n');
 

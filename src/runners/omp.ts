@@ -13,6 +13,11 @@ import { createOmpStreamConsumer } from './omp-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import { createTokenUsageCollector } from './token-usage.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
+import {
+  POWERSHELL_RUNNER_PREAMBLE,
+  toPowerShellCallTarget,
+  toPowerShellNativeArgLiteral,
+} from './windows-prompt-file.js';
 import { buildRunnerChildEnv } from './session-env.js';
 
 const OUTPUT_PREVIEW_MAX = 400;
@@ -70,8 +75,6 @@ export const buildOmpArgs = (
 
 export const getOmpExecutablePreference = (isWindows: boolean): string[] => (isWindows ? ['omp.exe', 'omp'] : ['omp']);
 
-const toPowerShellLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
 export const toOmpPowerShellEncodedCommand = (
   resolvedExecutablePath: string,
   promptFilePath: string,
@@ -80,16 +83,11 @@ export const toOmpPowerShellEncodedCommand = (
   effort?: string | null,
 ): string => {
   const argSegment = buildOmpArgs(promptFilePath, cwd, model, effort)
-    .map((arg) => ` ${toPowerShellLiteral(arg)}`)
+    .map((arg) => ` ${toPowerShellNativeArgLiteral(arg)}`)
     .join('');
   const scriptContent = [
-    "$ErrorActionPreference = 'Stop'",
-    '$utf8NoBom = [System.Text.UTF8Encoding]::new($false)',
-    '[Console]::InputEncoding = $utf8NoBom',
-    '[Console]::OutputEncoding = $utf8NoBom',
-    '$OutputEncoding = $utf8NoBom',
-    'chcp 65001 > $null',
-    `& ${toPowerShellLiteral(resolvedExecutablePath)}${argSegment}`,
+    ...POWERSHELL_RUNNER_PREAMBLE,
+    `& ${toPowerShellCallTarget(resolvedExecutablePath)}${argSegment}`,
     'exit $LASTEXITCODE',
   ].join('\r\n');
 
