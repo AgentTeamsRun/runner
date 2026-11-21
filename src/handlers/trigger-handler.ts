@@ -509,12 +509,14 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
 
       let effectiveAuthPath = runtime.authPath;
       const shouldPreflightGitState = runtime.planType != null && Array.isArray(runtime.expectedCommits);
-      const assertGitStateAvailable = async (repoPath: string) => {
+      // workspaceRoot: 멀티 저장소 작업 공간에서 다른 멤버 저장소의 커밋을 찾을 루트.
+      const assertGitStateAvailable = async (repoPath: string, workspaceRoot?: string) => {
         if (!shouldPreflightGitState) return;
         await startCancelPolling();
         cancelController.signal.throwIfAborted();
         const { missing, baseCommit } = await runPreflightGitState({
           repoPath,
+          ...(workspaceRoot ? { workspaceRoot } : {}),
           baseBranch: runtime.baseBranch,
           expectedCommits: runtime.expectedCommits,
           signal: cancelController.signal,
@@ -623,7 +625,7 @@ export const createTriggerHandler = (options: TriggerHandlerOptions, dependencie
           });
         }
 
-        const baseCommit = await assertGitStateAvailable(worktreeRepoPath);
+        const baseCommit = await assertGitStateAvailable(worktreeRepoPath, runtime.authPath);
 
         try {
           const worktreePath = createRunnerWorktree(worktreeRepoPath, {

@@ -111,6 +111,145 @@ test('preflightGitState passes when the SHA is missing but origin/<branch> exist
   }
 });
 
+// 멀티 저장소 작업 공간: git이 아닌 루트 아래 멤버 저장소들. origin은 접속이 즉시 거부되는
+// 로컬 주소라 fetch는 실패(경고 후 진행)하고 로컬 객체만으로 판정한다.
+const makeMultiRepoWorkspace = (): {
+  root: string;
+  members: Record<'a' | 'b', { path: string; commit: string; repository: string }>;
+} => {
+  const root = mkdtempSync(join(tmpdir(), 'git-worktree-test-multi-'));
+  const members = {} as Record<'a' | 'b', { path: string; commit: string; repository: string }>;
+  for (const name of ['a', 'b'] as const) {
+    const memberPath = join(root, `member-${name}`);
+    mkdirSync(memberPath);
+    execFileSync('git', ['init', memberPath], { stdio: 'pipe' });
+    execFileSync('git', ['-C', memberPath, 'config', 'user.email', 'test@test.com'], { stdio: 'pipe' });
+    execFileSync('git', ['-C', memberPath, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
+    execFileSync('git', ['-C', memberPath, 'commit', '--allow-empty', '-m', `member ${name}`], { stdio: 'pipe' });
+    execFileSync(
+      'git',
+      ['-C', memberPath, 'remote', 'add', 'origin', `https://user:token@127.0.0.1:1/team/Member-${name}.git`],
+      { stdio: 'pipe' },
+    );
+    const commit = execFileSync('git', ['-C', memberPath, 'rev-parse', 'HEAD'], {
+      stdio: 'pipe',
+      encoding: 'utf8',
+    }).trim();
+    members[name] = { path: memberPath, commit, repository: `127.0.0.1:1/team/member-${name}` };
+  }
+  return { root, members };
+};
+
+test('preflightGitState는 git이 아닌 루트에서 repository가 가리키는 멤버 저장소의 커밋을 찾는다', async () => {
+  const { root, members } = makeMultiRepoWorkspace();
+  try {
+    const { missing } = await preflightGitState({
+      repoPath: root,
+      expectedCommits: [
+        { commit: members.a.commit, branch: null, repository: members.a.repository },
+        { commit: members.b.commit, branch: 'feat/b', repository: members.b.repository },
+      ],
+    });
+    assert.deepEqual(missing, []);
+  } finally {
+    cleanupDir(root);
+  }
+});
+
+test('preflightGitState는 repository가 없는 레거시 항목을 멤버 저장소 전체에서 찾는다', async () => {
+  const { root, members } = makeMultiRepoWorkspace();
+  try {
+    const { missing } = await preflightGitState({
+      repoPath: root,
+      expectedCommits: [{ commit: members.b.commit, branch: null }],
+    });
+    assert.deepEqual(missing, []);
+  } finally {
+    cleanupDir(root);
+  }
+});
+
+test('preflightGitState는 어느 멤버 저장소에도 없는 커밋을 missing으로 판정한다', async () => {
+  const { root, members } = makeMultiRepoWorkspace();
+  const absent = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+  try {
+    const { missing } = await preflightGitState({
+      repoPath: root,
+      expectedCommits: [
+        { commit: absent, branch: null },
+        { commit: absent, branch: null, repository: members.a.repository },
+      ],
+    });
+    assert.deepEqual(missing, [
+      { kind: 'commit', ref: absent },
+      { kind: 'commit', ref: absent },
+    ]);
+  } finally {
+    cleanupDir(root);
+  }
+});
+
+test('preflightGitState는 다른 멤버 저장소의 커밋을 workspaceRoot 기준으로 찾는다', async () => {
+  const { root, members } = makeMultiRepoWorkspace();
+  try {
+    const { missing } = await preflightGitState({
+      repoPath: members.a.path,
+      workspaceRoot: root,
+      expectedCommits: [
+        { commit: members.a.commit, branch: null, repository: members.a.repository },
+        { commit: members.b.commit, branch: null, repository: members.b.repository },
+      ],
+    });
+    assert.deepEqual(missing, []);
+  } finally {
+    cleanupDir(root);
+  }
+});
+
+test('preflightGitState는 대상 저장소마다 fetch를 한 번만 실행한다', async () => {
+  const { root, members } = makeMultiRepoWorkspace();
+  const fetched: string[] = [];
+  try {
+    const { missing } = await preflightGitState({
+      repoPath: members.a.path,
+      workspaceRoot: root,
+      fetchOrigin: async (repoPath) => {
+        fetched.push(realpathSync(repoPath));
+      },
+      expectedCommits: [
+        { commit: members.a.commit, branch: null, repository: members.a.repository },
+        { commit: members.a.commit, branch: null },
+        { commit: members.b.commit, branch: null, repository: members.b.repository },
+        { commit: members.b.commit, branch: 'feat/b', repository: members.b.repository },
+      ],
+    });
+    assert.deepEqual(missing, []);
+    assert.deepEqual(fetched.sort(), [realpathSync(members.a.path), realpathSync(members.b.path)].sort());
+  } finally {
+    cleanupDir(root);
+  }
+});
+
+test('preflightGitState는 레거시 항목을 원격 브랜치 이름만으로 통과시키지 않는다', async () => {
+  const { root, members } = makeMultiRepoWorkspace();
+  try {
+    execFileSync('git', ['-C', members.b.path, 'update-ref', 'refs/remotes/origin/feat/shared', 'HEAD'], {
+      stdio: 'pipe',
+    });
+    const absent = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    const { missing } = await preflightGitState({
+      repoPath: root,
+      expectedCommits: [
+        { commit: absent, branch: 'feat/shared' },
+        { commit: absent, branch: 'feat/shared', repository: members.b.repository },
+      ],
+    });
+    assert.deepEqual(missing, [{ kind: 'commit', ref: absent }], '저장소가 확정된 항목만 브랜치로 통과한다');
+  } finally {
+    cleanupDir(root);
+  }
+});
+
 test('preflightGitState fails a missing baseBranch that exists neither locally nor on origin', async () => {
   const repo = makeTempGitRepo();
   try {

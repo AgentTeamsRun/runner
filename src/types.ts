@@ -122,7 +122,8 @@ export type TriggerRuntime = {
   discoveredWorktreeLocalKey?: string | null;
   conventions?: ConventionMeta[];
   planType?: string | null;
-  expectedCommits?: Array<{ commit: string; branch: string | null }>;
+  // repository: 커밋이 기록된 저장소의 정규화 식별자(host/owner/repo). 구버전 API·레거시 레코드는 부재/null.
+  expectedCommits?: Array<{ commit: string; branch: string | null; repository?: string | null }>;
   userConventionIds?: string[];
 };
 

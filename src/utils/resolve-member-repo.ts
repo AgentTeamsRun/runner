@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readdirSync, realpathSync } from 'node:fs';
 import path from 'node:path';
-import { isGitRepo } from './git-worktree.js';
 
 // windowsHide 누락 시 콘솔 미부착 부모(데몬)가 git.exe를 띄울 때 콘솔 창이 노출된다.
 function runGit(args: string[], cwd: string): string | null {
@@ -17,6 +16,10 @@ function runGit(args: string[], cwd: string): string | null {
   } catch {
     return null;
   }
+}
+
+export function isGitRepo(dirPath: string): boolean {
+  return runGit(['rev-parse', '--is-inside-work-tree'], dirPath) !== null;
 }
 
 // 프로토콜별 기본 포트. URL은 http/https/ftp의 기본 포트를 스스로 지우지만

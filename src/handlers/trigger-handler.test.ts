@@ -3212,6 +3212,84 @@ test('createTriggerHandler fails before starting the runner when expected commit
   );
 });
 
+test('createTriggerHandler는 RunnerBox 끈 멀티 저장소 루트에서 멤버 저장소 커밋으로 이어쓰기를 시작한다', async () => {
+  await withTempDir(async (root) => {
+    const commits: Record<string, string> = {};
+    for (const name of ['member-ui', 'member-api']) {
+      const memberPath = join(root, name);
+      await mkdir(memberPath);
+      execFileSync('git', ['init', memberPath], { stdio: 'pipe' });
+      execFileSync('git', ['-C', memberPath, 'config', 'user.email', 'test@test.com'], { stdio: 'pipe' });
+      execFileSync('git', ['-C', memberPath, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
+      execFileSync('git', ['-C', memberPath, 'commit', '--allow-empty', '-m', name], { stdio: 'pipe' });
+      execFileSync('git', ['-C', memberPath, 'remote', 'add', 'origin', `https://127.0.0.1:1/team/${name}.git`], {
+        stdio: 'pipe',
+      });
+      commits[name] = execFileSync('git', ['-C', memberPath, 'rev-parse', 'HEAD'], {
+        stdio: 'pipe',
+        encoding: 'utf8',
+      }).trim();
+    }
+
+    const clientCalls: Array<{ method: string; args: unknown[] }> = [];
+    let runnerCalled = false;
+    const client = {
+      fetchTriggerRuntime: async () => ({
+        ...runtime,
+        authPath: root,
+        planType: 'BUG_FIX',
+        expectedCommits: [
+          { commit: commits['member-ui'], branch: 'feat/ui', repository: '127.0.0.1:1/team/member-ui' },
+          // 구버전 API·레거시 레코드: repository 없음
+          { commit: commits['member-api'], branch: null },
+        ],
+      }),
+      isTriggerCancelRequested: async () => false,
+      updateTriggerHistory: async () => undefined,
+      updateTriggerStatus: async (...args: unknown[]) => {
+        clientCalls.push({ method: 'updateTriggerStatus', args });
+      },
+    };
+
+    const handler = createTriggerHandler(
+      {
+        config: {
+          daemonToken: 'daemon-token',
+          apiUrl: 'https://api.example',
+          pollingIntervalMs: 5000,
+          maxPollingIntervalMs: 120_000,
+          timeoutMs: 1500,
+          idleTimeoutMs: 500,
+          runnerCmd: 'opencode',
+          preventSleepWhileBusy: false,
+        },
+        client: client as never,
+      },
+      {
+        createRunnerFactory: () => () => ({
+          run: async () => {
+            runnerCalled = true;
+            return { exitCode: 0 } satisfies RunResult;
+          },
+        }),
+        createLogReporter: () => ({
+          start: () => undefined,
+          append: () => undefined,
+          stop: async () => undefined,
+        }),
+        readHistoryFile: async () => '### Summary\n- done\n',
+      },
+    );
+
+    await handler({ ...trigger, parentTriggerId: null });
+
+    const statusCall = clientCalls.filter((call) => call.method === 'updateTriggerStatus').at(-1);
+    assert.doesNotMatch(String(statusCall?.args[2] ?? ''), /GIT_STATE_UNAVAILABLE/);
+    assert.equal(runnerCalled, true);
+    assert.equal(statusCall?.args[1], 'DONE');
+  });
+});
+
 test('createTriggerHandler does not run Git preflight when expectedCommits is absent', async () => {
   let preflightCalled = false;
   let runnerCalled = false;
