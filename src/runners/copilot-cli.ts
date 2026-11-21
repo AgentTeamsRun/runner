@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
 import { createCopilotFinalTextCapturer, createCopilotJsonLineParser } from './copilot-json-parser.js';
+import { toPowerShellNativeInvocation } from './windows-prompt-file.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { createTokenUsageCollector } from './token-usage.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
@@ -49,7 +50,10 @@ export const toPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '-p' $promptText '--allow-all' '--no-ask-user' '--output-format' 'json'${modelSegment}${effortSegment}`,
+    toPowerShellNativeInvocation(
+      resolvedExecutablePath,
+      ` '-p' $promptText '--allow-all' '--no-ask-user' '--output-format' 'json'${modelSegment}${effortSegment}`,
+    ),
     'exit $LASTEXITCODE',
   ].join('\r\n');
 

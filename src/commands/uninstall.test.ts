@@ -17,7 +17,8 @@ test('runUninstallCommand deletes the Windows task before stopping the daemon pr
     removePidFile: async () => {
       events.push('pid-remove');
     },
-    logger: { info: () => undefined },
+    verifyRecordedDaemonInstance: async () => 'verified',
+    logger: { info: () => undefined, warn: () => undefined },
   });
 
   assert.deepEqual(events, ['task-delete', 'kill', 'pid-remove']);
@@ -38,8 +39,31 @@ test('runUninstallCommand preserves non-Windows stop-before-unregister order', a
     removePidFile: async () => {
       events.push('pid-remove');
     },
-    logger: { info: () => undefined },
+    verifyRecordedDaemonInstance: async () => 'verified',
+    logger: { info: () => undefined, warn: () => undefined },
   });
 
   assert.deepEqual(events, ['kill', 'pid-remove', 'unregister']);
+});
+
+test('runUninstallCommand does not signal a process that reused the recorded runner PID', async () => {
+  const events: string[] = [];
+  await runUninstallCommand({
+    getAutostartStatus: () => ({ registered: true, platform: 'task-scheduler' }),
+    unregisterAutostart: async () => {
+      events.push('task-delete');
+    },
+    getDaemonStatus: async () => ({ running: true, pid: 4321, instanceId: 'old', ready: true }),
+    verifyRecordedDaemonInstance: async () => 'mismatch',
+    kill: () => {
+      events.push('kill');
+      return true;
+    },
+    removePidFile: async () => {
+      events.push('pid-remove');
+    },
+    logger: { info: () => undefined, warn: () => undefined },
+  });
+
+  assert.deepEqual(events, ['task-delete', 'pid-remove']);
 });

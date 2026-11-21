@@ -8,6 +8,7 @@ import { describeExecutableResolution, resolveExecutablePathWithPreference } fro
 import { logger } from '../logger.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { createKimiFinalTextCapturer, createKimiJsonLineParser } from './kimi-json-parser.js';
+import { toPowerShellNativeInvocation } from './windows-prompt-file.js';
 import type { ParsedLogEntry } from './stream-json-parser.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
@@ -45,7 +46,10 @@ export const toKimiPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '-p' $promptText${modelSegment} '--output-format' 'stream-json'`,
+    toPowerShellNativeInvocation(
+      resolvedExecutablePath,
+      ` '-p' $promptText${modelSegment} '--output-format' 'stream-json'`,
+    ),
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');

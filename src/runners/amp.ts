@@ -6,7 +6,12 @@ import { platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
-import { removeWindowsPromptFile, toPowerShellPromptFileRead, writeWindowsPromptFile } from './windows-prompt-file.js';
+import {
+  removeWindowsPromptFile,
+  toPowerShellNativeInvocation,
+  toPowerShellPromptFileRead,
+  writeWindowsPromptFile,
+} from './windows-prompt-file.js';
 import { extractResultTextFromStreamJson } from './claude-code.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { createResultLineCapturer, createStreamJsonLineParser } from './stream-json-parser.js';
@@ -43,7 +48,10 @@ export const toPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     toPowerShellPromptFileRead(promptFilePath),
-    `& '${resolvedExecutablePath.replaceAll("'", "''")}' '--execute' $promptText '--dangerously-allow-all' '--stream-json-thinking'${modelSegment}`,
+    toPowerShellNativeInvocation(
+      resolvedExecutablePath,
+      ` '--execute' $promptText '--dangerously-allow-all' '--stream-json-thinking'${modelSegment}`,
+    ),
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');

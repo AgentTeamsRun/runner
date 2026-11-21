@@ -6,7 +6,12 @@ import { platform } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describeExecutableResolution, resolveExecutablePathWithPreference, spawnExecutable } from '../executable.js';
 import { logger } from '../logger.js';
-import { removeWindowsPromptFile, toPowerShellPromptFileRead, writeWindowsPromptFile } from './windows-prompt-file.js';
+import {
+  removeWindowsPromptFile,
+  toPowerShellNativeInvocation,
+  toPowerShellPromptFileRead,
+  writeWindowsPromptFile,
+} from './windows-prompt-file.js';
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import type { TriggerLogCategory } from '../types.js';
@@ -71,7 +76,10 @@ export const toPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     toPowerShellPromptFileRead(promptFilePath),
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '--dangerously-skip-permissions' '--add-dir' ${toPowerShellLiteral(agentteamsDir)} '--log-file' ${toPowerShellLiteral(internalLogPath)} '--print-timeout' ${toPowerShellLiteral(toPrintTimeout(timeoutMs))}${modelSegment}${effortSegment} '--print' $promptText`,
+    toPowerShellNativeInvocation(
+      resolvedExecutablePath,
+      ` '--dangerously-skip-permissions' '--add-dir' ${toPowerShellLiteral(agentteamsDir)} '--log-file' ${toPowerShellLiteral(internalLogPath)} '--print-timeout' ${toPowerShellLiteral(toPrintTimeout(timeoutMs))}${modelSegment}${effortSegment} '--print' $promptText`,
+    ),
     'exit $LASTEXITCODE',
   ].join('\r\n');
 

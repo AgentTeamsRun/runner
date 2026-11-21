@@ -11,6 +11,7 @@ import { findCursorCliExecutable, isCursorCliExecutable } from './cursor-cli-ide
 import { selectRunnerFailureMessage } from './failure-message.js';
 import { setupCloseWatchdog, terminateRunnerChild } from './process-control.js';
 import { createCursorStreamJsonLineParser, createResultLineCapturer } from './stream-json-parser.js';
+import { toPowerShellNativeInvocation } from './windows-prompt-file.js';
 import type { Runner, RunnerOptions, RunResult } from './types.js';
 import { buildRunnerChildEnv } from './session-env.js';
 
@@ -47,7 +48,10 @@ export const toCursorPowerShellEncodedCommand = (
     '$OutputEncoding = $utf8NoBom',
     'chcp 65001 > $null',
     `$promptText = [System.IO.File]::ReadAllText(${toPowerShellLiteral(promptFilePath)}, $utf8NoBom)`,
-    `& ${toPowerShellLiteral(resolvedExecutablePath)} '-p' '--force' '--output-format' 'stream-json' '--stream-partial-output'${modelSegment} $promptText`,
+    toPowerShellNativeInvocation(
+      resolvedExecutablePath,
+      ` '-p' '--force' '--output-format' 'stream-json' '--stream-partial-output'${modelSegment} $promptText`,
+    ),
   ].join('\r\n');
 
   return Buffer.from(scriptContent, 'utf16le').toString('base64');

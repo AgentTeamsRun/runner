@@ -13,7 +13,8 @@ test('runStopCommand stops a registered Windows task daemon gracefully without e
     removePidFile: async () => {
       events.push('pid-remove');
     },
-    logger: { info: () => undefined, error: () => undefined },
+    verifyRecordedDaemonInstance: async () => 'verified',
+    logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
   });
 
   assert.deepEqual(events, ['kill:4321:SIGTERM', 'pid-remove']);
@@ -30,7 +31,46 @@ test('runStopCommand preserves the manual stop path', async () => {
     removePidFile: async () => {
       events.push('pid-remove');
     },
-    logger: { info: () => undefined, error: () => undefined },
+    verifyRecordedDaemonInstance: async () => 'verified',
+    logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+
+  assert.deepEqual(events, ['kill', 'pid-remove']);
+});
+
+test('runStopCommand does not signal a process that reused the recorded runner PID', async () => {
+  const events: string[] = [];
+  const warnings: string[] = [];
+  await runStopCommand({
+    getDaemonStatus: async () => ({ running: true, pid: 4321, instanceId: 'old', ready: true }),
+    verifyRecordedDaemonInstance: async () => 'mismatch',
+    kill: () => {
+      events.push('kill');
+      return true;
+    },
+    removePidFile: async () => {
+      events.push('pid-remove');
+    },
+    logger: { info: () => undefined, warn: (message) => warnings.push(message), error: () => undefined },
+  });
+
+  assert.deepEqual(events, ['pid-remove']);
+  assert.equal(warnings.length, 1);
+});
+
+test('runStopCommand still stops a runner whose identity cannot be verified', async () => {
+  const events: string[] = [];
+  await runStopCommand({
+    getDaemonStatus: async () => ({ running: true, pid: 4321, instanceId: null, ready: true }),
+    verifyRecordedDaemonInstance: async () => 'unverifiable',
+    kill: () => {
+      events.push('kill');
+      return true;
+    },
+    removePidFile: async () => {
+      events.push('pid-remove');
+    },
+    logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
   });
 
   assert.deepEqual(events, ['kill', 'pid-remove']);
